@@ -24,6 +24,7 @@ def get_ip_address():
         s.close()
     return IP
 
+
 @triton.jit
 def persistent_ag_gemm(
     A,
