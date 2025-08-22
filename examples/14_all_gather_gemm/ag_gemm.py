@@ -24,26 +24,6 @@ def get_ip_address():
         s.close()
     return IP
 
-
-def benchmark_torch_function(func, warmup_iters=10, bench_iters=50):
-    for _ in range(warmup_iters):
-        func()
-    torch.cuda.synchronize()
-
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
-    start_event.record()
-    for _ in range(bench_iters):
-        func()
-    end_event.record()
-
-    torch.cuda.synchronize()
-
-    elapsed_time_ms = start_event.elapsed_time(end_event)
-    return elapsed_time_ms / bench_iters
-
-
 @triton.jit
 def persistent_ag_gemm(
     A,
