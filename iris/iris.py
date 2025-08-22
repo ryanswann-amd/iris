@@ -4,12 +4,7 @@
 import triton
 import triton.language as tl
 
-from iris._mpi_helpers import (
-    init_mpi,
-    mpi_allgather,
-    world_barrier,
-    mpi_broadcast_scalar,
-)
+from iris._mpi_helpers import init_mpi, mpi_allgather, world_barrier, mpi_broadcast_scalar, mpi_broadcast_tensor
 from iris.hip import (
     set_device,
     get_cu_count,
@@ -92,6 +87,9 @@ class Iris:
 
     def broadcast(self, value, source_rank):
         return mpi_broadcast_scalar(value, source_rank)
+
+    def broadcast_tensor(self, value, source_rank=0):
+        return mpi_broadcast_tensor(value, root=source_rank)
 
     def allocate(self, num_elements, dtype):
         self.log_debug(f"allocate: num_elements = {num_elements}, dtype = {dtype}")
