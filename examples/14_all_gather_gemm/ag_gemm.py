@@ -43,12 +43,17 @@ def persistent_ag_gemm(
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     NUM_SMS: tl.constexpr,
+    NUM_XCDS: tl.constexpr,
     EVEN_K: tl.constexpr,
     heap_bases: tl.tensor,
     cur_rank: tl.constexpr,
     world_size: tl.constexpr,
 ):
     pid = tl.program_id(0)
+
+    if NUM_XCDS != 1:
+        pid = (pid % NUM_XCDS) * (NUM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
@@ -72,23 +77,49 @@ def persistent_ag_gemm(
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+        rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
 
-        C_BASE = C + rm[:, None] * stride_cm + rn[None, :] * stride_cn
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
         K_local = K // world_size
+
         for source_rank_id in range(world_size):
-            for k_offset in range(0, K_local, BLOCK_SIZE_K):
+            loop_k_local = tl.cdiv(K_local, BLOCK_SIZE_K)
+            if not EVEN_K:
+                loop_k_local -= 1
+
+            for k_block_idx in range(0, loop_k_local):
+                k_offset = k_block_idx * BLOCK_SIZE_K
                 rk_local = k_offset + tl.arange(0, BLOCK_SIZE_K)
                 A_ptr = A + rm[:, None] * stride_am + rk_local[None, :] * stride_ak
-                a = iris.load(A_ptr, cur_rank, source_rank_id, heap_bases)
+                a = iris.load(tl.multiple_of(A_ptr, (1, 16)), cur_rank, source_rank_id, heap_bases)
+
                 rk_global = (source_rank_id * K_local) + rk_local
                 B_ptr = B + rk_global[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(B_ptr)
-                acc += tl.dot(a, b)
-        c = acc.to(C.type.element_ty)
-        mask = (rm[:, None] < M) & (rn[None, :] < N)
-        tl.store(C_BASE, c, mask=mask)
+                b = tl.load(tl.multiple_of(B_ptr, (16, 1)))
 
+                acc += tl.dot(a, b)
+
+            if not EVEN_K:
+                k_offset = loop_k_local * BLOCK_SIZE_K
+                rk_local = k_offset + tl.arange(0, BLOCK_SIZE_K)
+                rk_local_mask = rk_local < K_local
+                A_ptr = A + rm[:, None] * stride_am + rk_local[None, :] * stride_ak
+                a = iris.load(tl.multiple_of(A_ptr, (1, 16)), cur_rank, source_rank_id, heap_bases, mask=rk_local_mask[None, :], other=0.0)
+
+                rk_global = (source_rank_id * K_local) + rk_local
+                rk_global_mask = rk_global < K
+                B_ptr = B + rk_global[:, None] * stride_bk + rn[None, :] * stride_bn
+                b = tl.load(tl.multiple_of(B_ptr, (16, 1)), mask=rk_global_mask[:, None], other=0.0)
+
+                acc += tl.dot(a, b)
+
+        c = acc.to(C.type.element_ty)
+        C_BASE = C + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] * stride_cm + \
+                 (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_cn
+        mask = ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] < M) & \
+               ((pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] < N)
+        tl.store(C_BASE, c, mask=mask)
 
 @triton.jit
 def local_gemm_kernel(
@@ -109,9 +140,14 @@ def local_gemm_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     NUM_SMS: tl.constexpr,
+    NUM_XCDS: tl.constexpr,
     EVEN_K: tl.constexpr,
 ):
     pid = tl.program_id(0)
+
+    if NUM_XCDS != 1:
+        pid = (pid % NUM_XCDS) * (NUM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
@@ -142,11 +178,14 @@ def local_gemm_kernel(
         A_BASE = A + rm_load[:, None] * stride_am + rk[None, :] * stride_ak
         B_BASE = B + rk[:, None] * stride_bk + rn_load[None, :] * stride_bn
 
-        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
-
+        tl.assume(pid_m >= 0)
+        tl.assume(pid_n >= 0)
+        
         loop_k = tl.cdiv(K, BLOCK_SIZE_K)
         if not EVEN_K:
             loop_k -= 1
+
+        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
         for k in range(0, loop_k):
             a = tl.load(tl.multiple_of(A_BASE, (1, 16)))
@@ -166,8 +205,11 @@ def local_gemm_kernel(
 
         c = acc.to(C.type.element_ty)
 
-        rm_store = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-        rn_store = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        rm_store = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+        rn_store = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+        
+        rm_store = tl.max_contiguous(tl.multiple_of(rm_store, BLOCK_SIZE_M), BLOCK_SIZE_M)
+        rn_store = tl.max_contiguous(tl.multiple_of(rn_store, BLOCK_SIZE_N), BLOCK_SIZE_N)
         C_BASE = C + rm_store[:, None] * stride_cm + rn_store[None, :] * stride_cn
 
         mask = (rm_store[:, None] < M) & (rn_store[None, :] < N)
@@ -244,6 +286,7 @@ def test_correctness():
             BLOCK_SIZE_K=32,
             GROUP_SIZE_M=8,
             NUM_SMS=num_sms,
+            NUM_XCDS=8,
             EVEN_K=True,
             heap_bases=iris_instance.get_heap_bases(),
             cur_rank=rank,
@@ -267,6 +310,21 @@ def test_correctness():
 
 
 def test_performance():
+    kernel_timing = {
+        "gemm": {
+            "start_event": torch.cuda.Event(enable_timing=True),
+            "end_event": torch.cuda.Event(enable_timing=True),
+            "ms": 0,
+            "experiments": 0,
+        },
+        "communication": {
+            "start_event": torch.cuda.Event(enable_timing=True),
+            "end_event": torch.cuda.Event(enable_timing=True),
+            "ms": 0,
+            "experiments": 0,
+        },
+    }
+    
     iris_instance = iris.iris(heap_size=8 * 1024**3)
     rank = iris_instance.get_rank()
     world_size = iris_instance.get_num_ranks()
@@ -341,6 +399,7 @@ def test_performance():
             BLOCK_SIZE_K=64,
             GROUP_SIZE_M=6,
             NUM_SMS=num_sms,
+            NUM_XCDS=1,
             EVEN_K=True,
             heap_bases=iris_instance.get_heap_bases(),
             cur_rank=rank,
@@ -376,6 +435,7 @@ def test_performance():
                 BLOCK_SIZE_K=64,
                 GROUP_SIZE_M=6,
                 NUM_SMS=num_sms,
+                NUM_XCDS=1,
                 EVEN_K=True,
             )
 
