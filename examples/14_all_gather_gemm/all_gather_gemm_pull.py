@@ -3,6 +3,7 @@ import triton.language as tl
 import torch
 import iris
 
+
 @triton.jit
 def persistent_ag_gemm(
     A,
@@ -84,7 +85,14 @@ def persistent_ag_gemm(
                 rk_local = k_offset + tl.arange(0, BLOCK_SIZE_K)
                 rk_local_mask = rk_local < K_local
                 A_ptr = A + rm[:, None] * stride_am + rk_local[None, :] * stride_ak
-                a = iris.load(tl.multiple_of(A_ptr, (1, 16)), cur_rank, source_rank_id, heap_bases, mask=rk_local_mask[None, :], other=0.0)
+                a = iris.load(
+                    tl.multiple_of(A_ptr, (1, 16)),
+                    cur_rank,
+                    source_rank_id,
+                    heap_bases,
+                    mask=rk_local_mask[None, :],
+                    other=0.0,
+                )
 
                 rk_global = (source_rank_id * K_local) + rk_local
                 rk_global_mask = rk_global < K
@@ -94,8 +102,12 @@ def persistent_ag_gemm(
                 acc += tl.dot(a, b)
 
         c = acc.to(C.type.element_ty)
-        C_BASE = C + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] * stride_cm + \
-                 (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_cn
-        mask = ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] < M) & \
-               ((pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] < N)
+        C_BASE = (
+            C
+            + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] * stride_cm
+            + (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_cn
+        )
+        mask = ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] < M) & (
+            (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] < N
+        )
         tl.store(C_BASE, c, mask=mask)
