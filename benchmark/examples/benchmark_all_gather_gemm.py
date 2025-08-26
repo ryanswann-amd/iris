@@ -35,15 +35,17 @@ def parse_args():
         "--config_file",
         type=str,
         default="dataset/ag_gemm.json",
-        help="Path to the JSON file with benchmark configurations."
+        help="Path to the JSON file with benchmark configurations.",
     )
     parser.add_argument("--output_file", type=str, default="ag_gemm_log.json", help="Base name for output files")
 
     parser.add_argument("-m", type=int, default=1024, help="Number of rows in matrix A (M)")
     parser.add_argument("-n", type=int, default=3584, help="Total number of columns in matrix B (N)")
     parser.add_argument("-k", type=int, default=8192, help="Common dimension between matrices A and B (K)")
-    
-    parser.add_argument("--datatype", type=str, default="fp16", choices=["fp16", "bf16", "fp32"], help="Datatype of computation")
+
+    parser.add_argument(
+        "--datatype", type=str, default="fp16", choices=["fp16", "bf16", "fp32"], help="Datatype of computation"
+    )
     parser.add_argument("--heap_size", type=int, default=1 << 33, help="Iris heap size in bytes")
 
     parser.add_argument("--BLK_M", type=int, default=256, help="Block size M for the kernel")
@@ -68,7 +70,7 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
     shmem.barrier()
 
-    with open(default_args.config_file, 'r') as f:
+    with open(default_args.config_file, "r") as f:
         configs_to_run = json.load(f)
 
     shmem.log(f"Loaded {len(configs_to_run)} configurations from {default_args.config_file}")
@@ -82,7 +84,7 @@ def main():
 
         M, N, K = run_args["m"], run_args["n"], run_args["k"]
         shmem.log(f"\n--- Running Benchmark for M={M}, N={N}, K={K} ---")
-        
+
         base_name, extension = os.path.splitext(default_args.output_file)
         unique_filename = f"{base_name}_m_{M}{extension}"
         full_output_path = os.path.join(output_dir, unique_filename)
@@ -91,19 +93,21 @@ def main():
         json_writer.add_field("world_size", world_size)
         for key, value in run_args.items():
             json_writer.add_field(key, value)
-        
+
         K_local = K // world_size
 
         if rank == 0:
             A_global = torch.randn((M, K), dtype=datatype, device="cuda")
         else:
             A_global = torch.empty((M, K), dtype=datatype, device="cuda")
-        
-        A_global_broadcasted = torch.from_numpy(shmem.broadcast_tensor(A_global.cpu().numpy(), source_rank=0)).to(datatype).to("cuda")
+
+        A_global_broadcasted = (
+            torch.from_numpy(shmem.broadcast_tensor(A_global.cpu().numpy(), source_rank=0)).to(datatype).to("cuda")
+        )
         shmem.barrier()
-        
+
         A_local = A_global_broadcasted[:, rank * K_local : (rank + 1) * K_local].contiguous()
-        
+
         if rank == 0:
             B = torch.randn((K, N), device="cuda", dtype=datatype)
         else:
@@ -111,47 +115,68 @@ def main():
 
         B = torch.from_numpy(shmem.broadcast_tensor(B.cpu().numpy(), source_rank=0)).to(datatype).to("cuda")
         shmem.barrier()
-        
+
         C = torch.empty((M, N), device="cuda", dtype=datatype)
         A_local_iris = shmem.empty((M, K_local), dtype=datatype)
         A_local_iris.copy_(A_local)
 
         num_sms = torch.cuda.get_device_properties(rank).multi_processor_count
-        
+
         main_stream = torch.cuda.Stream()
-        kernel_timing = { "fused_ag_gemm": { "start_event": torch.cuda.Event(enable_timing=True), "end_event": torch.cuda.Event(enable_timing=True), "ms": 0, "experiments": 0, } }
-        
+        kernel_timing = {
+            "fused_ag_gemm": {
+                "start_event": torch.cuda.Event(enable_timing=True),
+                "end_event": torch.cuda.Event(enable_timing=True),
+                "ms": 0,
+                "experiments": 0,
+            }
+        }
+
         def run_experiment():
             nonlocal kernel_timing
             with torch.cuda.stream(main_stream):
                 kernel_timing["fused_ag_gemm"]["start_event"].record()
                 persistent_ag_gemm[(num_sms,)](
-                    A_local_iris, B, C,
-                    M, N, K,
-                    A_local_iris.stride(0), A_local_iris.stride(1),
-                    B.stride(0), B.stride(1),
-                    C.stride(0), C.stride(1),
-                    run_args["BLK_M"], run_args["BLK_N"], run_args["BLK_K"], run_args["gsize_m"],
-                    run_args["num_sms"], 1, (K % run_args["BLK_K"] == 0),
-                    shmem.get_heap_bases(), rank, world_size,
+                    A_local_iris,
+                    B,
+                    C,
+                    M,
+                    N,
+                    K,
+                    A_local_iris.stride(0),
+                    A_local_iris.stride(1),
+                    B.stride(0),
+                    B.stride(1),
+                    C.stride(0),
+                    C.stride(1),
+                    run_args["BLK_M"],
+                    run_args["BLK_N"],
+                    run_args["BLK_K"],
+                    run_args["gsize_m"],
+                    run_args["num_sms"],
+                    1,
+                    (K % run_args["BLK_K"] == 0),
+                    shmem.get_heap_bases(),
+                    rank,
+                    world_size,
                 )
                 kernel_timing["fused_ag_gemm"]["end_event"].record()
                 kernel_timing["fused_ag_gemm"]["experiments"] += 1
-            
+
             shmem.barrier()
-            
+
             ms = kernel_timing["fused_ag_gemm"]["start_event"].elapsed_time(kernel_timing["fused_ag_gemm"]["end_event"])
             kernel_timing["fused_ag_gemm"]["ms"] += ms
-        
+
         run_experiment()
         shmem.barrier()
         kernel_timing["fused_ag_gemm"]["ms"] = 0
         kernel_timing["fused_ag_gemm"]["experiments"] = 0
-        
+
         if default_args.benchmark:
             triton_ms = iris.do_bench(run_experiment, barrier_fn=shmem.barrier)
             tflops = 2 * M * N * K * 1e-12 / (triton_ms * 1e-3)
-            
+
             shmem.log_stats(f"Result (iris.do_bench): {triton_ms:.3f} ms, {tflops:.3f} TFLOPS")
             json_writer.add_field("total_ms", triton_ms)
             json_writer.add_field("tflops", tflops)
@@ -166,13 +191,13 @@ def main():
                 run_experiment()
                 shmem.barrier()
 
-            zero_count = torch.sum(A_global_broadcasted== 0).item()
-            
+            zero_count = torch.sum(A_global_broadcasted == 0).item()
+
             shmem.log(f"Number of zeros {rank} in A_global: {zero_count}")
             shmem.log("Validating...")
 
             success = validate_gemm(A_global_broadcasted, B, C, shmem, atol=1.0)
-            
+
             passed_str = "passed" if success else "failed"
             shmem.log(f"Final C validation {passed_str}.")
             json_writer.add_field("validation_passed", success)
@@ -180,7 +205,7 @@ def main():
         if rank == 0:
             json_writer.flush()
             shmem.log(f"Saved results to {full_output_path}")
-            
+
     shmem.log("\nBenchmark sweep complete.")
     shmem.barrier()
 

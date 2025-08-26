@@ -106,7 +106,14 @@ def persistent_ag_gemm(
                 rk_local = k_offset + tl.arange(0, BLOCK_SIZE_K)
                 rk_local_mask = rk_local < K_local
                 A_ptr = A + rm[:, None] * stride_am + rk_local[None, :] * stride_ak
-                a = iris.load(tl.multiple_of(A_ptr, (1, 16)), cur_rank, source_rank_id, heap_bases, mask=rk_local_mask[None, :], other=0.0)
+                a = iris.load(
+                    tl.multiple_of(A_ptr, (1, 16)),
+                    cur_rank,
+                    source_rank_id,
+                    heap_bases,
+                    mask=rk_local_mask[None, :],
+                    other=0.0,
+                )
 
                 rk_global = (source_rank_id * K_local) + rk_local
                 rk_global_mask = rk_global < K
@@ -116,11 +123,16 @@ def persistent_ag_gemm(
                 acc += tl.dot(a, b)
 
         c = acc.to(C.type.element_ty)
-        C_BASE = C + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] * stride_cm + \
-                 (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_cn
-        mask = ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] < M) & \
-               ((pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] < N)
+        C_BASE = (
+            C
+            + (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] * stride_cm
+            + (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] * stride_cn
+        )
+        mask = ((pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))[:, None] < M) & (
+            (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))[None, :] < N
+        )
         tl.store(C_BASE, c, mask=mask)
+
 
 @triton.jit
 def local_gemm_kernel(
@@ -181,7 +193,7 @@ def local_gemm_kernel(
 
         tl.assume(pid_m >= 0)
         tl.assume(pid_n >= 0)
-        
+
         loop_k = tl.cdiv(K, BLOCK_SIZE_K)
         if not EVEN_K:
             loop_k -= 1
@@ -208,7 +220,7 @@ def local_gemm_kernel(
 
         rm_store = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn_store = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-        
+
         rm_store = tl.max_contiguous(tl.multiple_of(rm_store, BLOCK_SIZE_M), BLOCK_SIZE_M)
         rn_store = tl.max_contiguous(tl.multiple_of(rn_store, BLOCK_SIZE_N), BLOCK_SIZE_N)
         C_BASE = C + rm_store[:, None] * stride_cm + rn_store[None, :] * stride_cn
@@ -325,7 +337,7 @@ def test_performance():
             "experiments": 0,
         },
     }
-    
+
     iris_instance = iris.iris(heap_size=8 * 1024**3)
     rank = iris_instance.get_rank()
     world_size = iris_instance.get_num_ranks()
