@@ -145,3 +145,14 @@ def read_realtime():
         pack=1,
     )
     return tmp
+
+@triton.jit
+def chiplet_swizzle(pid, NUM_SMS: tl.constexpr, NUM_XCDS: tl.constexpr):
+    if NUM_XCDS != 1:
+        xcd = pid % NUM_XCDS
+        pos_in_xcd = pid // NUM_XCDS
+        min_per_xcd = NUM_SMS // NUM_XCDS
+        extra_sms = NUM_SMS % NUM_XCDS
+        offset = xcd * min_per_xcd + min(xcd, extra_sms)
+        pid = offset + pos_in_xcd
+    return pid
