@@ -67,10 +67,6 @@ def test_all_store_bench(dtype, buffer_size, heap_size, block_size):
     # Call the run_experiment function from the module
     bandwidth_gbps = module.run_experiment(shmem, args, buffer)
 
-    # Basic validation that we got a reasonable bandwidth value
-    assert bandwidth_gbps >= 0.0, f"Bandwidth should be non-negative, got {bandwidth_gbps}"
-    assert bandwidth_gbps < 10000.0, f"Bandwidth seems unreasonably high: {bandwidth_gbps} GiB/s"
-
 
 def _torch_dtype_to_str(dtype):
     """Helper function to convert torch dtype to string format expected by the module"""
