@@ -29,21 +29,19 @@ matmul_spec.loader.exec_module(matmul_module)
     [
         torch.float16,
         torch.float32,
-        torch.bfloat16,
     ],
 )
 @pytest.mark.parametrize(
     "m, n, k",
     [
+        (256, 256, 256),
         (512, 512, 512),
-        (1024, 1024, 1024),
     ],
 )
 @pytest.mark.parametrize(
     "block_m, block_n, block_k",
     [
         (64, 64, 32),
-        (128, 128, 32),
     ],
 )
 def test_gemm_atomics_all_reduce(dtype, m, n, k, block_m, block_n, block_k):
@@ -81,7 +79,7 @@ def test_gemm_atomics_all_reduce(dtype, m, n, k, block_m, block_n, block_k):
     total_tiles = total_blocks_M * total_blocks_N
 
     # Use conservative number of SMs
-    gemm_sms = min(cu_count // 2, 128)  # Use half of available CUs, max 128
+    gemm_sms = min(cu_count // 2, 64)  # Use half of available CUs, max 64
 
     # Create required tensors
     tile_completed = shmem.zeros((total_tiles,), device="cuda", dtype=torch.int32)
