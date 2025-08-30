@@ -16,12 +16,12 @@ try:
     import iris
     from examples.common.utils import Timestamps
     from examples.common.validation import validate_gemm
-    
+
     # Define test parameters after successful import
     DTYPES = [torch.float16, torch.float32]
     MATRIX_SIZES = [(256, 256, 256), (512, 512, 512)]
     BLOCK_SIZES = [(64, 64, 32)]
-    
+
 except ImportError as e:
     pytest.skip(f"Skipping gemm_atomics_all_reduce test due to missing dependencies: {e}", allow_module_level=True)
 
@@ -34,13 +34,13 @@ def test_gemm_atomics_all_reduce(dtype, m, n, k, block_m, block_n, block_k):
     try:
         current_dir = Path(__file__).parent
         matmul_wrapper_path = (current_dir / "../../examples/08_gemm_atomics_all_reduce/matmul_wrapper.py").resolve()
-        
+
         matmul_spec = importlib.util.spec_from_file_location("matmul_wrapper", matmul_wrapper_path)
         matmul_module = importlib.util.module_from_spec(matmul_spec)
         matmul_spec.loader.exec_module(matmul_module)
     except (ImportError, FileNotFoundError) as e:
         pytest.skip(f"Skipping test due to import error: {e}")
-    
+
     # Initialize iris with appropriate heap size
     heap_size = 1 << 30  # 1GB
     shmem = iris.iris(heap_size)
