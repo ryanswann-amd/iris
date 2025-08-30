@@ -2,6 +2,30 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+"""
+Test suite for the 09_gemm_one_shot_all_reduce example.
+
+This test suite provides comprehensive testing for the GEMM one-shot all-reduce
+algorithm implementation. It includes tests for:
+
+1. Module imports and structure validation
+2. Matrix dimension requirements and divisibility checks
+3. Block size calculations used in the kernel
+4. Tensor operations and data type support
+5. Validation functions and argument parsing
+6. File structure and content verification
+
+The tests are designed to work in environments without AMD GPU hardware by
+gracefully skipping tests that require specific hardware dependencies while
+still validating the core algorithm logic and code structure.
+
+Test Categories:
+- Import tests: Verify module structure and import capabilities
+- Mathematical tests: Validate dimension requirements and calculations
+- Functional tests: Test tensor operations and validation logic
+- Structural tests: Verify file organization and content
+"""
+
 import pytest
 import torch
 import triton
