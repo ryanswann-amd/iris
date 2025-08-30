@@ -82,6 +82,44 @@ def parse_args():
     return vars(parser.parse_args())
 
 
+def bench_atomic_add(
+    shmem,
+    source_rank,
+    destination_rank,
+    source_buffer,
+    result_buffer,
+    BLOCK_SIZE,
+    dtype,
+    verbose=False,
+    validate=False,
+    num_experiments=1,
+    num_warmup=0,
+):
+    """
+    Wrapper function for testing compatibility, follows the same signature as bench_load.
+    """
+    # Convert dtype to string for args dict
+    dtype_str_map = {
+        torch.int8: "int8",
+        torch.float16: "fp16",
+        torch.bfloat16: "bf16",
+        torch.float32: "fp32",
+    }
+    datatype_str = dtype_str_map.get(dtype, "fp16")
+
+    # Create args dict as expected by run_experiment
+    args = {
+        "datatype": datatype_str,
+        "block_size": BLOCK_SIZE,
+        "verbose": verbose,
+        "validate": validate,
+        "num_experiments": num_experiments,
+        "num_warmup": num_warmup,
+    }
+
+    return run_experiment(shmem, args, source_rank, destination_rank, source_buffer, result_buffer)
+
+
 def run_experiment(shmem, args, source_rank, destination_rank, source_buffer, result_buffer):
     dtype = torch_dtype_from_str(args["datatype"])
     cur_rank = shmem.get_rank()
