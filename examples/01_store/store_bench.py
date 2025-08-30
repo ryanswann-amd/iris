@@ -125,10 +125,6 @@ def bench_store(
                 shmem.get_heap_bases(),
             )
 
-    # Warmup
-    run_store()
-    shmem.barrier()
-
     triton_ms = iris.do_bench(run_store, shmem.barrier, n_repeat=num_experiments, n_warmup=num_warmup)
 
     bandwidth_gbps = 0
