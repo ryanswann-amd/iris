@@ -60,7 +60,7 @@ def test_all_store_bench(dtype, buffer_size, heap_size, block_size):
         "verbose": False,
         "validate": False,
         "num_experiments": 1,  # Minimal for testing
-        "num_warmup": 0,      # Skip warmup for testing
+        "num_warmup": 0,  # Skip warmup for testing
         "active_ranks": min(num_ranks, 8),  # Use available ranks or 8, whichever is smaller
     }
 
