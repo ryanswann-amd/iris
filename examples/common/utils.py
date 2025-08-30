@@ -146,6 +146,7 @@ def read_realtime():
     )
     return tmp
 
+
 @triton.jit
 def chiplet_swizzle(pid, NUM_SMS: tl.constexpr, NUM_XCDS: tl.constexpr):
     if NUM_XCDS != 1:

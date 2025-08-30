@@ -53,7 +53,7 @@ def persistent_gemm_all_scatter_opportunistic(
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    
+
     tl.assume(stride_am > 0)
     tl.assume(stride_ak > 0)
     tl.assume(stride_bn > 0)
@@ -62,7 +62,7 @@ def persistent_gemm_all_scatter_opportunistic(
     tl.assume(stride_cn > 0)
 
     acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
-    
+
     if pid < total_tiles:
         tile_id = pid
         num_pid_in_group = GROUP_SIZE_M * num_pid_n
@@ -135,7 +135,7 @@ def persistent_gemm_all_scatter_opportunistic(
         tl.store(c_global + global_offset, c, mask=sub_mask, cache_modifier=".wt")
         tl.debug_barrier()
         tl.store(locks + tile_id, 1, cache_modifier=".wt")
-    
+
     tl.debug_barrier()
 
     # Workgroup specialization:
@@ -147,7 +147,7 @@ def persistent_gemm_all_scatter_opportunistic(
         # We then increment the pid by NUM_SMS to get to the next tile
         # and enter workgroup specialization loop.
         pid += NUM_SMS
-        
+
         # Enter persistent loop for the GEMM, which will now offset by
         # GEMM_SMS instead of NUM_SMS until all tiles are computed.
         for tile_id in range(pid, total_tiles, GEMM_SMS):
