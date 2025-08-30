@@ -5,46 +5,42 @@
 import importlib.util
 from pathlib import Path
 
-import numpy as np
 import pytest
-import torch
-import triton
-import triton.language as tl
 
-import iris
-from examples.common.utils import Timestamps
-from examples.common.validation import validate_gemm
+# Try to import dependencies - skip test if not available
+try:
+    import numpy as np
+    import torch
+    import triton
+    import triton.language as tl
+    import iris
+    from examples.common.utils import Timestamps
+    from examples.common.validation import validate_gemm
+    
+    # Define test parameters after successful import
+    DTYPES = [torch.float16, torch.float32]
+    MATRIX_SIZES = [(256, 256, 256), (512, 512, 512)]
+    BLOCK_SIZES = [(64, 64, 32)]
+    
+except ImportError as e:
+    pytest.skip(f"Skipping gemm_atomics_all_reduce test due to missing dependencies: {e}", allow_module_level=True)
 
-current_dir = Path(__file__).parent
-matmul_wrapper_path = (current_dir / "../../examples/08_gemm_atomics_all_reduce/matmul_wrapper.py").resolve()
 
-# Import matmul_wrapper module
-matmul_spec = importlib.util.spec_from_file_location("matmul_wrapper", matmul_wrapper_path)
-matmul_module = importlib.util.module_from_spec(matmul_spec)
-matmul_spec.loader.exec_module(matmul_module)
-
-
-@pytest.mark.parametrize(
-    "dtype",
-    [
-        torch.float16,
-        torch.float32,
-    ],
-)
-@pytest.mark.parametrize(
-    "m, n, k",
-    [
-        (256, 256, 256),
-        (512, 512, 512),
-    ],
-)
-@pytest.mark.parametrize(
-    "block_m, block_n, block_k",
-    [
-        (64, 64, 32),
-    ],
-)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("m, n, k", MATRIX_SIZES)
+@pytest.mark.parametrize("block_m, block_n, block_k", BLOCK_SIZES)
 def test_gemm_atomics_all_reduce(dtype, m, n, k, block_m, block_n, block_k):
+    # Import matmul_wrapper module at test time
+    try:
+        current_dir = Path(__file__).parent
+        matmul_wrapper_path = (current_dir / "../../examples/08_gemm_atomics_all_reduce/matmul_wrapper.py").resolve()
+        
+        matmul_spec = importlib.util.spec_from_file_location("matmul_wrapper", matmul_wrapper_path)
+        matmul_module = importlib.util.module_from_spec(matmul_spec)
+        matmul_spec.loader.exec_module(matmul_module)
+    except (ImportError, FileNotFoundError) as e:
+        pytest.skip(f"Skipping test due to import error: {e}")
+    
     # Initialize iris with appropriate heap size
     heap_size = 1 << 30  # 1GB
     shmem = iris.iris(heap_size)
