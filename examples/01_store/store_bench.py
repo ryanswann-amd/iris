@@ -85,12 +85,20 @@ def parse_args():
     return vars(parser.parse_args())
 
 
-def run_experiment(shmem, args, source_rank, destination_rank, buffer):
-    dtype = torch_dtype_from_str(args["datatype"])
+def bench_store(
+    shmem,
+    source_rank,
+    destination_rank,
+    buffer,
+    BLOCK_SIZE,
+    dtype,
+    verbose=False,
+    validate=False,
+    num_experiments=1,
+    num_warmup=0,
+):
     cur_rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
-
-    # Allocate source and destination buffers on the symmetric heap
 
     if source_rank >= world_size:
         raise ValueError(
@@ -101,29 +109,27 @@ def run_experiment(shmem, args, source_rank, destination_rank, buffer):
             f"Destination rank must be less than or equal to the world size. World size is {world_size} and destination rank is {destination_rank}."
         )
     if cur_rank == 0:
-        if args["verbose"]:
+        if verbose:
             shmem.info(f"Measuring bandwidth between the ranks {source_rank} and {destination_rank}...")
     n_elements = buffer.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
 
-    def run_experiment():
+    def run_store():
         if cur_rank == source_rank:
-            kk = store_kernel[grid](
+            store_kernel[grid](
                 buffer,
                 n_elements,
                 source_rank,
                 destination_rank,
-                args["block_size"],
+                BLOCK_SIZE,
                 shmem.get_heap_bases(),
             )
 
     # Warmup
-    run_experiment()
+    run_store()
     shmem.barrier()
 
-    triton_ms = iris.do_bench(
-        run_experiment, shmem.barrier, n_repeat=args["num_experiments"], n_warmup=args["num_warmup"]
-    )
+    triton_ms = iris.do_bench(run_store, shmem.barrier, n_repeat=num_experiments, n_warmup=num_warmup)
 
     bandwidth_gbps = 0
     if cur_rank == source_rank:
@@ -131,15 +137,15 @@ def run_experiment(shmem, args, source_rank, destination_rank, buffer):
         element_size_bytes = torch.tensor([], dtype=dtype).element_size()
         total_bytes = n_elements * element_size_bytes
         bandwidth_gbps = total_bytes / triton_sec / 2**30
-        if args["verbose"]:
+        if verbose:
             shmem.info(f"Copied {total_bytes / 2**30:.2f} GiB in {triton_sec:.4f} seconds")
             shmem.info(f"Bandwidth between {source_rank} and {destination_rank} is {bandwidth_gbps:.4f} GiB/s")
     shmem.barrier()
     bandwidth_gbps = shmem.broadcast(bandwidth_gbps, source_rank)
 
     success = True
-    if args["validate"] and cur_rank == destination_rank:
-        if args["verbose"]:
+    if validate and cur_rank == destination_rank:
+        if verbose:
             shmem.info("Validating output...")
 
         expected = torch.arange(n_elements, dtype=dtype, device="cuda")
@@ -157,13 +163,30 @@ def run_experiment(shmem, args, source_rank, destination_rank, buffer):
                 success = False
                 break
 
-        if success and args["verbose"]:
+        if success and verbose:
             shmem.info("Validation successful.")
-        if not success and args["verbose"]:
+        if not success and verbose:
             shmem.error("Validation failed.")
 
     shmem.barrier()
     return bandwidth_gbps
+
+
+def run_experiment(shmem, args, source_rank, destination_rank, buffer):
+    dtype = torch_dtype_from_str(args["datatype"])
+
+    return bench_store(
+        shmem,
+        source_rank,
+        destination_rank,
+        buffer,
+        args["block_size"],
+        dtype,
+        verbose=args["verbose"],
+        validate=args["validate"],
+        num_experiments=args["num_experiments"],
+        num_warmup=args["num_warmup"],
+    )
 
 
 def print_bandwidth_matrix(matrix, label="Unidirectional STORE bandwidth GiB/s [Remote write]", output_file=None):
