@@ -7,9 +7,15 @@ import torch
 import iris
 
 import importlib.util
+import sys
 from pathlib import Path
 
 current_dir = Path(__file__).parent
+
+# Add the repository root to Python path so relative imports work
+repo_root = current_dir.parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 # Import the matmul wrapper
 matmul_path = (current_dir / "../../examples/07_gemm_all_scatter/matmul_wrapper.py").resolve()
