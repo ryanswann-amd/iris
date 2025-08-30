@@ -3,9 +3,9 @@ SPDX-License-Identifier: MIT
 Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 -->
 
-# Load benchmark
+# Atomic Add benchmark
 
-Load benchmark using Iris.
+Atomic Add benchmark using Iris.
 
 ## Usage
 
@@ -25,3 +25,13 @@ GPU 05  ->     15.59     15.49     15.24     15.50     15.57    773.01     15.67
 GPU 06  ->     15.41     15.41     15.15     15.06     15.50     15.67    778.30     15.58
 GPU 07  ->     15.22     15.33     15.07     15.06     15.66     15.54     15.56    765.45
 ```
+
+## Testing
+
+The benchmark can be tested using pytest:
+
+```terminal
+pytest tests/examples/test_atomic_add_bench.py
+```
+
+This will run parametrized tests across different data types (int8, fp16, bf16, fp32), buffer sizes, and block sizes to ensure the atomic add functionality works correctly.
