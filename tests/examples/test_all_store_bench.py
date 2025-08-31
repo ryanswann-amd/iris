@@ -54,7 +54,7 @@ def test_all_store_bench(dtype, buffer_size, heap_size, block_size):
     # Simple test similar to load_bench - just test the kernel functionality
     # without the complex benchmarking infrastructure
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
-    
+
     # Test all_store_kernel directly, similar to how load_bench tests the load_kernel
     if cur_rank < min(num_ranks, 8):  # Only test with a reasonable number of ranks
         module.all_store_kernel[grid](
