@@ -48,7 +48,7 @@ def test_atomic_add_bench(dtype, buffer_size, heap_size, block_size):
 
     bandwidth_matrix = np.zeros((num_ranks, num_ranks), dtype=np.float32)
     element_size_bytes = torch.tensor([], dtype=dtype).element_size()
-    source_buffer = shmem.arange(buffer_size // element_size_bytes, dtype=dtype)
+    source_buffer = shmem.ones(buffer_size // element_size_bytes, dtype=dtype)
     result_buffer = shmem.zeros_like(source_buffer)
 
     shmem.barrier()
