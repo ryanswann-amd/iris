@@ -45,7 +45,8 @@ def torch_dtype_from_str(datatype: str) -> torch.dtype:
     dtype_map = {
         "fp16": torch.float16,
         "fp32": torch.float32,
-        "int8": torch.int8,
+        "int32": torch.int32,
+        "int64": torch.int64,
         "bf16": torch.bfloat16,
     }
     try:
@@ -65,7 +66,7 @@ def parse_args():
         "--datatype",
         type=str,
         default="fp16",
-        choices=["fp16", "fp32", "int8", "bf16"],
+        choices=["fp16", "fp32", "int32", "int64", "bf16"],
         help="Datatype of computation",
     )
     parser.add_argument("-z", "--buffer_size", type=int, default=1 << 32, help="Buffer Size")
@@ -100,7 +101,8 @@ def bench_atomic_add(
     """
     # Convert dtype to string for args dict
     dtype_str_map = {
-        torch.int8: "int8",
+        torch.int32: "int32",
+        torch.int64: "int64",
         torch.float16: "fp16",
         torch.bfloat16: "bf16",
         torch.float32: "fp32",
