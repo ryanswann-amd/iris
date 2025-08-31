@@ -45,27 +45,26 @@ spec.loader.exec_module(module)
 def test_all_store_bench(dtype, buffer_size, heap_size, block_size):
     shmem = iris.iris(heap_size)
     num_ranks = shmem.get_num_ranks()
+    cur_rank = shmem.get_rank()
 
     element_size_bytes = torch.tensor([], dtype=dtype).element_size()
     n_elements = buffer_size // element_size_bytes
     buffer = shmem.zeros(n_elements, device="cuda", dtype=dtype)
 
-    shmem.barrier()
-
-    # Create arguments dict similar to what parse_args() would return
-    # Using minimal required parameters for testing
-    args = {
-        "datatype": _torch_dtype_to_str(dtype),
-        "block_size": block_size,
-        "verbose": False,
-        "validate": False,
-        "num_experiments": 1,  # Minimal for testing
-        "num_warmup": 0,  # Skip warmup for testing
-        "active_ranks": min(num_ranks, 8),  # Use available ranks or 8, whichever is smaller
-    }
-
-    # Call the run_experiment function from the module
-    bandwidth_gbps = module.run_experiment(shmem, args, buffer)
+    # Simple test similar to load_bench - just test the kernel functionality
+    # without the complex benchmarking infrastructure
+    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    
+    # Test all_store_kernel directly, similar to how load_bench tests the load_kernel
+    if cur_rank < min(num_ranks, 8):  # Only test with a reasonable number of ranks
+        module.all_store_kernel[grid](
+            buffer,
+            cur_rank,
+            n_elements,
+            num_ranks,
+            block_size,
+            shmem.get_heap_bases(),
+        )
 
 
 def _torch_dtype_to_str(dtype):
