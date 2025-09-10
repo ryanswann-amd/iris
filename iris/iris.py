@@ -1361,7 +1361,7 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
 
 
 @triton.jit
-def load(pointer, to_rank, from_rank, heap_bases, mask=None, cache_modifier='', volatile=False):
+def load(pointer, to_rank, from_rank, heap_bases, mask=None, cache_modifier="", volatile=False):
     """
     Loads a value from the specified rank's memory location.
 
@@ -1402,7 +1402,7 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None, cache_modifier='', 
 
 
 @triton.jit
-def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modifier='', volatile=False):
+def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modifier="", volatile=False):
     """
     Writes data to the specified rank's memory location.
 

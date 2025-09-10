@@ -8,7 +8,6 @@ import pytest
 import iris
 
 
-
 @triton.jit
 def load_kernel_default(
     data,
@@ -30,13 +29,7 @@ def load_kernel_default(
     # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
     result = iris.load(
-        data + offsets,
-        source_rank,
-        partner,
-        heap_bases,
-        mask=mask,
-        cache_modifier=cache_modifier,
-        volatile=volatile
+        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=cache_modifier, volatile=volatile
     )
     tl.store(results + offsets, result, mask=mask)
 
@@ -61,13 +54,7 @@ def load_kernel_writeback(
     # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
     result = iris.load(
-        data + offsets,
-        source_rank,
-        partner,
-        heap_bases,
-        mask=mask,
-        cache_modifier=".wb",
-        volatile=volatile
+        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=".wb", volatile=volatile
     )
     tl.store(results + offsets, result, mask=mask)
 
@@ -92,13 +79,7 @@ def load_kernel_cache_global(
     # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
     result = iris.load(
-        data + offsets,
-        source_rank,
-        partner,
-        heap_bases,
-        mask=mask,
-        cache_modifier=".cg",
-        volatile=volatile
+        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=".cg", volatile=volatile
     )
     tl.store(results + offsets, result, mask=mask)
 
@@ -123,13 +104,7 @@ def load_kernel_cache_streaming(
     # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
     result = iris.load(
-        data + offsets,
-        source_rank,
-        partner,
-        heap_bases,
-        mask=mask,
-        cache_modifier=".cs",
-        volatile=volatile
+        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=".cs", volatile=volatile
     )
     tl.store(results + offsets, result, mask=mask)
 
@@ -154,13 +129,7 @@ def load_kernel_write_through(
     # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
     result = iris.load(
-        data + offsets,
-        source_rank,
-        partner,
-        heap_bases,
-        mask=mask,
-        cache_modifier=".wt",
-        volatile=volatile
+        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=".wt", volatile=volatile
     )
     tl.store(results + offsets, result, mask=mask)
 
@@ -188,7 +157,7 @@ def test_load_default_cache():
         BLOCK_SIZE,
         heap_bases,
         iris.cache_default,  # cache_modifier=cache_default (3)
-        False  # volatile=False
+        False,  # volatile=False
     )
     shmem.barrier()
 
@@ -219,7 +188,7 @@ def test_load_writeback_cache():
         num_ranks,
         BLOCK_SIZE,
         heap_bases,
-        False  # volatile=False
+        False,  # volatile=False
     )
     shmem.barrier()
 
@@ -250,7 +219,7 @@ def test_load_cache_global():
         num_ranks,
         BLOCK_SIZE,
         heap_bases,
-        False  # volatile=False
+        False,  # volatile=False
     )
     shmem.barrier()
 
@@ -281,7 +250,7 @@ def test_load_cache_streaming():
         num_ranks,
         BLOCK_SIZE,
         heap_bases,
-        False  # volatile=False
+        False,  # volatile=False
     )
     shmem.barrier()
 
@@ -312,7 +281,7 @@ def test_load_write_through():
         num_ranks,
         BLOCK_SIZE,
         heap_bases,
-        False  # volatile=False
+        False,  # volatile=False
     )
     shmem.barrier()
 
@@ -343,7 +312,7 @@ def test_load_volatile():
         num_ranks,
         BLOCK_SIZE,
         heap_bases,
-        True  # volatile=True
+        True,  # volatile=True
     )
     shmem.barrier()
 
@@ -354,8 +323,8 @@ def test_load_volatile():
 
 if __name__ == "__main__":
     test_load_default_cache()
-    #test_load_writeback_cache()
-    #test_load_cache_global()
-    #test_load_cache_streaming()
-    #test_load_write_through()
-    #test_load_volatile()
+    # test_load_writeback_cache()
+    # test_load_cache_global()
+    # test_load_cache_streaming()
+    # test_load_write_through()
+    # test_load_volatile()
