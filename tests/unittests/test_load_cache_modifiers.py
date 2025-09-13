@@ -35,15 +35,12 @@ def load_kernel_default(
     tl.store(results + offsets, result, mask=mask)
 
 
-
-
 # Define cache modifiers and volatile options
 CACHE_MODIFIERS = ["", ".ca", ".cg", ".cv"]
 VOLATILE_OPTIONS = [False, True]
 
-@pytest.mark.parametrize("cache_modifier,volatile",
-    list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS))
-)
+
+@pytest.mark.parametrize("cache_modifier,volatile", list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS)))
 def test_load_cache_modifiers(cache_modifier, volatile):
     """Test load with various cache modifiers and volatile settings."""
     shmem = iris.iris(1 << 20)
