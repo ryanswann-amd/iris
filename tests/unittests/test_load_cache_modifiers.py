@@ -29,12 +29,16 @@ def load_kernel_default(
     mask = offsets < BLOCK_SIZE
 
     if cache_modifier is None:
-        result = iris.load(
-            data + offsets, source_rank, partner, heap_bases, mask=mask, volatile=volatile
-        )
+        result = iris.load(data + offsets, source_rank, partner, heap_bases, mask=mask, volatile=volatile)
     else:
         result = iris.load(
-            data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=cache_modifier, volatile=volatile
+            data + offsets,
+            source_rank,
+            partner,
+            heap_bases,
+            mask=mask,
+            cache_modifier=cache_modifier,
+            volatile=volatile,
         )
 
     tl.store(results + offsets, result, mask=mask)
@@ -44,9 +48,8 @@ def load_kernel_default(
 CACHE_MODIFIERS = [None, "", ".ca", ".cg", ".cv"]
 VOLATILE_OPTIONS = [False, True]
 
-@pytest.mark.parametrize("cache_modifier,volatile",
-    list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS))
-)
+
+@pytest.mark.parametrize("cache_modifier,volatile", list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS)))
 def test_load_cache_modifiers(cache_modifier, volatile):
     """Test load with various cache modifiers and volatile settings."""
     shmem = iris.iris(1 << 20)
@@ -79,4 +82,3 @@ def test_load_cache_modifiers(cache_modifier, volatile):
     # Verify the result
     expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * partner
     torch.testing.assert_close(results, expected, rtol=0, atol=0)
-
