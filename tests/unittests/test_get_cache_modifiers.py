@@ -31,8 +31,29 @@ def get_kernel(
     mask = offsets < BLOCK_SIZE
 
     # Copy data from partner rank using get with cache modifiers
+    # We test default values set by the function when parameters are None
     if load_cache_modifier is None and store_cache_modifier is None:
         iris.get(data + offsets, results + offsets, partner, source_rank, heap_bases, mask=mask)
+    elif load_cache_modifier is None:
+        iris.get(
+            data + offsets,
+            results + offsets,
+            partner,
+            source_rank,
+            heap_bases,
+            mask=mask,
+            store_cache_modifier=store_cache_modifier,
+        )
+    elif store_cache_modifier is None:
+        iris.get(
+            data + offsets,
+            results + offsets,
+            partner,
+            source_rank,
+            heap_bases,
+            mask=mask,
+            load_cache_modifier=load_cache_modifier,
+        )
     else:
         iris.get(
             data + offsets,
