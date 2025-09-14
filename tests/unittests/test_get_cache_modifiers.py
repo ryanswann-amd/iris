@@ -55,7 +55,7 @@ def get_kernel(
         else:
             iris.get(
                 data + offsets,
-            results + offsets,
+                results + offsets,
                 cur_rank,
                 target_rank,
                 heap_bases,
