@@ -54,7 +54,9 @@ LOAD_CACHE_MODIFIERS = [None, "", ".ca", ".cg", ".cv"]
 STORE_CACHE_MODIFIERS = [None, "", ".wb", ".cg", ".cs", ".wt"]
 
 
-@pytest.mark.parametrize("load_cache_modifier,store_cache_modifier", list(product(LOAD_CACHE_MODIFIERS, STORE_CACHE_MODIFIERS)))
+@pytest.mark.parametrize(
+    "load_cache_modifier,store_cache_modifier", list(product(LOAD_CACHE_MODIFIERS, STORE_CACHE_MODIFIERS))
+)
 def test_put_cache_modifiers(load_cache_modifier, store_cache_modifier):
     """Test put (copy to other rank) with various cache modifiers."""
     shmem = iris.iris(1 << 20)
@@ -70,7 +72,9 @@ def test_put_cache_modifiers(load_cache_modifier, store_cache_modifier):
     shmem.barrier()
 
     grid = lambda meta: (1,)
-    put_kernel[grid](data, results, source_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier)
+    put_kernel[grid](
+        data, results, source_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier
+    )
     shmem.barrier()
 
     # Verify the result - each rank should have its own data
@@ -79,10 +83,10 @@ def test_put_cache_modifiers(load_cache_modifier, store_cache_modifier):
     try:
         torch.testing.assert_close(results, expected, rtol=0, atol=0)
     except AssertionError as e:
-        print(f"PUT test failed with load_cache_modifier={load_cache_modifier}, store_cache_modifier={store_cache_modifier}")
+        print(
+            f"PUT test failed with load_cache_modifier={load_cache_modifier}, store_cache_modifier={store_cache_modifier}"
+        )
         print(e)
         print("Expected:", expected)
         print("Actual:", results)
         raise
-
-

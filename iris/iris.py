@@ -1560,7 +1560,9 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modif
 
 
 @triton.jit
-def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None):
+def get(
+    from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None
+):
     """
     Copies data from the specified rank's memory to the current rank's local memory.
 
@@ -1608,7 +1610,9 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_
 
 
 @triton.jit
-def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None):
+def put(
+    from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None
+):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
     This function performs a memory write operation by loading data from the current
