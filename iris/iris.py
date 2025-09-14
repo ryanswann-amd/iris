@@ -1487,7 +1487,7 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None, cache_modifier=None
         cache_modifier (str, optional): Controls cache behavior of the load.
 
             Supported values:
-                - "": Default behavior. Behaves the same as .ca (cache at all levels (CU, L2, LLC) with LRU policy)
+                - None: *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
                 - ".ca": Cache at all levels (CU, L2, LLC) with LRU policy
                 - ".cg": Bypasses the CU (L1) cache, streams through L2, and may hit in LLC but the line is not retained or inserted.
                 - ".cv": Bypasses all GPU caches (CU and L2) and fetches directly from system memory. If data exists in the LLC, it may hit, but is not retained or inserted.
@@ -1537,7 +1537,7 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modif
         mask (Block of triton.int1, optional): If mask[idx] is false, do not store the data at address pointer[idx]. Defaults to None.
         cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
 
-            - "": *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
+            - None: *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
             - ".wb": Write-back. Write-allocate on L1 miss, inserted into caches and written back later.
             - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
             - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
@@ -1580,13 +1580,13 @@ def get(
         mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
 
         load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
-            - "": *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
+            - None: *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
             - ".ca": Cache at all levels (CU, L2, LLC) with LRU policy.
             - ".cg": Bypasses the CU (L1) cache, streams through L2, and may hit in LLC but the line is not retained or inserted.
             - ".cv": Bypasses all GPU caches (CU and L2) and fetches directly from system memory. If data exists in the LLC, it may hit, but is not retained or inserted.
 
         store_cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
-            - "": *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
+            - None: *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
             - ".wb": Write-back. Write-allocate on L1 miss, inserted into caches and written back later.
             - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
             - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
@@ -1629,13 +1629,13 @@ def put(
         mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
 
         load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
-            - "": *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
+            - None: *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
             - ".ca": Cache at all levels (CU, L2, LLC) with LRU policy.
             - ".cg": Bypasses the CU (L1) cache, streams through L2, and may hit in LLC but the line is not retained or inserted.
             - ".cv": Bypasses all GPU caches (CU and L2) and fetches directly from system memory. If data exists in the LLC, it may hit, but is not retained or inserted.
 
         store_cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
-            - "": *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
+            - None: *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
             - ".wb": Write-back. Write-allocate on L1 miss, inserted into caches and written back later.
             - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
             - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
