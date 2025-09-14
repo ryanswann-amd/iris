@@ -34,7 +34,15 @@ def kernel(
         if cache_modifier is None:
             iris.store(results + offsets, value, destination_rank, dst_rank, heap_bases, mask=mask)
         else:
-            iris.store(results + offsets, value, destination_rank, dst_rank, heap_bases, mask=mask, cache_modifier=cache_modifier)
+            iris.store(
+                results + offsets,
+                value,
+                destination_rank,
+                dst_rank,
+                heap_bases,
+                mask=mask,
+                cache_modifier=cache_modifier,
+            )
 
 
 # Define cache modifiers for store operations
