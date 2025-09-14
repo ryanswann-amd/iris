@@ -10,7 +10,7 @@ from itertools import product
 
 
 @triton.jit
-def load_kernel_default(
+def kernel(
     data,
     results,
     source_rank: tl.constexpr,
@@ -23,9 +23,11 @@ def load_kernel_default(
     pid = tl.program_id(0)
 
     partner = int((source_rank + num_ranks // 2) % num_ranks)
+    # Compute start index of this block
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
 
+    # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
 
     if cache_modifier is None:
@@ -65,20 +67,16 @@ def test_load_cache_modifiers(cache_modifier, volatile):
     shmem.barrier()
 
     grid = lambda meta: (1,)
-
-    load_kernel_default[grid](
-        data,
-        results,
-        source_rank,
-        num_ranks,
-        BLOCK_SIZE,
-        heap_bases,
-        cache_modifier,
-        volatile,
-    )
-
+    kernel[grid](data, results, source_rank, num_ranks, BLOCK_SIZE, heap_bases, cache_modifier, volatile)
     shmem.barrier()
 
     # Verify the result
     expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * partner
-    torch.testing.assert_close(results, expected, rtol=0, atol=0)
+
+    try:
+        torch.testing.assert_close(results, expected, rtol=0, atol=0)
+    except AssertionError as e:
+        print(e)
+        print("Expected:", expected)
+        print("Actual:", results)
+        raise
