@@ -1560,7 +1560,7 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modif
 
 
 @triton.jit
-def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
+def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None):
     """
     Copies data from the specified rank's memory to the current rank's local memory.
 
@@ -1577,6 +1577,19 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
         heap_bases (triton.PointerType): Array containing the heap base addresses for all ranks.
         mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
 
+        load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
+            - "": *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
+            - ".ca": Cache at all levels (CU, L2, LLC) with LRU policy.
+            - ".cg": Bypasses the CU (L1) cache, streams through L2, and may hit in LLC but the line is not retained or inserted.
+            - ".cv": Bypasses all GPU caches (CU and L2) and fetches directly from system memory. If data exists in the LLC, it may hit, but is not retained or inserted.
+
+        store_cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
+            - "": *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
+            - ".wb": Write-back. Write-allocate on L1 miss, inserted into caches and written back later.
+            - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
+            - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
+            - ".wt": Write-Through. Bypasses L1 and L2 (coherent cache bypass), may hit in LLC with LRU.
+
     Returns:
         None
 
@@ -1589,13 +1602,13 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
     """
     translated_from_ptr = __translate(from_ptr, from_rank, to_rank, heap_bases)
 
-    data = tl.load(translated_from_ptr, mask=mask)
+    data = tl.load(translated_from_ptr, mask=mask, cache_modifier=load_cache_modifier)
 
-    tl.store(to_ptr, data, mask=mask)
+    tl.store(to_ptr, data, mask=mask, cache_modifier=store_cache_modifier)
 
 
 @triton.jit
-def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
+def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None, load_cache_modifier=None, store_cache_modifier=None):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
     This function performs a memory write operation by loading data from the current
@@ -1611,6 +1624,19 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
         heap_bases (triton.PointerType): Array containing the heap base addresses for all ranks.
         mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
 
+        load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
+            - "": *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
+            - ".ca": Cache at all levels (CU, L2, LLC) with LRU policy.
+            - ".cg": Bypasses the CU (L1) cache, streams through L2, and may hit in LLC but the line is not retained or inserted.
+            - ".cv": Bypasses all GPU caches (CU and L2) and fetches directly from system memory. If data exists in the LLC, it may hit, but is not retained or inserted.
+
+        store_cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
+            - "": *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
+            - ".wb": Write-back. Write-allocate on L1 miss, inserted into caches and written back later.
+            - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
+            - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
+            - ".wt": Write-Through. Bypasses L1 and L2 (coherent cache bypass), may hit in LLC with LRU.
+
     Returns:
         None
 
@@ -1623,9 +1649,9 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
     """
     translated_to_ptr = __translate(to_ptr, from_rank, to_rank, heap_bases)
 
-    data = tl.load(from_ptr, mask=mask)
+    data = tl.load(from_ptr, mask=mask, cache_modifier=load_cache_modifier)
 
-    tl.store(translated_to_ptr, data, mask=mask)
+    tl.store(translated_to_ptr, data, mask=mask, cache_modifier=store_cache_modifier)
 
 
 @triton.jit
