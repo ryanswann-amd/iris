@@ -6,7 +6,6 @@ import triton
 import triton.language as tl
 import pytest
 import iris
-from itertools import product
 
 
 @triton.jit

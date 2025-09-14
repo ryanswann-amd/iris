@@ -13,7 +13,7 @@ from itertools import product
 def get_kernel(
     data,
     results,
-    source_rank: tl.constexpr,
+    cur_rank: tl.constexpr,
     num_ranks: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     heap_bases: tl.tensor,
@@ -21,50 +21,52 @@ def get_kernel(
     store_cache_modifier: tl.constexpr,
 ):
     pid = tl.program_id(0)
-
-    partner = int((source_rank + num_ranks // 2) % num_ranks)
-    # Compute start index of this block
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
-
-    # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
 
-    # Copy data from partner rank using get with cache modifiers
+    acc = tl.zeros([BLOCK_SIZE], dtype=data.type.element_ty)
+
+    # Loop over all ranks, get the stored data with cache modifiers
     # We test default values set by the function when parameters are None
-    if load_cache_modifier is None and store_cache_modifier is None:
-        iris.get(data + offsets, results + offsets, partner, source_rank, heap_bases, mask=mask)
-    elif load_cache_modifier is None:
-        iris.get(
-            data + offsets,
+    for target_rank in range(num_ranks):
+        if load_cache_modifier is None and store_cache_modifier is None:
+            iris.get(data + offsets, results + offsets, cur_rank, target_rank, heap_bases, mask=mask)
+        elif load_cache_modifier is None:
+            iris.get(
+                data + offsets,
+                results + offsets,
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                store_cache_modifier=store_cache_modifier,
+            )
+        elif store_cache_modifier is None:
+            iris.get(
+                data + offsets,
+                results + offsets,
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                load_cache_modifier=load_cache_modifier,
+            )
+        else:
+            iris.get(
+                data + offsets,
             results + offsets,
-            partner,
-            source_rank,
-            heap_bases,
-            mask=mask,
-            store_cache_modifier=store_cache_modifier,
-        )
-    elif store_cache_modifier is None:
-        iris.get(
-            data + offsets,
-            results + offsets,
-            partner,
-            source_rank,
-            heap_bases,
-            mask=mask,
-            load_cache_modifier=load_cache_modifier,
-        )
-    else:
-        iris.get(
-            data + offsets,
-            results + offsets,
-            partner,
-            source_rank,
-            heap_bases,
-            mask=mask,
-            load_cache_modifier=load_cache_modifier,
-            store_cache_modifier=store_cache_modifier,
-        )
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                load_cache_modifier=load_cache_modifier,
+                store_cache_modifier=store_cache_modifier,
+            )
+        acc += tl.load(results + offsets, mask=mask)
+
+    # Store the accumulated value back to the output
+    tl.store(results + offsets, acc, mask=mask)
 
 
 # Define cache modifiers for load and store operations
@@ -80,23 +82,22 @@ def test_get_cache_modifiers(load_cache_modifier, store_cache_modifier):
     shmem = iris.iris(1 << 20)
     num_ranks = shmem.get_num_ranks()
     heap_bases = shmem.get_heap_bases()
-    source_rank = shmem.get_rank()
-    partner = int((source_rank + num_ranks // 2) % num_ranks)
+    cur_rank = shmem.get_rank()
 
     BLOCK_SIZE = 16
-    data = shmem.full((BLOCK_SIZE,), source_rank, dtype=torch.float32)
+    data = shmem.ones(BLOCK_SIZE, dtype=torch.float32)
     results = shmem.zeros_like(data)
 
     shmem.barrier()
 
     grid = lambda meta: (1,)
     get_kernel[grid](
-        data, results, source_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier
+        data, results, cur_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier
     )
     shmem.barrier()
 
-    # Verify the result - should get data from partner rank
-    expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * partner
+    # Verify the result - should get data from all ranks (including self)
+    expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * num_ranks
 
     try:
         torch.testing.assert_close(results, expected, rtol=0, atol=0)

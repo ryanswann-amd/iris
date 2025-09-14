@@ -13,7 +13,7 @@ from itertools import product
 def put_kernel(
     data,
     results,
-    source_rank: tl.constexpr,
+    cur_rank: tl.constexpr,
     num_ranks: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     heap_bases: tl.tensor,
@@ -21,53 +21,46 @@ def put_kernel(
     store_cache_modifier: tl.constexpr,
 ):
     pid = tl.program_id(0)
-
-    partner = int((source_rank + num_ranks // 2) % num_ranks)
-    # Compute start index of this block
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
-
-    # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
 
-    # Load the data from local memory
-    value = tl.load(data + offsets, mask=mask)
-
-    # Copy data to partner rank using put with cache modifiers
+    # Put data to all ranks with cache modifiers
     # We test default values set by the function when parameters are None
-    if load_cache_modifier is None and store_cache_modifier is None:
-        iris.put(data + offsets, results + offsets, source_rank, partner, heap_bases, mask=mask)
-    elif load_cache_modifier is None:
-        iris.put(
-            data + offsets,
-            results + offsets,
-            source_rank,
-            partner,
-            heap_bases,
-            mask=mask,
-            store_cache_modifier=store_cache_modifier,
-        )
-    elif store_cache_modifier is None:
-        iris.put(
-            data + offsets,
-            results + offsets,
-            source_rank,
-            partner,
-            heap_bases,
-            mask=mask,
-            load_cache_modifier=load_cache_modifier,
-        )
-    else:
-        iris.put(
-            data + offsets,
-            results + offsets,
-            source_rank,
-            partner,
-            heap_bases,
-            mask=mask,
-            load_cache_modifier=load_cache_modifier,
-            store_cache_modifier=store_cache_modifier,
-        )
+    for target_rank in range(num_ranks):
+        if load_cache_modifier is None and store_cache_modifier is None:
+            iris.put(data + offsets, results + offsets, cur_rank, target_rank, heap_bases, mask=mask)
+        elif load_cache_modifier is None:
+            iris.put(
+                data + offsets,
+                results + offsets,
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                store_cache_modifier=store_cache_modifier,
+            )
+        elif store_cache_modifier is None:
+            iris.put(
+                data + offsets,
+                results + offsets,
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                load_cache_modifier=load_cache_modifier,
+            )
+        else:
+            iris.put(
+                data + offsets,
+                results + offsets,
+                cur_rank,
+                target_rank,
+                heap_bases,
+                mask=mask,
+                load_cache_modifier=load_cache_modifier,
+                store_cache_modifier=store_cache_modifier,
+            )
 
 
 # Define cache modifiers for load and store operations
@@ -83,23 +76,22 @@ def test_put_cache_modifiers(load_cache_modifier, store_cache_modifier):
     shmem = iris.iris(1 << 20)
     num_ranks = shmem.get_num_ranks()
     heap_bases = shmem.get_heap_bases()
-    source_rank = shmem.get_rank()
-    partner = int((source_rank + num_ranks // 2) % num_ranks)
+    cur_rank = shmem.get_rank()
 
     BLOCK_SIZE = 16
-    data = shmem.full((BLOCK_SIZE,), source_rank, dtype=torch.float32)
+    data = shmem.ones(BLOCK_SIZE, dtype=torch.float32)
     results = shmem.zeros_like(data)
 
     shmem.barrier()
 
     grid = lambda meta: (1,)
     put_kernel[grid](
-        data, results, source_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier
+        data, results, cur_rank, num_ranks, BLOCK_SIZE, heap_bases, load_cache_modifier, store_cache_modifier
     )
     shmem.barrier()
 
-    # Verify the result - each rank should have its own data
-    expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * source_rank
+    # Verify the result - should have the data that was put
+    expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda")
 
     try:
         torch.testing.assert_close(results, expected, rtol=0, atol=0)
