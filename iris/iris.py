@@ -1514,7 +1514,7 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None, cache_modifier=None
 
 
 @triton.jit
-def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modifier=None, volatile=False):
+def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modifier=None):
     """
     Writes data to the specified rank's memory location.
 
@@ -1543,9 +1543,6 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modif
             - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
             - ".wt": Write-Through. Bypasses L1 and L2 (coherent cache bypass), may hit in LLC with LRU.
 
-        volatile (bool, optional): If True, disables compiler optimizations that
-            could reorder or eliminate the store.
-
     Returns:
         None
 
@@ -1559,7 +1556,7 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, cache_modif
         >>>     iris.store(ptr, value, cur_rank, remote_rank, heap_bases)
     """
     translated_ptr = __translate(pointer, from_rank, to_rank, heap_bases)
-    tl.store(translated_ptr, value, mask=mask, cache_modifier=cache_modifier, volatile=volatile)
+    tl.store(translated_ptr, value, mask=mask, cache_modifier=cache_modifier)
 
 
 @triton.jit
