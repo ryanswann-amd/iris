@@ -23,24 +23,30 @@ def load_kernel_default(
     pid = tl.program_id(0)
 
     partner = int((source_rank + num_ranks // 2) % num_ranks)
-    # Compute start index of this block
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
 
-    # Guard for out-of-bounds accesses
     mask = offsets < BLOCK_SIZE
-    result = iris.load(
-        data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=cache_modifier, volatile=volatile
-    )
+
+    if cache_modifier is None:
+        result = iris.load(
+            data + offsets, source_rank, partner, heap_bases, mask=mask, volatile=volatile
+        )
+    else:
+        result = iris.load(
+            data + offsets, source_rank, partner, heap_bases, mask=mask, cache_modifier=cache_modifier, volatile=volatile
+        )
+
     tl.store(results + offsets, result, mask=mask)
 
 
 # Define cache modifiers and volatile options
-CACHE_MODIFIERS = ["", ".ca", ".cg", ".cv"]
+CACHE_MODIFIERS = [None, "", ".ca", ".cg", ".cv"]
 VOLATILE_OPTIONS = [False, True]
 
-
-@pytest.mark.parametrize("cache_modifier,volatile", list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS)))
+@pytest.mark.parametrize("cache_modifier,volatile",
+    list(product(CACHE_MODIFIERS, VOLATILE_OPTIONS))
+)
 def test_load_cache_modifiers(cache_modifier, volatile):
     """Test load with various cache modifiers and volatile settings."""
     shmem = iris.iris(1 << 20)
@@ -74,7 +80,3 @@ def test_load_cache_modifiers(cache_modifier, volatile):
     expected = torch.ones(BLOCK_SIZE, dtype=torch.float32, device="cuda") * partner
     torch.testing.assert_close(results, expected, rtol=0, atol=0)
 
-
-if __name__ == "__main__":
-    # Run all parameterized test cases
-    pytest.main([__file__, "-v"])
