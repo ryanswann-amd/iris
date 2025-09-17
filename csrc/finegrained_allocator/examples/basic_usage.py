@@ -59,7 +59,7 @@ def main():
 
     end_time = time.time()
     print(f"100 allocations/deallocations took: {end_time - start_time:.3f} seconds")
-    
+
     # Don't call clear_all() for now to avoid segfault
     print("\nDone!")
 
