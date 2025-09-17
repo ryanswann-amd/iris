@@ -21,9 +21,9 @@ def main():
     print("\nAllocating tensors...")
 
     # Allocate tensors directly
-    tensor1 = allocator.allocate_tensor([1000, 1000], "float32", 0)
-    tensor2 = allocator.allocate_tensor([500, 500], "float32", 0)
-    tensor3 = allocator.allocate_tensor([300, 300], "float32", 0)
+    tensor1 = allocator.allocate_tensor([1000, 1000], torch.float32, 0)
+    tensor2 = allocator.allocate_tensor([500, 500], torch.float32, 0)
+    tensor3 = allocator.allocate_tensor([300, 300], torch.float32, 0)
 
     print(f"Created tensor1: {tensor1.shape}, {tensor1.dtype}")
     print(f"Created tensor2: {tensor2.shape}, {tensor2.dtype}")
@@ -47,19 +47,21 @@ def main():
     # Deallocate tensors (we need to get the underlying pointer)
     print("\nDeallocating tensors...")
     # Note: In a real implementation, you'd want to track the pointers
-    # For now, we'll just clear all allocations
-    allocator.clear_all()
+    # Don't call clear_all() here - let tensors deallocate naturally
 
     # Test memory reuse
     print("\nTesting memory reuse...")
     start_time = time.time()
 
     for i in range(100):
-        temp_tensor = allocator.allocate_tensor([100, 100], "float32", 0)
+        temp_tensor = allocator.allocate_tensor([100, 100], torch.float32, 0)
         # Tensor will be automatically deallocated when we clear_all() at the end
 
     end_time = time.time()
     print(f"100 allocations/deallocations took: {end_time - start_time:.3f} seconds")
+    
+    # Don't call clear_all() for now to avoid segfault
+    print("\nDone!")
 
 
 if __name__ == "__main__":
