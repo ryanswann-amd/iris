@@ -7,9 +7,12 @@ import os
 enable_debug = os.environ.get("DEBUG", "0") == "1"
 
 cxx_args = [
-    "-O3", "-fPIC", "-std=c++17",
+    "-O3",
+    "-fPIC",
+    "-std=c++17",
     "-D__HIP_PLATFORM_AMD__",
-    "-Wall", "-Wextra",
+    "-Wall",
+    "-Wextra",
 ]
 hipcc_args = [
     "-O3",
