@@ -7,6 +7,7 @@ import warnings
 
 from fused_helpers import _get_activation_from_str, pid_grid, remap_xcd, _get_config
 
+
 @triton.heuristics(
     {
         "EVEN_K": lambda args: args["K"] % args["BLOCK_SIZE_K"] == 0,
@@ -46,7 +47,6 @@ def _ff_a16w16_fused_ungated_iris(
     activation: tl.constexpr,
     use_activation: tl.constexpr,
 ):
-
     tl.assume(stride_xm > 0)
     tl.assume(stride_xk > 0)
     tl.assume(stride_w1k > 0)
@@ -89,7 +89,12 @@ def _ff_a16w16_fused_ungated_iris(
             w1 = tl.load(w1_ptrs, mask=offs_w1n[None, :] < N, cache_modifier=cache_modifier)
         else:
             x = tl.load(x_ptrs, mask=(offs_xm[:, None] < M) & (offs_k[None, :] < K - k * BLOCK_SIZE_K), other=0.0)
-            w1 = tl.load(w1_ptrs, mask=(offs_k[:, None] < K - k * BLOCK_SIZE_K) & (offs_w1n[None, :] < N), other=0.0, cache_modifier=cache_modifier)
+            w1 = tl.load(
+                w1_ptrs,
+                mask=(offs_k[:, None] < K - k * BLOCK_SIZE_K) & (offs_w1n[None, :] < N),
+                other=0.0,
+                cache_modifier=cache_modifier,
+            )
         acc += tl.dot(x, w1, input_precision="ieee")
         # Advance the ptrs to the next K block.
         x_ptrs += BLOCK_SIZE_K * stride_xk
@@ -113,10 +118,14 @@ def _ff_a16w16_fused_ungated_iris(
         if EVEN_K:
             w2 = tl.load(w2_ptrs, mask=offs_w2n[:, None] < N)
         else:
-            w2 = tl.load(w2_ptrs, mask=(offs_w2n[:, None] < N) & ((offs_k[None, :] + k_cyclic_offset * BLOCK_SIZE_K) < K), other=0.0)
-        
+            w2 = tl.load(
+                w2_ptrs,
+                mask=(offs_w2n[:, None] < N) & ((offs_k[None, :] + k_cyclic_offset * BLOCK_SIZE_K) < K),
+                other=0.0,
+            )
+
         partial_sum_y = tl.dot(acc, w2)
-        
+
         # tl.device_print("w2:", w2)
         # tl.device_print("partial y:", partial_sum_y)
         y_mask = (offs_ym[:, None] < M) & ((offs_k[None, :] + BLOCK_SIZE_K * k) < K)
@@ -124,8 +133,9 @@ def _ff_a16w16_fused_ungated_iris(
         # --- IRIS FUSED ALLREDUCE ---
         # Replaces the original tl.atomic_add with a loop over all GPUs.
         for dest_rank_id in range(0, world_size):
-            iris.atomic_add(y_ptrs, partial_sum_y, my_rank, dest_rank_id,
-                            heap_bases_ptr, mask=y_mask, sem="relaxed", scope="sys")
+            iris.atomic_add(
+                y_ptrs, partial_sum_y, my_rank, dest_rank_id, heap_bases_ptr, mask=y_mask, sem="relaxed", scope="sys"
+            )
         # --- END IRIS MODIFICATION ---
 
         k_cyclic_offset += 1
@@ -137,11 +147,12 @@ def _ff_a16w16_fused_ungated_iris(
             w2_ptrs += BLOCK_SIZE_K * stride_w2k
             y_ptrs += BLOCK_SIZE_K * stride_yk
 
+
 def ff_a16w16_fused_ungated_iris(
     x,
     w_up,
     w_down,
-    iris_instance, # iris context
+    iris_instance,  # iris context
     dtype: Optional[torch.dtype] = torch.bfloat16,
     y: Optional[torch.Tensor] = None,
     config: Optional[dict] = None,
@@ -165,21 +176,17 @@ def ff_a16w16_fused_ungated_iris(
     """
 
     # Shape checks
-    assert (
-        x.shape[1] == w_up.shape[1] == w_down.shape[1]
-    ), f"Incompatible matrix shapes: x:{x.shape}, w_up:{w_up.shape}, w_down:{w_down.shape}"
-    assert (
-        w_up.shape[0] == w_down.shape[0]
-    ), f"Incompatible matrix shapes: w_up:{w_up.shape}, w_down:{w_down.shape}"
-    
+    assert x.shape[1] == w_up.shape[1] == w_down.shape[1], (
+        f"Incompatible matrix shapes: x:{x.shape}, w_up:{w_up.shape}, w_down:{w_down.shape}"
+    )
+    assert w_up.shape[0] == w_down.shape[0], f"Incompatible matrix shapes: w_up:{w_up.shape}, w_down:{w_down.shape}"
+
     # K (hidden_dim) is consistent, N (intermediate_dim) is sharded.
     N_shard, K = w_up.shape
     M = x.shape[0]
-    
+
     if M > 64:
-        warnings.warn(
-            "The fused FF kernel is slower than the unfused equivalent for large batch sizes (>64)."
-        )
+        warnings.warn("The fused FF kernel is slower than the unfused equivalent for large batch sizes (>64).")
 
     w_up = w_up.T
 
@@ -199,12 +206,16 @@ def ff_a16w16_fused_ungated_iris(
         w_down,
         y,
         M,
-        N_shard, # Use the sharded N dimension
+        N_shard,  # Use the sharded N dimension
         K,
-        x.stride(0), x.stride(1),
-        w_up.stride(0), w_up.stride(1),
-        w_down.stride(0), w_down.stride(1),
-        y.stride(0), y.stride(1),
+        x.stride(0),
+        x.stride(1),
+        w_up.stride(0),
+        w_up.stride(1),
+        w_down.stride(0),
+        w_down.stride(1),
+        y.stride(0),
+        y.stride(1),
         # Pass iris arguments to the kernel
         my_rank=iris_instance.get_rank(),
         world_size=iris_instance.get_num_ranks(),

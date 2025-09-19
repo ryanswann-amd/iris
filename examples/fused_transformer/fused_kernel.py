@@ -5,6 +5,7 @@ from typing import Optional
 from fused_helpers import _get_activation_from_str, pid_grid, remap_xcd, _get_config
 import warnings
 
+
 @triton.heuristics(
     {
         "EVEN_K": lambda args: args["K"] % args["BLOCK_SIZE_K"] == 0,
@@ -12,7 +13,6 @@ import warnings
         * triton.cdiv(args["N"], args["BLOCK_SIZE_N"]),
     }
 )
-
 @triton.jit
 def _ff_a16w16_fused_ungated(
     x_ptr,
@@ -134,8 +134,7 @@ def _ff_a16w16_fused_ungated(
         else:
             w2 = tl.load(
                 w2_ptrs,
-                mask=(offs_w2n[:, None] < N)
-                & ((offs_k[None, :] + k_cyclic_offset * BLOCK_SIZE_K) < K),
+                mask=(offs_w2n[:, None] < N) & ((offs_k[None, :] + k_cyclic_offset * BLOCK_SIZE_K) < K),
                 other=0.0,
             )
         partial_sum_y = tl.dot(acc, w2)
@@ -152,6 +151,7 @@ def _ff_a16w16_fused_ungated(
         else:
             w2_ptrs += BLOCK_SIZE_K * stride_w2k
             y_ptrs += BLOCK_SIZE_K * stride_yk
+
 
 def ff_a16w16_fused_ungated(
     x,
@@ -178,26 +178,20 @@ def ff_a16w16_fused_ungated(
     """
 
     # Shape checks
-    assert (
-        x.shape[1] == w_up.shape[1] == w_down.shape[1]
-    ), f"Incompatible matrix shapes: x:{x.shape}, w_up:{w_up.shape}, w_down:{w_down.shape}"
-    assert (
-        w_up.shape[0] == w_down.shape[0]
-    ), f"Incompatible matrix shapes: w_up:{w_up.shape}, w_down:{w_down.shape}"
+    assert x.shape[1] == w_up.shape[1] == w_down.shape[1], (
+        f"Incompatible matrix shapes: x:{x.shape}, w_up:{w_up.shape}, w_down:{w_down.shape}"
+    )
+    assert w_up.shape[0] == w_down.shape[0], f"Incompatible matrix shapes: w_up:{w_up.shape}, w_down:{w_down.shape}"
 
     N, K = w_up.shape
     M = x.shape[0]
     if M > 64:
-        warnings.warn(
-            "The fused FF kernel is slower than the unfused equivalent for large batch sizes (>64)."
-        )
+        warnings.warn("The fused FF kernel is slower than the unfused equivalent for large batch sizes (>64).")
 
     w_up = w_up.T
 
     if y is None:
-        y = torch.zeros(
-            (M, K), dtype=dtype, device=x.device
-        )  # zeros, as this does atomic adds on top
+        y = torch.zeros((M, K), dtype=dtype, device=x.device)  # zeros, as this does atomic adds on top
 
     if config is None:
         config = _get_config(M, N, K)

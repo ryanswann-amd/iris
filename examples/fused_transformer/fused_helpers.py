@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 import torch
 
+
 @triton.jit
 def _silu(x):
     return x * tl.sigmoid(x)
@@ -51,6 +52,7 @@ def _get_activation_from_str(activation: str):
     }
     return mapping[activation]
 
+
 @triton.jit
 def pid_grid(pid: int, num_pid_m: int, num_pid_n: int, GROUP_SIZE_M: tl.constexpr = 1):
     if GROUP_SIZE_M == 1:
@@ -65,7 +67,7 @@ def pid_grid(pid: int, num_pid_m: int, num_pid_n: int, GROUP_SIZE_M: tl.constexp
         pid_n = (pid % num_pid_in_group) // group_size_m
     return pid_m, pid_n
 
-    
+
 @triton.jit
 def remap_xcd(pid, GRID_MN: tl.constexpr, NUM_XCDS: tl.constexpr = 8):
     ## pid remapping on xcds
@@ -87,24 +89,21 @@ def remap_xcd(pid, GRID_MN: tl.constexpr, NUM_XCDS: tl.constexpr = 8):
     if xcd < tall_xcds:
         pid = xcd * pids_per_xcd + local_pid
     else:
-        pid = (
-            tall_xcds * pids_per_xcd
-            + (xcd - tall_xcds) * (pids_per_xcd - 1)
-            + local_pid
-        )
+        pid = tall_xcds * pids_per_xcd + (xcd - tall_xcds) * (pids_per_xcd - 1) + local_pid
 
     return pid, pids_per_xcd
 
+
 def _get_config(M: int, N: int, K: int):
     return {
-    "BLOCK_SIZE_M": 4,
-    "BLOCK_SIZE_N": 256,
-    "BLOCK_SIZE_K": 64,
-    "GROUP_SIZE_M": 1,
-    "num_warps": 8,
-    "num_stages": 2,
-    "waves_per_eu": 3,
-    "matrix_instr_nonkdim": 16,
-    "cache_modifier": ".cg",
-    "kpack": 1
-  }
+        "BLOCK_SIZE_M": 4,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "waves_per_eu": 3,
+        "matrix_instr_nonkdim": 16,
+        "cache_modifier": ".cg",
+        "kpack": 1,
+    }

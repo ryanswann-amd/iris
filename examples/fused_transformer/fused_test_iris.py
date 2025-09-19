@@ -10,6 +10,7 @@ import torch.multiprocessing as mp
 
 from fused_kernel_iris import ff_a16w16_fused_ungated_iris
 
+
 def test_correctness_iris_fused(iris_instance):
     rank = iris_instance.get_rank()
     world_size = iris_instance.get_num_ranks()
@@ -60,7 +61,7 @@ def test_correctness_iris_fused(iris_instance):
         iris_instance=iris_instance,
         y=y_output,
         dtype=dtype,
-        activation=activation
+        activation=activation,
     )
 
     iris_instance.barrier()
@@ -80,6 +81,7 @@ def test_correctness_iris_fused(iris_instance):
             print("\nCorrectness Test Passed!")
         except AssertionError as e:
             print(f"\nCorrectness Test FAILED: \n{e}")
+
 
 def test_performance_iris_fused(iris_instance):
     rank = iris_instance.get_rank()
@@ -123,16 +125,12 @@ def test_performance_iris_fused(iris_instance):
             iris_instance=iris_instance,
             y=y_output,
             dtype=dtype,
-            activation=activation
+            activation=activation,
         )
 
         dist_print("Running benchmark...")
         avg_time_ms = iris.do_bench(
-            fn=fn_to_benchmark,
-            barrier_fn=iris_instance.barrier,
-            n_warmup=10,
-            n_repeat=50,
-            return_mode="mean"
+            fn=fn_to_benchmark, barrier_fn=iris_instance.barrier, n_warmup=10, n_repeat=50, return_mode="mean"
         )
 
         if rank == 0:
@@ -140,14 +138,15 @@ def test_performance_iris_fused(iris_instance):
             print(f"       Avg Time: {avg_time_ms:.4f} ms")
 
     if rank == 0:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("Fused FFN Iris Performance Summary")
-        print("="*50)
+        print("=" * 50)
         print(f"{'Batch Size (M)':<20} | {'Avg Time (ms)':<20}")
-        print("-"*50)
+        print("-" * 50)
         for m_val, avg_time in results:
             print(f"{m_val:<20} | {avg_time:<20.4f}")
-        print("="*50)
+        print("=" * 50)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run Fused FFN Iris Tests with torch.multiprocessing.spawn")
@@ -155,6 +154,7 @@ def parse_args():
     parser.add_argument("--correctness", action="store_true", help="Run the correctness test.")
     parser.add_argument("--performance", action="store_true", help="Run the performance test.")
     return parser.parse_args()
+
 
 def worker(rank, world_size, init_url, cli_args):
     backend = "nccl" if torch.cuda.is_available() else "gloo"
@@ -170,6 +170,7 @@ def worker(rank, world_size, init_url, cli_args):
 
     iris_instance.barrier()
     dist.destroy_process_group()
+
 
 def main():
     args = parse_args()
@@ -187,6 +188,7 @@ def main():
         nprocs=num_ranks,
         join=True,
     )
+
 
 if __name__ == "__main__":
     main()
