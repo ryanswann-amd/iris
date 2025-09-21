@@ -15,6 +15,9 @@ jobs:
   build-apptainer-image:
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 90
+    strategy:
+      matrix:
+        rocm_version: ["6.3.1", "7.0"]
 
     steps:
       - name: Checkout repository
@@ -32,20 +35,21 @@ jobs:
           mkdir -p ~/apptainer
 
           # Build Apptainer image from definition file (only if it doesn't exist)
-          if [ ! -f ~/apptainer/iris-dev.sif ]; then
-            echo "Building new Apptainer image..."
-            apptainer build ~/apptainer/iris-dev.sif apptainer/iris.def
+          if [ ! -f ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif ]; then
+            echo "Building new Apptainer image for ROCm ${{ matrix.rocm_version }}..."
+            apptainer build ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif apptainer/iris-rocm${{ matrix.rocm_version }}.def
           else
-            echo "Using existing Apptainer image"
+            echo "Using existing Apptainer image for ROCm ${{ matrix.rocm_version }}"
           fi
   run-tests:
-    name: ${{ matrix.ranks }}-rank Iris Test
+    name: ${{ matrix.ranks }}-rank Iris Test (ROCm ${{ matrix.rocm_version }})
     needs: build-apptainer-image
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 20
     strategy:
       matrix:
         ranks: [1, 2, 4, 8]
+        rocm_version: ["6.3.1", "7.0"]
       max-parallel: 1
 
     steps:
@@ -54,7 +58,7 @@ jobs:
 
       - name: Run Iris Tests with ${{ matrix.ranks }} ranks
         run: |
-          apptainer exec ~/apptainer/iris-dev.sif bash -c "
+          apptainer exec ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif bash -c "
             set -e  # Exit on any error
 
             # Install iris first
