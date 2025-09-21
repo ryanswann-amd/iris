@@ -16,7 +16,7 @@ From: rocm/pytorch:rocm7.0_ubuntu22.04_py3.10_pytorch_release_2.8.0
     git checkout dd5823453bcc7973eabadb65f9d827c43281c434
     pip install -e .
     wget https://github.com/ROCm/rocprofiler-systems/releases/download/rocm-7.0.0/rocprofiler-systems-install.py
-    python3 ./rocprofiler-systems-install.py --prefix /opt/rocprofiler-systems --rocm 7.0
+    python3 ./rocprofiler-systems-install.py --prefix /opt/rocprofiler-systems --rocm 6.4
     "
 
 %environment
