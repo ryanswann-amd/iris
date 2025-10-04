@@ -292,7 +292,7 @@ def get_num_xcc(device_id=None):
     """
     Get the number of XCCs (Compute Dies) for a HIP device.
 
-    XCC (eXtended Compute Complex) refers to the compute dies in MI300 series GPUs.
+    XCC (Accelerated Compute Core) refers to the compute dies in MI300 series GPUs.
     For ROCm versions before 7.0, returns a default value of 8.
 
     Args:
