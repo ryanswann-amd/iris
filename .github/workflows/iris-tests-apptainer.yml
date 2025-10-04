@@ -61,7 +61,7 @@ jobs:
 
           # Build if needed
           if [ "$REBUILD" = true ]; then
-            apptainer build ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif "$DEF_FILE"
+            apptainer build --force ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif "$DEF_FILE"
             echo "$CURRENT_HASH" > "$HASH_FILE"
             echo "Successfully built and stored hash: $CURRENT_HASH"
           fi
