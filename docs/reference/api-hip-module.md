@@ -33,11 +33,6 @@ Low-level HIP runtime integration for AMD GPU device management and memory opera
 .. autofunction:: iris.hip.get_cu_count
 ```
 
-### get_arch_string
-```{eval-rst}
-.. autofunction:: iris.hip.get_arch_string
-```
-
 ### get_num_xcc
 ```{eval-rst}
 .. autofunction:: iris.hip.get_num_xcc
@@ -51,23 +46,6 @@ Low-level HIP runtime integration for AMD GPU device management and memory opera
 ### get_rocm_version
 ```{eval-rst}
 .. autofunction:: iris.hip.get_rocm_version
-```
-
-## Memory Management
-
-### hip_malloc
-```{eval-rst}
-.. autofunction:: iris.hip.hip_malloc
-```
-
-### malloc_fine_grained
-```{eval-rst}
-.. autofunction:: iris.hip.malloc_fine_grained
-```
-
-### hip_free
-```{eval-rst}
-.. autofunction:: iris.hip.hip_free
 ```
 
 ## IPC Memory Operations

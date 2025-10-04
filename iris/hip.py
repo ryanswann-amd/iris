@@ -288,27 +288,6 @@ def get_wall_clock_rate(device_id):
     return wall_clock_rate.value
 
 
-def get_arch_string(device_id=None):
-    """
-    Get the GPU architecture string for a HIP device.
-
-    Args:
-        device_id (int, optional): The device ID to query. If None, uses the current device.
-
-    Returns:
-        str: The architecture name (e.g., "gfx90a", "gfx942").
-
-    Example:
-        >>> arch = get_arch_string()
-        >>> print(f"GPU architecture: {arch}")  # e.g., "gfx942"
-    """
-    if device_id is None:
-        device_id = get_device_id()
-    arch_full = torch.cuda.get_device_properties(device_id).gcnArchName
-    arch_name = arch_full.split(":")[0]
-    return arch_name
-
-
 def get_num_xcc(device_id=None):
     """
     Get the number of XCCs (Compute Dies) for a HIP device.
@@ -338,73 +317,3 @@ def get_num_xcc(device_id=None):
     xcc_count = ctypes.c_int()
     hip_try(hip_runtime.hipDeviceGetAttribute(ctypes.byref(xcc_count), hipDeviceAttributeNumberOfXccs, device_id))
     return xcc_count.value
-
-
-def malloc_fine_grained(size):
-    """
-    Allocate fine-grained GPU memory accessible by both CPU and GPU.
-
-    Fine-grained memory provides coherent access from both CPU and GPU,
-    making it suitable for scenarios requiring frequent CPU-GPU data exchange.
-
-    Args:
-        size (int): Size of memory to allocate in bytes.
-
-    Returns:
-        ctypes.c_void_p: Pointer to the allocated memory.
-
-    Raises:
-        RuntimeError: If the HIP runtime call fails or allocation fails.
-
-    Example:
-        >>> ptr = malloc_fine_grained(1024 * 1024)  # Allocate 1 MB
-        >>> # Use the memory...
-        >>> hip_free(ptr)
-    """
-    hipDeviceMallocFinegrained = 0x1
-    ptr = ctypes.c_void_p()
-    hip_try(hip_runtime.hipExtMallocWithFlags(ctypes.byref(ptr), size, hipDeviceMallocFinegrained))
-    return ptr
-
-
-def hip_malloc(size):
-    """
-    Allocate standard (coarse-grained) GPU memory.
-
-    This allocates device memory that is optimized for GPU access but
-    not directly accessible from the CPU without explicit transfers.
-
-    Args:
-        size (int): Size of memory to allocate in bytes.
-
-    Returns:
-        ctypes.c_void_p: Pointer to the allocated memory.
-
-    Raises:
-        RuntimeError: If the HIP runtime call fails or allocation fails.
-
-    Example:
-        >>> ptr = hip_malloc(2 * 1024 * 1024)  # Allocate 2 MB
-        >>> # Use the memory...
-        >>> hip_free(ptr)
-    """
-    ptr = ctypes.c_void_p()
-    hip_try(hip_runtime.hipMalloc(ctypes.byref(ptr), size))
-    return ptr
-
-
-def hip_free(ptr):
-    """
-    Free GPU memory allocated by hip_malloc or malloc_fine_grained.
-
-    Args:
-        ptr (ctypes.c_void_p): Pointer to the memory to free.
-
-    Raises:
-        RuntimeError: If the HIP runtime call fails.
-
-    Example:
-        >>> ptr = hip_malloc(1024)
-        >>> hip_free(ptr)
-    """
-    hip_try(hip_runtime.hipFree(ptr))
