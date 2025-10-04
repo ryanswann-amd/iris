@@ -34,12 +34,36 @@ jobs:
           # Create persistent Apptainer directory
           mkdir -p ~/apptainer
 
-          # Build Apptainer image from definition file (only if it doesn't exist)
+          # Compute hash of the definition file
+          DEF_FILE="apptainer/iris-rocm${{ matrix.rocm_version }}.def"
+          CURRENT_HASH=$(sha256sum "$DEF_FILE" | awk '{print $1}')
+          HASH_FILE=~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif.sha256
+          
+          # Check if we need to rebuild
+          REBUILD=false
           if [ ! -f ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif ]; then
-            echo "Building new Apptainer image for ROCm ${{ matrix.rocm_version }}..."
-            apptainer build ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif apptainer/iris-rocm${{ matrix.rocm_version }}.def
+            echo "Apptainer image not found. Building new image for ROCm ${{ matrix.rocm_version }}..."
+            REBUILD=true
+          elif [ ! -f "$HASH_FILE" ]; then
+            echo "Hash file not found. Rebuilding image for ROCm ${{ matrix.rocm_version }}..."
+            REBUILD=true
           else
-            echo "Using existing Apptainer image for ROCm ${{ matrix.rocm_version }}"
+            STORED_HASH=$(cat "$HASH_FILE")
+            if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
+              echo "Definition file has changed. Rebuilding image for ROCm ${{ matrix.rocm_version }}..."
+              echo "  Previous hash: $STORED_HASH"
+              echo "  Current hash:  $CURRENT_HASH"
+              REBUILD=true
+            else
+              echo "Using existing Apptainer image for ROCm ${{ matrix.rocm_version }} (hash: $CURRENT_HASH)"
+            fi
+          fi
+
+          # Build if needed
+          if [ "$REBUILD" = true ]; then
+            apptainer build ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif "$DEF_FILE"
+            echo "$CURRENT_HASH" > "$HASH_FILE"
+            echo "Successfully built and stored hash: $CURRENT_HASH"
           fi
   run-tests:
     name: ${{ matrix.ranks }}-rank Iris Test (ROCm ${{ matrix.rocm_version }})
