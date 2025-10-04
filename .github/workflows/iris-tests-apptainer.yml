@@ -82,7 +82,7 @@ jobs:
 
       - name: Run Iris Tests with ${{ matrix.ranks }} ranks
         run: |
-          apptainer exec ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif bash -c "
+          apptainer exec --writable-tmpfs ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif bash -c "
             set -e  # Exit on any error
 
             # Install iris first
