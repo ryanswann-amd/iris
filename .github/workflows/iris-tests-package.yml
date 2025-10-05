@@ -1,4 +1,4 @@
-name: Iris Pip Install Test
+name: Iris Package Tests
 
 on:
   push:

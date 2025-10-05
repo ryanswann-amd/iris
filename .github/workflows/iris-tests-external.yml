@@ -1,4 +1,4 @@
-name: Iris External Validation Test
+name: Iris External Validation
 
 on:
   push:

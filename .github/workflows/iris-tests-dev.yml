@@ -1,4 +1,4 @@
-name: Iris Tests with Apptainer
+name: Iris Development Tests
 
 on:
   push:
