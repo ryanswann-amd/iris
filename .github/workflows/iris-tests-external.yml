@@ -81,8 +81,8 @@ jobs:
 
       - name: Run External Validation Test with Apptainer
         run: |
-          # Create unique overlay image for isolation
-          OVERLAY="/tmp/iris_overlay_$(whoami)_external_$(date +%s%N).img"
+          # Create unique overlay image in workspace (will be auto-cleaned)
+          OVERLAY="${PWD}/iris_overlay_external_$(date +%s%N).img"
 
           echo "::group::Creating overlay image"
           apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY}"
@@ -96,11 +96,6 @@ jobs:
               wget -O test_iris_distributed.py https://gist.githubusercontent.com/mawad-amd/6375dc078e39e256828f379e03310ec7/raw/a527c3192bee4615292769e340b1c73676f6945a/test_iris_distributed.py
               python test_iris_distributed.py
             "
-          echo "::endgroup::"
-
-          # Cleanup overlay image
-          echo "::group::Cleaning up overlay image"
-          rm -f "${OVERLAY}"
           echo "::endgroup::"
 
           echo "✅ External validation test passed!"

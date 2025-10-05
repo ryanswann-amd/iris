@@ -88,10 +88,10 @@ jobs:
           # This allows tests like test_empty_device_handling to verify that
           # allocating on a different device correctly raises an error.
 
-          # Create unique overlay images for isolation
-          OVERLAY_1="/tmp/iris_overlay_$(whoami)_1rank_$(date +%s%N).img"
-          OVERLAY_2="/tmp/iris_overlay_$(whoami)_2rank_$(date +%s%N).img"
-          OVERLAY_4="/tmp/iris_overlay_$(whoami)_4rank_$(date +%s%N).img"
+          # Create unique overlay images in workspace (will be auto-cleaned)
+          OVERLAY_1="${PWD}/iris_overlay_1rank_$(date +%s%N).img"
+          OVERLAY_2="${PWD}/iris_overlay_2rank_$(date +%s%N).img"
+          OVERLAY_4="${PWD}/iris_overlay_4rank_$(date +%s%N).img"
 
           echo "::group::Creating overlay images"
           apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_1}"
@@ -138,11 +138,6 @@ jobs:
           wait $PID4 || { echo "::error::4-rank test FAILED"; FAILED_TESTS="$FAILED_TESTS 4-rank"; FAIL=1; }
           echo "::endgroup::"
 
-          # Cleanup overlay images
-          echo "::group::Cleaning up overlay images"
-          rm -f "${OVERLAY_1}" "${OVERLAY_2}" "${OVERLAY_4}"
-          echo "::endgroup::"
-
           if [ $FAIL -eq 1 ]; then
             echo "::error::Parallel tests failed:$FAILED_TESTS"
             exit 1
@@ -166,8 +161,8 @@ jobs:
           fetch-depth: 0
       - name: Run 8-rank test
         run: |
-          # Create unique overlay image for isolation
-          OVERLAY_8="/tmp/iris_overlay_$(whoami)_8rank_$(date +%s%N).img"
+          # Create unique overlay image in workspace (will be auto-cleaned)
+          OVERLAY_8="${PWD}/iris_overlay_8rank_$(date +%s%N).img"
 
           echo "::group::Creating overlay image"
           apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_8}"
@@ -180,11 +175,6 @@ jobs:
               pip install -e .
               bash .github/scripts/run_tests.sh 8
             "
-          echo "::endgroup::"
-
-          # Cleanup overlay image
-          echo "::group::Cleaning up overlay image"
-          rm -f "${OVERLAY_8}"
           echo "::endgroup::"
 
           echo "✅ 8-rank test passed!"
