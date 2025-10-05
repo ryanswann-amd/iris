@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build-apptainer-image:
     runs-on: [self-hosted, mi3008x]
-    timeout-minutes: 90w
+    timeout-minutes: 90
     strategy:
       matrix:
         rocm_version: ["6.3.1", "7.0"]
@@ -78,6 +78,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run 1, 2, 4 rank tests in parallel
         run: |
@@ -152,7 +154,7 @@ jobs:
     name: Test 8 Ranks - ROCm ${{ matrix.rocm_version }}
     needs: build-apptainer-image
     runs-on: [self-hosted, mi3008x]
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       matrix:
         rocm_version: ["6.3.1", "7.0"]
@@ -160,7 +162,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+        with:
+          fetch-depth: 0
       - name: Run 8-rank test
         run: |
           # Create unique overlay image for isolation

@@ -15,6 +15,9 @@ jobs:
   build-apptainer-image:
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 90
+    strategy:
+      matrix:
+        rocm_version: ["6.3.1", "7.0"]
 
     steps:
       - name: Checkout repository
@@ -31,19 +34,46 @@ jobs:
           # Create persistent Apptainer directory
           mkdir -p ~/apptainer
 
-          # Build Apptainer image from definition file (only if it doesn't exist)
-          if [ ! -f ~/apptainer/iris-dev.sif ]; then
-            echo "Building new Apptainer image..."
-            apptainer build ~/apptainer/iris-dev.sif apptainer/iris.def
+          # Compute hash of the definition file
+          DEF_FILE="apptainer/iris-rocm${{ matrix.rocm_version }}.def"
+          CURRENT_HASH=$(sha256sum "$DEF_FILE" | awk '{print $1}')
+          HASH_FILE=~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif.sha256
+          
+          # Check if we need to rebuild
+          REBUILD=false
+          if [ ! -f ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif ]; then
+            echo "Apptainer image not found. Building new image for ROCm ${{ matrix.rocm_version }}..."
+            REBUILD=true
+          elif [ ! -f "$HASH_FILE" ]; then
+            echo "Hash file not found. Rebuilding image for ROCm ${{ matrix.rocm_version }}..."
+            REBUILD=true
           else
-            echo "Using existing Apptainer image"
+            STORED_HASH=$(cat "$HASH_FILE")
+            if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
+              echo "Definition file has changed. Rebuilding image for ROCm ${{ matrix.rocm_version }}..."
+              echo "  Previous hash: $STORED_HASH"
+              echo "  Current hash:  $CURRENT_HASH"
+              REBUILD=true
+            else
+              echo "Using existing Apptainer image for ROCm ${{ matrix.rocm_version }} (hash: $CURRENT_HASH)"
+            fi
+          fi
+
+          # Build if needed
+          if [ "$REBUILD" = true ]; then
+            apptainer build --force ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif "$DEF_FILE"
+            echo "$CURRENT_HASH" > "$HASH_FILE"
+            echo "Successfully built and stored hash: $CURRENT_HASH"
           fi
 
   external-validation-test:
-    name: External Validation Test
+    name: External Validation Test - ROCm ${{ matrix.rocm_version }}
     needs: build-apptainer-image
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 30
+    strategy:
+      matrix:
+        rocm_version: ["6.3.1", "7.0"]
 
     steps:
       - name: Checkout repository
@@ -61,7 +91,7 @@ jobs:
           echo "::group::Running external validation test"
           apptainer exec --overlay "${OVERLAY}" --no-home --cleanenv \
             --bind "${PWD}:/iris_workspace" --cwd /iris_workspace \
-            ~/apptainer/iris-dev.sif bash -c "
+            ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif bash -c "
               pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               wget -O test_iris_distributed.py https://gist.githubusercontent.com/mawad-amd/6375dc078e39e256828f379e03310ec7/raw/a527c3192bee4615292769e340b1c73676f6945a/test_iris_distributed.py
               python test_iris_distributed.py
