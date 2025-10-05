@@ -38,7 +38,7 @@ jobs:
           DEF_FILE="apptainer/iris-rocm${{ matrix.rocm_version }}.def"
           CURRENT_HASH=$(sha256sum "$DEF_FILE" | awk '{print $1}')
           HASH_FILE=~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif.sha256
-          
+
           # Check if we need to rebuild
           REBUILD=false
           if [ ! -f ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif ]; then
@@ -94,9 +94,9 @@ jobs:
           OVERLAY_4="/tmp/iris_overlay_$(whoami)_4rank_$(date +%s%N).img"
 
           echo "::group::Creating overlay images"
-          apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY_1}"
-          apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY_2}"
-          apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY_4}"
+          apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_1}"
+          apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_2}"
+          apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_4}"
           echo "::endgroup::"
 
           echo "::group::Starting parallel tests"
@@ -170,7 +170,7 @@ jobs:
           OVERLAY_8="/tmp/iris_overlay_$(whoami)_8rank_$(date +%s%N).img"
 
           echo "::group::Creating overlay image"
-          apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY_8}"
+          apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY_8}"
           echo "::endgroup::"
 
           echo "::group::Running 8-rank test on all GPUs"

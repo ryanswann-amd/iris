@@ -38,7 +38,7 @@ jobs:
           DEF_FILE="apptainer/iris-rocm${{ matrix.rocm_version }}.def"
           CURRENT_HASH=$(sha256sum "$DEF_FILE" | awk '{print $1}')
           HASH_FILE=~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif.sha256
-          
+
           # Check if we need to rebuild
           REBUILD=false
           if [ ! -f ~/apptainer/iris-dev-rocm${{ matrix.rocm_version }}.sif ]; then
@@ -85,7 +85,7 @@ jobs:
           OVERLAY="/tmp/iris_overlay_$(whoami)_external_$(date +%s%N).img"
 
           echo "::group::Creating overlay image"
-          apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY}"
+          apptainer overlay create --size 4096 --create-dir /var/cache/iris "${OVERLAY}"
           echo "::endgroup::"
 
           echo "::group::Running external validation test"
