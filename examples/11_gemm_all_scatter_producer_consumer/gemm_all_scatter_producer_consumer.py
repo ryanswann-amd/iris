@@ -184,8 +184,10 @@ def persistent_all_scatter(
         global_offset = rm[:, None] * stride_cm_global + (rn[None, :] + cur_rank * N) * stride_cn_global
         # End: masks/offset calculations.
 
-        while tl.atomic_xchg(locks + tile_id, 0, sem="acquire", scope="gpu") != 1:
+        while tl.load(locks + tile_id, volatile=True, cache_modifier=".cv") != 1:
             pass
+        tl.debug_barrier()
+        tl.atomic_xchg(locks + tile_id, 0, sem="acquire", scope="gpu")
 
         for remote_rank in range(world_size):
             if remote_rank != cur_rank:
