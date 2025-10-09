@@ -135,6 +135,11 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     # Allocate Timestamps
     timestamps = Timestamps(num_tiles=total_tiles)
 
+    def preamble():
+        shmem.barrier()
+        locks.zero_()
+        shmem.barrier()
+
     def run_experiment():
         nonlocal local_C
         nonlocal global_C
@@ -222,7 +227,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         matmul.set_debug(False)
         shmem.info("Benchmarking...")
         perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
-        triton_ms = iris.do_bench(run_experiment, shmem.barrier)
+        triton_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
         triton_tflops = perf(triton_ms)
         algo_string = "all_scatter"
         shmem.info(
