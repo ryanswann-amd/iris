@@ -9,12 +9,12 @@ import os
 
 # from streamk_kernel import streamk_gemm
 # from streamk_kernel_atomic import streamk_gemm
-from gemm_atomics_all_reduce import persistent_gemm_all_reduce
+from gemm_all_reduce_ring_based import persistent_gemm_all_reduce_ring_based
 
 from examples.common.utils import is_triton_interpret_set
 import iris
 
-gemm_kernel = persistent_gemm_all_reduce
+gemm_kernel = persistent_gemm_all_reduce_ring_based
 
 
 class matmul(torch.autograd.Function):
@@ -35,6 +35,8 @@ class matmul(torch.autograd.Function):
         c: torch.Tensor,
         c_global: torch.Tensor,
         bias: torch.Tensor,
+        ring_buffer: torch.Tensor,
+        locks: torch.Tensor,
         rank: int,
         world_size: int,
         num_sms: int,
@@ -78,6 +80,8 @@ class matmul(torch.autograd.Function):
             c,
             c_global,
             bias,
+            ring_buffer,
+            locks,
             M,
             N,
             K,
@@ -125,6 +129,8 @@ class matmul(torch.autograd.Function):
         c: torch.Tensor,
         c_global: torch.Tensor,
         bias: torch.Tensor,
+        ring_buffer: torch.Tensor,
+        locks: torch.Tensor,
         rank: int,
         world_size: int,
         num_sms: int,
@@ -144,6 +150,8 @@ class matmul(torch.autograd.Function):
             c=c,
             c_global=c_global,
             bias=bias,
+            ring_buffer=ring_buffer,
+            locks=locks,
             rank=rank,
             world_size=world_size,
             num_sms=num_sms,
