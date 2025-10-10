@@ -13,6 +13,18 @@ if [ -z "$NUM_RANKS" ]; then
     exit 1
 fi
 
+# Function to cleanup ports and processes on exit
+cleanup() {
+    echo "Cleaning up ports and processes..."
+    # Kill any lingering Python processes from this test session
+    pkill -9 -f "run_tests_distributed.py" 2>/dev/null || true
+    # Give the system time to release ports
+    sleep 1
+}
+
+# Set trap to ensure cleanup happens on exit (success or failure)
+trap cleanup EXIT INT TERM
+
 # Run examples tests one at a time using distributed wrapper
 echo 'Running examples tests one at a time...'
 for test_file in tests/examples/test_*.py; do
