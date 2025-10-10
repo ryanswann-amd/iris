@@ -67,10 +67,7 @@ jobs:
               set -e
               pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               wget -O test_iris_distributed.py https://gist.githubusercontent.com/mawad-amd/6375dc078e39e256828f379e03310ec7/raw/a527c3192bee4615292769e340b1c73676f6945a/test_iris_distributed.py
-              python test_iris_distributed.py || { echo 'Test failed, cleaning up...'; pkill -9 -f python 2>/dev/null || true; exit 1; }
-              # Ensure cleanup of any lingering processes
-              pkill -9 -f python 2>/dev/null || true
-              sleep 1
+              python test_iris_distributed.py
             "
           echo "::endgroup::"
 

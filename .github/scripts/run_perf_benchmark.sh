@@ -10,20 +10,6 @@ BENCHMARK_ARGS="$@"
 # Create overlay image in workspace (will be auto-cleaned by GitHub Actions)
 OVERLAY="iris_overlay_perf_${EXAMPLE_PATH//\//_}.img"
 
-# Cleanup function
-cleanup() {
-    echo "Cleaning up processes and ports..."
-    # Kill any lingering Python processes from this benchmark
-    pkill -9 -f "benchmark.py" 2>/dev/null || true
-    # Give the system time to release ports
-    sleep 1
-    # Cleanup overlay image
-    rm -f "${OVERLAY}" 2>/dev/null || true
-}
-
-# Set trap to ensure cleanup happens on exit (success or failure)
-trap cleanup EXIT INT TERM
-
 echo "::group::Creating overlay image"
 apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY}"
 echo "::endgroup::"
@@ -74,3 +60,4 @@ fi
 
 echo "✅ Performance test passed! TFLOPs: $TFLOPS (threshold: >$TFLOPS_THRESHOLD)"
 echo "::endgroup::"
+

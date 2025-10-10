@@ -110,11 +110,6 @@ def main():
     except Exception:
         # Any other unhandled exception = failure
         sys.exit(1)
-    finally:
-        # Ensure cleanup: wait briefly to allow port to be released
-        import time
-
-        time.sleep(0.5)
 
 
 if __name__ == "__main__":
