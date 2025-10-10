@@ -164,9 +164,12 @@ def persistent_gemm_all_scatter_wg_specialization(
             global_offset = rm[:, None] * stride_cm_global + (rn[None, :] + cur_rank * N) * stride_cn_global
             # End: masks/offset calculations.
 
-            # Poll until lock is set to 1, then atomically reset it to 0
-            while tl.atomic_cas(locks + tile_id, 1, 0, sem="acquire", scope="gpu") != 1:
-                pass
+            # Spin on volatile load until flag is non-zero (cheap)
+            flag_val = tl.load(locks + tile_id, cache_modifier=".cv", volatile=True)
+            while flag_val == 0:
+                flag_val = tl.load(locks + tile_id, cache_modifier=".cv", volatile=True)
+            # Use atomic_cas with dependency on loaded value to prevent reordering
+            tl.atomic_cas(locks + tile_id, flag_val, 0, sem="acquire", scope="gpu")
 
             for remote_rank in range(world_size):
                 if remote_rank != cur_rank:
