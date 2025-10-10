@@ -48,6 +48,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
       - name: Run 1, 2, 4 rank tests in parallel
         run: |
           set -e
@@ -122,6 +126,11 @@ jobs:
 
           echo "✅ All parallel tests (1, 2, 4 ranks) passed!"
 
+      - name: Cleanup lingering ports
+        if: always()
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
   test-8-ranks:
     name: Test 8 Ranks
     needs: build-apptainer-image
@@ -131,6 +140,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
 
       - name: Run 8-rank test
         run: |
@@ -159,3 +172,8 @@ jobs:
           echo "::endgroup::"
 
           echo "✅ 8-rank test passed!"
+
+      - name: Cleanup lingering ports
+        if: always()
+        run: |
+          bash .github/scripts/cleanup_ports.sh

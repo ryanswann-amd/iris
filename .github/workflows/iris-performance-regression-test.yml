@@ -73,10 +73,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
       - name: Run ${{ matrix.example_name }} Benchmark (8 ranks)
         run: |
           bash .github/scripts/run_perf_benchmark.sh \
             "${{ matrix.example_path }}" \
             "${{ matrix.tflops_threshold }}" \
             ${{ matrix.benchmark_args }}
+
+      - name: Cleanup lingering ports
+        if: always()
+        run: |
+          bash .github/scripts/cleanup_ports.sh
 
