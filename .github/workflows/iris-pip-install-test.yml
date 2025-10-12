@@ -1,4 +1,4 @@
-name: Iris Tests with Apptainer
+name: Iris Pip Install Test
 
 on:
   push:
@@ -39,20 +39,22 @@ jobs:
             echo "Using existing Apptainer image"
           fi
   test-1-2-4-ranks:
-    name: Test 1/2/4 Ranks (Parallel)
+    name: Pip Install Test 1/2/4 Ranks (Parallel)
     needs: build-apptainer-image
     runs-on: [self-hosted, mi3008x]
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Cleanup lingering ports before tests
         run: |
           bash .github/scripts/cleanup_ports.sh
 
-      - name: Run 1, 2, 4 rank tests in parallel
+      - name: Run pip install tests for 1, 2, 4 ranks in parallel
         run: |
           set -e
 
@@ -78,7 +80,7 @@ jobs:
             --bind "${PWD}:/iris_workspace" --cwd /iris_workspace \
             ~/apptainer/iris-dev.sif bash -c "
               set -e
-              pip install -e .
+              pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               bash .github/scripts/run_tests.sh 1
             " &
           PID1=$!
@@ -88,7 +90,7 @@ jobs:
             --bind "${PWD}:/iris_workspace" --cwd /iris_workspace \
             ~/apptainer/iris-dev.sif bash -c "
               set -e
-              pip install -e .
+              pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               bash .github/scripts/run_tests.sh 2
             " &
           PID2=$!
@@ -98,7 +100,7 @@ jobs:
             --bind "${PWD}:/iris_workspace" --cwd /iris_workspace \
             ~/apptainer/iris-dev.sif bash -c "
               set -e
-              pip install -e .
+              pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               bash .github/scripts/run_tests.sh 4
             " &
           PID4=$!
@@ -127,20 +129,22 @@ jobs:
           echo "✅ All parallel tests (1, 2, 4 ranks) passed!"
 
   test-8-ranks:
-    name: Test 8 Ranks
+    name: Pip Install Test 8 Ranks
     needs: build-apptainer-image
     runs-on: [self-hosted, mi3008x]
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Cleanup lingering ports before tests
         run: |
           bash .github/scripts/cleanup_ports.sh
 
-      - name: Run 8-rank test
+      - name: Run 8-rank pip install test
         run: |
           set -e
 
@@ -156,7 +160,7 @@ jobs:
             --bind "${PWD}:/iris_workspace" --cwd /iris_workspace \
             ~/apptainer/iris-dev.sif bash -c "
               set -e
-              pip install -e .
+              pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
               bash .github/scripts/run_tests.sh 8
             "
           echo "::endgroup::"
