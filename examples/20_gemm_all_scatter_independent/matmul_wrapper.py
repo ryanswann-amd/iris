@@ -113,7 +113,7 @@ class matmul(torch.autograd.Function):
             mm_begin_timestamp_ptr=mm_begin_timestamp,
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
-        
+
         if matmul._debug and not is_triton_interpret_set():
             matmul._registers = kk.n_regs
             matmul._spills = kk.n_spills
