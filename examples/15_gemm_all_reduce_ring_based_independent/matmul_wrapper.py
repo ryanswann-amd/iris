@@ -3,9 +3,14 @@
 
 import torch
 import triton
+import random
+import sys
+import os
 
 # from streamk_kernel import streamk_gemm
-from gemm_all_scatter_bulk_synchronous import persistent_gemm
+# from streamk_kernel_atomic import streamk_gemm
+from gemm_all_reduce_ring_based import persistent_gemm
+
 from examples.common.utils import is_triton_interpret_set
 import iris
 
@@ -13,9 +18,10 @@ gemm_kernel = persistent_gemm
 
 
 class matmul(torch.autograd.Function):
-    _debug = False
+    _debug = True
     _registers = None
     _spills = None
+
     _num_xcds = iris.hip.get_num_xcc()
 
     @staticmethod
@@ -40,11 +46,11 @@ class matmul(torch.autograd.Function):
     def _call(
         a: torch.Tensor,
         b: torch.Tensor,
-        c: torch.Tensor,
+        ring_buffer: torch.Tensor,
         bias: torch.Tensor,
         rank: int,
         world_size: int,
-        gemm_sms: int,
+        num_sms: int,
         BLK_M: int,
         BLK_N: int,
         BLK_K: int,
@@ -55,6 +61,7 @@ class matmul(torch.autograd.Function):
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
     ):
+        # assert a.is_contiguous() and b.is_contiguous(), "non-contiguous inputs are not supported"
         # checks constraints
         assert a.shape[1] == b.shape[0], "incompatible dimensions"
         M, K = a.shape
@@ -78,10 +85,10 @@ class matmul(torch.autograd.Function):
 
         # compute grid (work to do per SM on the first wave)
         stride_bias = bias.stride(0) if use_bias else 0
-        kk = gemm_kernel[(gemm_sms,)](
+        kk = gemm_kernel[(num_sms,)](
             a,
             b,
-            c,
+            ring_buffer,
             bias,
             M,
             N,
@@ -90,14 +97,14 @@ class matmul(torch.autograd.Function):
             a.stride(1),
             b.stride(0),
             b.stride(1),
-            c.stride(0),
-            c.stride(1),
+            ring_buffer.stride(0),
+            ring_buffer.stride(1),
             stride_bias,
             BLOCK_SIZE_M=BLK_M,
             BLOCK_SIZE_N=BLK_N,
             BLOCK_SIZE_K=BLK_K,
             GROUP_SIZE_M=gsize_m,
-            GEMM_SMS=gemm_sms,
+            NUM_SMS=num_sms,
             NUM_XCDS=num_xcds,
             BIAS=use_bias,
             EVEN_K=even_k,
@@ -113,23 +120,23 @@ class matmul(torch.autograd.Function):
             mm_begin_timestamp_ptr=mm_begin_timestamp,
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
-        
-        if matmul._debug and not is_triton_interpret_set():
-            matmul._registers = kk.n_regs
-            matmul._spills = kk.n_spills
 
-        return c
+        # if matmul._debug and not is_triton_interpret_set():
+        matmul._registers = kk.n_regs
+        matmul._spills = kk.n_spills
+
+        return ring_buffer
 
     @staticmethod
     def forward(
         ctx,
         a: torch.Tensor,
         b: torch.Tensor,
-        c: torch.Tensor,
+        ring_buffer: torch.Tensor,
         bias: torch.Tensor,
         rank: int,
         world_size: int,
-        gemm_sms: int,
+        num_sms: int,
         BLK_M: int,
         BLK_N: int,
         BLK_K: int,
@@ -143,11 +150,11 @@ class matmul(torch.autograd.Function):
         matmul._call(
             a=a,
             b=b,
-            c=c,
+            ring_buffer=ring_buffer,
             bias=bias,
             rank=rank,
             world_size=world_size,
-            gemm_sms=gemm_sms,
+            num_sms=num_sms,
             BLK_M=BLK_M,
             BLK_N=BLK_N,
             BLK_K=BLK_K,
@@ -158,4 +165,4 @@ class matmul(torch.autograd.Function):
             mm_begin_timestamp=mm_begin_timestamp,
             mm_end_timestamp=mm_end_timestamp,
         )
-        return c
+        return ring_buffer

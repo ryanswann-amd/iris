@@ -17,7 +17,6 @@ def persistent_gemm(
     B,
     local_C,
     bias_ptr,
-    locks,
     M,
     N,
     K,
@@ -129,7 +128,7 @@ def persistent_gemm(
         # Write fully-reduced tile to local result buffer (no remote writes)
         tl.store(local_C + offset, acc, mask=mask, cache_modifier=".wt")
         tl.debug_barrier()
-        tl.store(locks + tile_id, 1, cache_modifier=".wt") # remove it for independent case
+        # tl.store(locks + tile_id, 1, cache_modifier=".wt") # remove it for independent case
 
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()
@@ -139,9 +138,8 @@ def persistent_gemm(
 @triton.jit()
 def persistent_all_reduce(
     C,
-    local_C, # change 
+    local_C,
     ring_buffer,
-    locks,
     flags,
     M,
     N,
@@ -200,8 +198,8 @@ def persistent_all_reduce(
             if s == 0:
                 # First touch of this traveling tile on this rank:
                 # wait for local GEMM, seed acc from local partial, and forward.
-                while tl.atomic_cas(locks + idx, 0, 0, sem="acquire", scope="gpu") != 1: # remove it for independent case
-                    pass
+                # while tl.atomic_cas(locks + idx, 0, 0, sem="acquire", scope="gpu") != 1:
+                #     pass
                 acc = tl.load(local_C + goff, mask=sub_mask, other=0).to(acc_dtype)
 
                 if group_size > 1:
@@ -229,8 +227,8 @@ def persistent_all_reduce(
                 tl.atomic_xchg(flags + idx, 0, sem="release", scope="sys")  # clear local flag
 
                 # Fold in our local partial (wait if GEMM not done yet)
-                while tl.atomic_cas(locks + idx, 0, 0, sem="acquire", scope="gpu") != 1: # remove it for independent case
-                    pass
+                # while tl.atomic_cas(locks + idx, 0, 0, sem="acquire", scope="gpu") != 1:
+                #     pass
 
                 part = tl.load(local_C + goff, mask=sub_mask, other=0).to(acc_dtype)
                 acc = recv + part
