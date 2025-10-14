@@ -97,7 +97,7 @@ def benchmark(
     torch.cuda.current_stream().wait_stream(matmul_stream)
     torch.cuda.current_stream().wait_stream(comm_stream)
     end_event.record()
-    
+
     torch.cuda.synchronize()
 
     matmul_comm_time = start_event.elapsed_time(end_event) / benchmark_steps
@@ -120,13 +120,11 @@ if __name__ == "__main__":
 
     # Define matmul sizes as (size_A, size_B) for A @ B
     # A=(3840, 4352), B=(4352, 3840)
-    matmul_sizes = [
-        ((3840, 4352), (4352, 3840))
-    ]
-    
+    matmul_sizes = [((3840, 4352), (4352, 3840))]
+
     # comm_sizes use the same shape as matrix A
     comm_sizes = [(3840, 4352)]
-    
+
     if rank == 0:
         print(f"Using all_gather (all-scatter semantic) with world_size={world_size}")
         print(f"Matmul: A @ B where A={matmul_sizes[0][0]}, B={matmul_sizes[0][1]}")
@@ -148,22 +146,24 @@ if __name__ == "__main__":
         # Get environment variables
         tensile_grid = os.environ.get("TENSILE_STREAMK_FIXED_GRID", "unset")
         nccl_channels = os.environ.get("NCCL_MAX_NCHANNELS", "unset")
-        
+
         size_A, size_B = matmul_size
-        results.append({
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "tensile_streamk_fixed_grid": tensile_grid,
-            "nccl_max_nchannels": nccl_channels,
-            "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
-            "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
-            "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
-            "matmul_time": matmul_time,
-            "comm_time": comm_time,
-            "matmul_comm_time": matmul_comm_time,
-            "overlapped_matmul_time": overlapped_matmul_time,
-            "overlapped_comm_time": overlapped_comm_time,
-            "overlapped_matmul_time_ratio":  overlapped_matmul_time/matmul_time,
-        })
+        results.append(
+            {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "tensile_streamk_fixed_grid": tensile_grid,
+                "nccl_max_nchannels": nccl_channels,
+                "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
+                "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
+                "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
+                "matmul_time": matmul_time,
+                "comm_time": comm_time,
+                "matmul_comm_time": matmul_comm_time,
+                "overlapped_matmul_time": overlapped_matmul_time,
+                "overlapped_comm_time": overlapped_comm_time,
+                "overlapped_matmul_time_ratio": overlapped_matmul_time / matmul_time,
+            }
+        )
         if rank == 0:
             print(
                 f"A: {size_A[0]}x{size_A[1]} @ B: {size_B[0]}x{size_B[1]}, comm: {comm_size[0]}x{comm_size[1]}",
@@ -179,11 +179,11 @@ if __name__ == "__main__":
         # prof.export_chrome_trace("amd_trace_8k_32k_rccl112_gemm144.json")
         with open("overlap_results.json", "w") as f:
             json.dump(results, f)
-        
+
         # Save to Excel with append functionality
         excel_file = "overlap_results_200.xlsx"
         df = pd.DataFrame(results)
-        
+
         # Check if Excel file exists
         if os.path.exists(excel_file):
             # Read existing data and append new results
@@ -193,7 +193,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Warning: Could not read existing Excel file: {e}")
                 print("Creating new Excel file...")
-        
+
         # Save to Excel
         try:
             df.to_excel(excel_file, index=False)

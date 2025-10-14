@@ -72,13 +72,11 @@ def persistent_gemm_all_scatter_poolside(
     # and another that performs the communication. Uses persistent-
     # kernel.
     if pid < GEMM_SMS:
-        
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()
             tl.atomic_min(mm_begin_timestamp_ptr + pid, timestamp)
-                
-        for tile_id in range(pid, total_tiles, GEMM_SMS):
 
+        for tile_id in range(pid, total_tiles, GEMM_SMS):
             num_pid_in_group = GROUP_SIZE_M * num_pid_n
             group_id = tile_id // num_pid_in_group
             first_pid_m = group_id * GROUP_SIZE_M
@@ -142,7 +140,7 @@ def persistent_gemm_all_scatter_poolside(
             offset = rm[:, None] * stride_cm_global + rn[None, :] * stride_cn_global
 
             tl.store(c_global + offset, c, mask=sub_mask)
-            
+
         # Timestamp for GEMM before store
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()
@@ -151,11 +149,11 @@ def persistent_gemm_all_scatter_poolside(
     else:  # pid >= GEMM_SMS
         COMM_SMS = NUM_SMS - GEMM_SMS
         pid = pid - GEMM_SMS
-        
+
         comm_num_pid_m = tl.cdiv(Comm_M, COMM_SIZE_M)
         comm_num_pid_n = tl.cdiv(Comm_N, COMM_SIZE_N)
         comm_total_tiles = comm_num_pid_m * comm_num_pid_n
-        
+
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()
             tl.atomic_min(mm_begin_timestamp_ptr + pid + GEMM_SMS, timestamp)
@@ -187,7 +185,7 @@ def persistent_gemm_all_scatter_poolside(
                         heap_bases,
                         mask=sub_mask,
                     )
-                    
+
         # Timestamp for GEMM before store
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()

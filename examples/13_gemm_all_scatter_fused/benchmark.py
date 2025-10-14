@@ -101,7 +101,7 @@ def main():
 
     C = shmem.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
     comm_tensor = shmem.randn((args["comm_m"], args["comm_n"]), device="cuda", dtype=A.dtype)
-    
+
     comm_ref = shmem.zeros((args["comm_m"], args["comm_n"]), device="cuda", dtype=A.dtype)
     comm_ref = comm_tensor
 
@@ -204,7 +204,7 @@ def main():
         for k in ["gemm"]:
             json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
             json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
-            
+
         if args["validate"]:
             shmem.log("Validating...")
             matmul.set_debug(True)
@@ -212,12 +212,11 @@ def main():
             success = validate_gemm(A, B, C, shmem)
             passed_str = "passed" if success else "failed"
             shmem.log(f"Final C validation {passed_str}.")
-            
 
             # Wait for all to finish validation
             shmem.barrier()
             shmem.log("Validating local C...")
-            
+
             shmem.log("Validating all_scatter...")
             success_comm = validate_all_scatter(comm_tensor, comm_ref, shmem)
             shmem.barrier()
@@ -235,28 +234,28 @@ def main():
             shmem.log("Validation completed")
 
         # Wait for all to finish benchmarking
-        shmem.barrier()        
+        shmem.barrier()
         matmul.set_debug(True)
         C = matmul.apply(
-                A,
-                B,
-                comm_tensor,
-                C,
-                bias,
-                rank,
-                world_size,
-                args["gemm_sms"],
-                args["num_sms"],
-                args["BLK_M"],
-                args["BLK_N"],
-                args["BLK_K"],
-                args["gsize_m"],
-                shmem.get_heap_bases(),
-                "gfx942",
-                args["trace_tiles"],
-                timestamps.mm_begin_timestamp,
-                timestamps.mm_end_timestamp,
-            )
+            A,
+            B,
+            comm_tensor,
+            C,
+            bias,
+            rank,
+            world_size,
+            args["gemm_sms"],
+            args["num_sms"],
+            args["BLK_M"],
+            args["BLK_N"],
+            args["BLK_K"],
+            args["gsize_m"],
+            shmem.get_heap_bases(),
+            "gfx942",
+            args["trace_tiles"],
+            timestamps.mm_begin_timestamp,
+            timestamps.mm_end_timestamp,
+        )
         shmem.barrier()
 
         gemm_registers = matmul.get_matmul_registers()

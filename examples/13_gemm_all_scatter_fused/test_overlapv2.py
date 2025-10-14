@@ -6,6 +6,7 @@ import torch
 import torch.distributed as dist
 import torch.profiler
 
+
 def benchmark(
     matmul_size,
     comm_size,
@@ -62,7 +63,7 @@ def benchmark(
             torch.matmul(A, B)
         with torch.cuda.stream(comm_stream):
             dist.all_reduce(comm_tensor)
-    
+
     torch.cuda.synchronize()
 
     # benchmark matmul-comm
@@ -101,13 +102,13 @@ def benchmark(
     torch.cuda.current_stream().wait_stream(matmul_stream)
     torch.cuda.current_stream().wait_stream(comm_stream)
     end_event.record()
-    
+
     torch.cuda.synchronize()
 
     matmul_per_iter_ms = []
     for i in range(benchmark_steps):
         matmul_per_iter_ms.append(matmul_start_events[i].elapsed_time(matmul_end_events[i]))
-    
+
     # matmul_per_iter_avg = sum(matmul_per_iter_ms) / benchmark_steps
     # matmul_per_iter_max = max(matmul_per_iter_ms)
     # matmul_per_iter_min = min(matmul_per_iter_ms)
@@ -138,25 +139,28 @@ if __name__ == "__main__":
     #     with_stack=True,
     # ) as prof:
     for matmul_size, comm_size in product(matmul_sizes, comm_sizes):
-        matmul_time, comm_time, matmul_comm_time, overlapped_matmul_time, overlapped_comm_time, matmul_per_iter_ms = benchmark(
-            matmul_size,
-            comm_size,
-            matmul_stream,
-            comm_stream,
+        matmul_time, comm_time, matmul_comm_time, overlapped_matmul_time, overlapped_comm_time, matmul_per_iter_ms = (
+            benchmark(
+                matmul_size,
+                comm_size,
+                matmul_stream,
+                comm_stream,
+            )
         )
-        
+
         max_idx, matmul_per_iter_max = max(enumerate(matmul_per_iter_ms), key=lambda x: x[1])
         min_idx, matmul_per_iter_min = min(enumerate(matmul_per_iter_ms), key=lambda x: x[1])
         matmul_per_iter_avg = sum(matmul_per_iter_ms) / len(matmul_per_iter_ms)
-        
-        
-        results.append({
-            "matmul_size": matmul_size,
-            "comm_size": comm_size,
-            "matmul_time": matmul_time,
-            "comm_time": comm_time,
-            "matmul_comm_time": matmul_comm_time,  
-        })
+
+        results.append(
+            {
+                "matmul_size": matmul_size,
+                "comm_size": comm_size,
+                "matmul_time": matmul_time,
+                "comm_time": comm_time,
+                "matmul_comm_time": matmul_comm_time,
+            }
+        )
         if rank == 0:
             print(
                 f"matmul size: {matmul_size[0]}x{matmul_size[1]}, comm size: {comm_size[0]}x{comm_size[1]}",
@@ -170,7 +174,7 @@ if __name__ == "__main__":
             print(f"  matmul per iter max@[{max_idx}]:  {matmul_per_iter_max:.4f}ms")
             print(f"  matmul per iter min@[{min_idx}]:  {matmul_per_iter_min:.4f}ms")
             print("-" * 60)
-            
+
             print(matmul_per_iter_ms)
 
     if rank == 0:

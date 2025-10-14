@@ -59,7 +59,7 @@ class matmul(torch.autograd.Function):
         assert a.shape[1] == b.shape[0], "incompatible dimensions"
         M, K = a.shape
         _, N = b.shape
-        
+
         Comm_M, Comm_N = comm_tensor.shape
 
         num_xcds = 1

@@ -300,12 +300,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         matmul.set_debug(False)
         shmem.info("Benchmarking...")
         perf = lambda ms: 2 * args["m"] * args["n"] * args["k"] * 1e-12 / (ms * 1e-3)
-        
+
         if args["profile"] and rank == 0:
             shmem.info("Profiling enabled on rank 0...")
-            profile_dir = f"./profiler_traces"
+            profile_dir = "./profiler_traces"
             os.makedirs(profile_dir, exist_ok=True)
-            
+
             with torch.profiler.profile(
                 activities=[
                     torch.profiler.ProfilerActivity.CPU,
@@ -320,13 +320,13 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 for _ in range(5):  # wait=1, warmup=1, active=3
                     run_experiment()
                     prof.step()
-            
+
             shmem.info(f"Profiler trace saved to {profile_dir}")
         elif args["profile"] and rank != 0:
             # Other ranks still need to run the same number of experiments to stay in sync
             for _ in range(5):
                 run_experiment()
-            
+
         triton_ms = iris.do_bench(run_experiment, shmem.barrier)
         triton_tflops = perf(triton_ms)
         algo_string = "all_scatter"

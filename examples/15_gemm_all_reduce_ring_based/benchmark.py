@@ -272,18 +272,22 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     if not is_triton_interpret_set():
         gemm_registers = matmul.get_matmul_registers()
         gemm_spills = matmul.get_matmul_spills()
-        
+
         # Get communication kernel resource usage
         comm_registers = ar.n_regs if ar is not None else None
         comm_spills = ar.n_spills if ar is not None else None
 
     # Start PyTorch profiler (if enabled)
-    profiler_context = torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
-        record_shapes=True,
-        with_stack=True,
-    ) if args["profile"] else nullcontext()
-    
+    profiler_context = (
+        torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
+            record_shapes=True,
+            with_stack=True,
+        )
+        if args["profile"]
+        else nullcontext()
+    )
+
     with profiler_context as prof:
         if args["validate"]:
             shmem.info("Validating...")
@@ -306,7 +310,9 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             triton_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
             triton_tflops = perf(triton_ms)
             algo_string = "all_reduce"
-            shmem.info(f"tile matmul + {algo_string} (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops")
+            shmem.info(
+                f"tile matmul + {algo_string} (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
+            )
 
             json_writer.add_field("tflops", triton_tflops)
             json_writer.add_field("total_ms", triton_ms)

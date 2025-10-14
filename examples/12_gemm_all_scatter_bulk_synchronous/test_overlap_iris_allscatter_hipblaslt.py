@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.profiler
 
 # Add parent directory to path to import iris modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 import iris
 from gemm_all_scatter_bulk_synchronous import persistent_all_scatter
@@ -34,7 +34,7 @@ def benchmark(
 ):
     torch.cuda.empty_cache()
     num_xcds = iris.hip.get_num_xcc()
-    
+
     with torch.device("cuda"):
         A = torch.randn(*matmul_size[0], dtype=torch.bfloat16)
         B = torch.randn(*matmul_size[1], dtype=torch.bfloat16)
@@ -180,7 +180,7 @@ def benchmark(
     torch.cuda.current_stream().wait_stream(matmul_stream)
     torch.cuda.current_stream().wait_stream(comm_stream)
     end_event.record()
-    
+
     torch.cuda.synchronize()
 
     matmul_comm_time = start_event.elapsed_time(end_event) / benchmark_steps
@@ -197,15 +197,15 @@ if __name__ == "__main__":
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    
+
     # Initialize iris shared memory
     heap_size = 1 << 33  # 8GB
     shmem = iris.iris(heap_size)
-    
+
     # Get compute unit count and calculate comm_sms
     cu_count = torch.cuda.get_device_properties(local_rank).multi_processor_count
     comm_sms = 2 ** int(math.log2(cu_count)) if cu_count > 0 else 1
-    
+
     # Tiling parameters
     BLK_M = 256
     BLK_N = 64
@@ -216,20 +216,18 @@ if __name__ == "__main__":
 
     # Define matmul sizes as (size_A, size_B) for A @ B
     # A=(3840, 4352), B=(4352, 3840)
-    matmul_sizes = [
-        ((3840, 4352), (4352, 3840))
-    ]
-    
+    matmul_sizes = [((3840, 4352), (4352, 3840))]
+
     # comm_sizes use the same shape as matrix A
     comm_sizes = [(3840, 4352)]
-    
+
     if rank == 0:
         print(f"Using iris persistent_all_scatter with world_size={world_size}")
         print(f"comm_sms={comm_sms}, BLK_M={BLK_M}, BLK_N={BLK_N}")
         print(f"Matmul: A @ B where A={matmul_sizes[0][0]}, B={matmul_sizes[0][1]}")
         print(f"Comm size: {comm_sizes[0]}")
     results = []
-    
+
     with torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
         record_shapes=True,
@@ -252,22 +250,24 @@ if __name__ == "__main__":
             # Get environment variables
             tensile_grid = os.environ.get("TENSILE_STREAMK_FIXED_GRID", "unset")
             nccl_channels = os.environ.get("NCCL_MAX_NCHANNELS", "unset")
-            
+
             size_A, size_B = matmul_size
-            results.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "tensile_streamk_fixed_grid": tensile_grid,
-                "nccl_max_nchannels": nccl_channels,
-                "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
-                "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
-                "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
-                "matmul_time": matmul_time,
-                "comm_time": comm_time,
-                "matmul_comm_time": matmul_comm_time,
-                "overlapped_matmul_time": overlapped_matmul_time,
-                "overlapped_comm_time": overlapped_comm_time,
-                "overlapped_matmul_time_ratio":  overlapped_matmul_time/matmul_time,
-            })
+            results.append(
+                {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "tensile_streamk_fixed_grid": tensile_grid,
+                    "nccl_max_nchannels": nccl_channels,
+                    "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
+                    "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
+                    "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
+                    "matmul_time": matmul_time,
+                    "comm_time": comm_time,
+                    "matmul_comm_time": matmul_comm_time,
+                    "overlapped_matmul_time": overlapped_matmul_time,
+                    "overlapped_comm_time": overlapped_comm_time,
+                    "overlapped_matmul_time_ratio": overlapped_matmul_time / matmul_time,
+                }
+            )
             if rank == 0:
                 print(
                     f"A: {size_A[0]}x{size_A[1]} @ B: {size_B[0]}x{size_B[1]}, comm: {comm_size[0]}x{comm_size[1]}",
@@ -282,14 +282,14 @@ if __name__ == "__main__":
     if rank == 0:
         prof.export_chrome_trace(f"iris_allscatter_hipblaslt_trace_rank{rank}.json")
         print(f"Profiler trace saved to iris_allscatter_hipblaslt_trace_rank{rank}.json")
-        
+
         with open("overlap_results.json", "w") as f:
             json.dump(results, f)
-        
+
         # Save to Excel with append functionality
         excel_file = "overlap_results_200.xlsx"
         df = pd.DataFrame(results)
-        
+
         # Check if Excel file exists
         if os.path.exists(excel_file):
             # Read existing data and append new results
@@ -299,7 +299,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Warning: Could not read existing Excel file: {e}")
                 print("Creating new Excel file...")
-        
+
         # Save to Excel
         try:
             df.to_excel(excel_file, index=False)

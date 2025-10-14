@@ -12,7 +12,7 @@ import torch.distributed as dist
 import torch.profiler
 
 # Add parent directory to path to import iris modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 import iris
 from gemm_all_reduce_ring_based import persistent_all_reduce
@@ -35,7 +35,7 @@ def benchmark(
 ):
     torch.cuda.empty_cache()
     num_xcds = iris.hip.get_num_xcc()
-    
+
     with torch.device("cuda"):
         A = torch.randn(*matmul_size[0], dtype=torch.bfloat16)
         B = torch.randn(*matmul_size[1], dtype=torch.bfloat16)
@@ -43,7 +43,7 @@ def benchmark(
         C = shmem.zeros(comm_size, device="cuda", dtype=torch.bfloat16)
         local_C = shmem.randn(*comm_size, device="cuda", dtype=torch.bfloat16)
         ring_buffer = shmem.zeros_like(C, dtype=torch.float32)
-        
+
         # Calculate total tiles for locks and flags
         total_blocks_M = math.ceil(comm_size[0] / BLK_M)
         total_blocks_N = math.ceil(comm_size[1] / BLK_N)
@@ -76,7 +76,7 @@ def benchmark(
     flags.zero_()
     ring_buffer.zero_()
     shmem.barrier()
-    
+
     for _ in range(warmup_steps):
         with torch.cuda.stream(comm_stream):
             persistent_all_reduce[(comm_sms,)](
@@ -105,7 +105,7 @@ def benchmark(
     # Time each iteration separately (like iris.do_bench does)
     start_events = [torch.cuda.Event(enable_timing=True) for _ in range(benchmark_steps)]
     end_events = [torch.cuda.Event(enable_timing=True) for _ in range(benchmark_steps)]
-    
+
     for i in range(benchmark_steps):
         # Reset synchronization primitives before each iteration (preamble)
         shmem.barrier()
@@ -113,7 +113,7 @@ def benchmark(
         flags.zero_()
         ring_buffer.zero_()
         shmem.barrier()
-        
+
         # Time this iteration
         start_events[i].record(comm_stream)
         with torch.cuda.stream(comm_stream):
@@ -137,10 +137,10 @@ def benchmark(
                 world_size,
             )
         end_events[i].record(comm_stream)
-    
+
     torch.cuda.synchronize()
     shmem.barrier()
-    
+
     # Calculate average time
     comm_times = [start_events[i].elapsed_time(end_events[i]) for i in range(benchmark_steps)]
     comm_time = sum(comm_times) / benchmark_steps
@@ -152,7 +152,7 @@ def benchmark(
     flags.zero_()
     ring_buffer.zero_()
     shmem.barrier()
-    
+
     for _ in range(warmup_steps):
         with torch.cuda.stream(matmul_stream):
             torch.matmul(A, B)
@@ -195,7 +195,7 @@ def benchmark(
         flags.zero_()
         ring_buffer.zero_()
         shmem.barrier()
-        
+
         # Time this iteration
         start_events[i].record()
         matmul_stream.wait_stream(torch.cuda.current_stream())
@@ -233,15 +233,17 @@ def benchmark(
         torch.cuda.current_stream().wait_stream(matmul_stream)
         torch.cuda.current_stream().wait_stream(comm_stream)
         end_events[i].record()
-    
+
     torch.cuda.synchronize()
     shmem.barrier()
 
     # Calculate average times
     matmul_comm_times = [start_events[i].elapsed_time(end_events[i]) for i in range(benchmark_steps)]
-    overlapped_matmul_times = [start_matmul_events[i].elapsed_time(end_matmul_events[i]) for i in range(benchmark_steps)]
+    overlapped_matmul_times = [
+        start_matmul_events[i].elapsed_time(end_matmul_events[i]) for i in range(benchmark_steps)
+    ]
     overlapped_comm_times = [start_comm_events[i].elapsed_time(end_comm_events[i]) for i in range(benchmark_steps)]
-    
+
     matmul_comm_time = sum(matmul_comm_times) / benchmark_steps
     overlapped_matmul_time = sum(overlapped_matmul_times) / benchmark_steps
     overlapped_comm_time = sum(overlapped_comm_times) / benchmark_steps
@@ -255,28 +257,28 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--comm_sms", 
-        type=int, 
-        default=None, 
-        help="Number of SMs for All-Reduce kernel (defaults to 2^floor(log2(cu_count)))"
+        "--comm_sms",
+        type=int,
+        default=None,
+        help="Number of SMs for All-Reduce kernel (defaults to 2^floor(log2(cu_count)))",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    
+
     dist.init_process_group(backend="nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    
+
     # Initialize iris shared memory
     heap_size = 1 << 33  # 8GB
     shmem = iris.iris(heap_size)
-    
+
     # Get compute unit count and calculate comm_sms if not provided
     cu_count = torch.cuda.get_device_properties(local_rank).multi_processor_count
     if args.comm_sms is None:
@@ -285,7 +287,7 @@ if __name__ == "__main__":
         comm_sms = args.comm_sms
     print(f"comm_sms={comm_sms}")
     print(f"cu_count={cu_count}")
-    
+
     # Tiling parameters
     BLK_M = 256
     BLK_N = 64
@@ -296,20 +298,18 @@ if __name__ == "__main__":
 
     # Define matmul sizes as (size_A, size_B) for A @ B
     # A=(3840, 4352), B=(4352, 3840)
-    matmul_sizes = [
-        ((3840, 4352), (4352, 3840))
-    ]
-    
+    matmul_sizes = [((3840, 4352), (4352, 3840))]
+
     # comm_sizes use the same shape as matrix A
     comm_sizes = [(3840, 4352)]
-    
+
     if rank == 0:
         print(f"Using iris persistent_all_reduce with world_size={world_size}")
         print(f"comm_sms={comm_sms}, BLK_M={BLK_M}, BLK_N={BLK_N}")
         print(f"Matmul: A @ B where A={matmul_sizes[0][0]}, B={matmul_sizes[0][1]}")
         print(f"Comm size: {comm_sizes[0]}")
     results = []
-    
+
     with torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
         record_shapes=True,
@@ -332,22 +332,24 @@ if __name__ == "__main__":
             # Get environment variables
             tensile_grid = os.environ.get("TENSILE_STREAMK_FIXED_GRID", "unset")
             nccl_channels = os.environ.get("NCCL_MAX_NCHANNELS", "unset")
-            
+
             size_A, size_B = matmul_size
-            results.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "tensile_streamk_fixed_grid": tensile_grid,
-                "nccl_max_nchannels": nccl_channels,
-                "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
-                "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
-                "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
-                "matmul_time": matmul_time,
-                "comm_time": comm_time,
-                "matmul_comm_time": matmul_comm_time,
-                "overlapped_matmul_time": overlapped_matmul_time,
-                "overlapped_comm_time": overlapped_comm_time,
-                "overlapped_matmul_time_ratio":  overlapped_matmul_time/matmul_time,
-            })
+            results.append(
+                {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "tensile_streamk_fixed_grid": tensile_grid,
+                    "nccl_max_nchannels": nccl_channels,
+                    "matmul_A_shape": f"{size_A[0]}x{size_A[1]}",
+                    "matmul_B_shape": f"{size_B[0]}x{size_B[1]}",
+                    "comm_shape": f"{comm_size[0]}x{comm_size[1]}",
+                    "matmul_time": matmul_time,
+                    "comm_time": comm_time,
+                    "matmul_comm_time": matmul_comm_time,
+                    "overlapped_matmul_time": overlapped_matmul_time,
+                    "overlapped_comm_time": overlapped_comm_time,
+                    "overlapped_matmul_time_ratio": overlapped_matmul_time / matmul_time,
+                }
+            )
             if rank == 0:
                 print(
                     f"A: {size_A[0]}x{size_A[1]} @ B: {size_B[0]}x{size_B[1]}, comm: {comm_size[0]}x{comm_size[1]}",
@@ -362,14 +364,14 @@ if __name__ == "__main__":
     if rank == 0:
         prof.export_chrome_trace(f"iris_allreduce_hipblaslt_trace_rank{rank}.json")
         print(f"Profiler trace saved to iris_allreduce_hipblaslt_trace_rank{rank}.json")
-        
+
         with open("overlap_results.json", "w") as f:
             json.dump(results, f)
-        
+
         # Save to Excel with append functionality
         excel_file = "overlap_results_200.xlsx"
         df = pd.DataFrame(results)
-        
+
         # Check if Excel file exists
         if os.path.exists(excel_file):
             # Read existing data and append new results
@@ -379,7 +381,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Warning: Could not read existing Excel file: {e}")
                 print("Creating new Excel file...")
-        
+
         # Save to Excel
         try:
             df.to_excel(excel_file, index=False)

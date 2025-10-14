@@ -163,7 +163,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
     # Allocate Timestamps
     timestamps = Timestamps(num_tiles=total_tiles)
-    
+
     # Create separate streams for overlap testing
     gemm_stream = torch.cuda.Stream()
     comm_stream = torch.cuda.Stream()
@@ -235,49 +235,72 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing[k]["ms"] += ms
 
         torch.cuda.nvtx.range_pop()
-    
+
     def run_overlap_test():
         """Test overlapped execution of GEMM and communication"""
         nonlocal C
-        
+
         shmem.barrier()
-        
+
         # Create test tensor for communication
         comm_tensor = shmem.randn(args["M"], args["n"], device="cuda", dtype=A.dtype)
-        
+
         # Test 1: GEMM alone
         gemm_alone_event_start = torch.cuda.Event(enable_timing=True)
         gemm_alone_event_end = torch.cuda.Event(enable_timing=True)
-        
+
         gemm_alone_event_start.record(gemm_stream)
         with torch.cuda.stream(gemm_stream):
             C_test = matmul.apply(
-                local_A, local_B, C, bias, rank, world_size,
-                args["gemm_sms"], args["BLK_M"], args["BLK_N"], args["BLK_K"],
-                args["gsize_m"], shmem.get_heap_bases(), "gfx942",
-                False, None, None,
+                local_A,
+                local_B,
+                C,
+                bias,
+                rank,
+                world_size,
+                args["gemm_sms"],
+                args["BLK_M"],
+                args["BLK_N"],
+                args["BLK_K"],
+                args["gsize_m"],
+                shmem.get_heap_bases(),
+                "gfx942",
+                False,
+                None,
+                None,
             )
         gemm_alone_event_end.record(gemm_stream)
         torch.cuda.synchronize()
         gemm_alone_time = gemm_alone_event_start.elapsed_time(gemm_alone_event_end)
-        
+
         # Test 2: Communication alone
         comm_alone_event_start = torch.cuda.Event(enable_timing=True)
         comm_alone_event_end = torch.cuda.Event(enable_timing=True)
-        
+
         comm_alone_event_start.record(comm_stream)
         with torch.cuda.stream(comm_stream):
             persistent_all_scatter[(args["comm_sms"],)](
-                comm_tensor, args["M"], args["n"],
-                comm_tensor.stride(0), comm_tensor.stride(1),
-                args["BLK_M"], args["BLK_N"], args["gsize_m"],
-                args["comm_sms"], num_xcds, shmem.get_heap_bases(),
-                rank, world_size, False, None, None,
+                comm_tensor,
+                args["M"],
+                args["n"],
+                comm_tensor.stride(0),
+                comm_tensor.stride(1),
+                args["BLK_M"],
+                args["BLK_N"],
+                args["gsize_m"],
+                args["comm_sms"],
+                num_xcds,
+                shmem.get_heap_bases(),
+                rank,
+                world_size,
+                False,
+                None,
+                None,
             )
         comm_alone_event_end.record(comm_stream)
         torch.cuda.synchronize()
         comm_alone_time = comm_alone_event_start.elapsed_time(comm_alone_event_end)
-        
+
         # Test 3: Overlapped execution
         overlap_start_event = torch.cuda.Event(enable_timing=True)
         overlap_end_event = torch.cuda.Event(enable_timing=True)
@@ -285,45 +308,68 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         gemm_overlap_end = torch.cuda.Event(enable_timing=True)
         comm_overlap_start = torch.cuda.Event(enable_timing=True)
         comm_overlap_end = torch.cuda.Event(enable_timing=True)
-        
+
         overlap_start_event.record()
         gemm_stream.wait_stream(torch.cuda.current_stream())
         comm_stream.wait_stream(torch.cuda.current_stream())
-        
+
         gemm_overlap_start.record(gemm_stream)
         comm_overlap_start.record(comm_stream)
-        
+
         with torch.cuda.stream(gemm_stream):
             C_test = matmul.apply(
-                local_A, local_B, C, bias, rank, world_size,
-                args["gemm_sms"], args["BLK_M"], args["BLK_N"], args["BLK_K"],
-                args["gsize_m"], shmem.get_heap_bases(), "gfx942",
-                False, None, None,
+                local_A,
+                local_B,
+                C,
+                bias,
+                rank,
+                world_size,
+                args["gemm_sms"],
+                args["BLK_M"],
+                args["BLK_N"],
+                args["BLK_K"],
+                args["gsize_m"],
+                shmem.get_heap_bases(),
+                "gfx942",
+                False,
+                None,
+                None,
             )
-        
+
         with torch.cuda.stream(comm_stream):
             persistent_all_scatter[(args["comm_sms"],)](
-                comm_tensor, args["M"], args["n"],
-                comm_tensor.stride(0), comm_tensor.stride(1),
-                args["BLK_M"], args["BLK_N"], args["gsize_m"],
-                args["comm_sms"], num_xcds, shmem.get_heap_bases(),
-                rank, world_size, False, None, None,
+                comm_tensor,
+                args["M"],
+                args["n"],
+                comm_tensor.stride(0),
+                comm_tensor.stride(1),
+                args["BLK_M"],
+                args["BLK_N"],
+                args["gsize_m"],
+                args["comm_sms"],
+                num_xcds,
+                shmem.get_heap_bases(),
+                rank,
+                world_size,
+                False,
+                None,
+                None,
             )
-        
+
         gemm_overlap_end.record(gemm_stream)
         comm_overlap_end.record(comm_stream)
-        
+
         torch.cuda.current_stream().wait_stream(gemm_stream)
         torch.cuda.current_stream().wait_stream(comm_stream)
         overlap_end_event.record()
         torch.cuda.synchronize()
-        
+
         overlapped_total_time = overlap_start_event.elapsed_time(overlap_end_event)
         overlapped_gemm_time = gemm_overlap_start.elapsed_time(gemm_overlap_end)
         overlapped_comm_time = comm_overlap_start.elapsed_time(comm_overlap_end)
-        
+
         shmem.barrier()
-        
+
         return {
             "gemm_alone_ms": gemm_alone_time,
             "comm_alone_ms": comm_alone_time,
@@ -371,11 +417,11 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     if args["benchmark"]:
         matmul.set_debug(False)
         shmem.info("Benchmarking...")
-        
+
         # Run overlap test first
         shmem.info("Running overlap analysis...")
         overlap_stats = run_overlap_test()
-        
+
         if rank == 0:
             shmem.info("=" * 70)
             shmem.info("Overlap Analysis Results:")
@@ -386,13 +432,13 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             shmem.info(f"  overlapped comm:      {overlap_stats['overlapped_comm_ms']:.4f} ms")
             shmem.info(f"  overlap ratio:        {overlap_stats['overlap_ratio']:.4f}")
             shmem.info("=" * 70)
-        
+
         # Add overlap stats to JSON
         for key, value in overlap_stats.items():
             json_writer.add_field(key, value)
-        
+
         shmem.barrier()
-        
+
         # Run with profiler
         shmem.info("Running profiler...")
         with torch.profiler.profile(
@@ -401,14 +447,14 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             with_stack=True,
         ) as prof:
             run_experiment()
-        
+
         if rank == 0:
             trace_file = f"iris_benchmark_trace_rank{rank}.json"
             prof.export_chrome_trace(trace_file)
             shmem.info(f"Profiler trace saved to {trace_file}")
-        
+
         shmem.barrier()
-        
+
         # Now run the actual benchmark (sequential execution)
         perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
         triton_ms = iris.do_bench(run_experiment, shmem.barrier)
