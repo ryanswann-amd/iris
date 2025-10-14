@@ -5,6 +5,7 @@
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import torch.profiler
 import triton
 import random
 import sys
@@ -12,6 +13,7 @@ import os
 import argparse
 import json
 import math
+from contextlib import nullcontext
 
 from examples.common.utils import (
     JSONWriter,
@@ -41,6 +43,7 @@ def parse_args():
     parser.add_argument("-v", "--validate", action="store_true", help="Enable validation mode")
     parser.add_argument("-t", "--trace_tiles", action="store_true", help="Enable tile-tracing mode")
     parser.add_argument("-b", "--benchmark", action="store_true", help="Enable benchmarking mode")
+    parser.add_argument("-p", "--profile", action="store_true", help="Enable PyTorch profiler to generate chrome trace")
     parser.add_argument(
         "--datatype",
         type=str,
@@ -141,6 +144,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     ring_buffer = shmem.zeros_like(C, dtype=torch.float32)
 
     bias = None
+    ar = None  # Will hold the all_reduce kernel reference for resource inspection
 
     gemm_stream = torch.cuda.Stream()
     comm_stream = torch.cuda.Stream()
@@ -178,6 +182,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         nonlocal C
         nonlocal kernel_timing
         nonlocal ring_buffer
+        nonlocal ar
 
         shmem.barrier()
 
@@ -259,45 +264,72 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         kernel_timing[k]["ms"] = 0
         kernel_timing[k]["experiments"] = 0
 
-    if args["validate"]:
-        shmem.info("Validating...")
-        matmul.set_debug(True)
-        # Validate global result
-        success = validate_gemm(A, B, C, shmem, atol=2)
-        passed_str = "passed" if success else "failed"
-        shmem.info(f"Final C validation {passed_str}.")
+    # Get kernel resource usage after warmup (before set_debug(False) in benchmark mode)
+    gemm_registers = None
+    gemm_spills = None
+    comm_registers = None
+    comm_spills = None
+    if not is_triton_interpret_set():
+        gemm_registers = matmul.get_matmul_registers()
+        gemm_spills = matmul.get_matmul_spills()
+        
+        # Get communication kernel resource usage
+        comm_registers = ar.n_regs if ar is not None else None
+        comm_spills = ar.n_spills if ar is not None else None
 
-        # Wait for all to finish validation
-        shmem.barrier()
-        shmem.info("Validation completed")
+    # Start PyTorch profiler (if enabled)
+    profiler_context = torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
+        record_shapes=True,
+        with_stack=True,
+    ) if args["profile"] else nullcontext()
+    
+    with profiler_context as prof:
+        if args["validate"]:
+            shmem.info("Validating...")
+            matmul.set_debug(True)
+            # Validate global result
+            success = validate_gemm(A, B, C, shmem, atol=2)
+            passed_str = "passed" if success else "failed"
+            shmem.info(f"Final C validation {passed_str}.")
 
-        json_writer.add_field("success", success)
+            # Wait for all to finish validation
+            shmem.barrier()
+            shmem.info("Validation completed")
 
-        if not is_triton_interpret_set():
-            gemm_registers = matmul.get_matmul_registers()
-            gemm_spills = matmul.get_matmul_spills()
+            json_writer.add_field("success", success)
 
-            json_writer.add_field("gemm_registers", gemm_registers)
-            json_writer.add_field("gemm_spills", gemm_spills)
+        if args["benchmark"]:
+            matmul.set_debug(False)
+            shmem.info("Benchmarking...")
+            perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
+            triton_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
+            triton_tflops = perf(triton_ms)
+            algo_string = "all_reduce"
+            shmem.info(f"tile matmul + {algo_string} (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops")
 
-    if args["benchmark"]:
-        matmul.set_debug(False)
-        shmem.info("Benchmarking...")
-        perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
-        triton_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
-        triton_tflops = perf(triton_ms)
-        algo_string = "all_reduce"
-        shmem.info(f"tile matmul + {algo_string} (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops")
+            json_writer.add_field("tflops", triton_tflops)
+            json_writer.add_field("total_ms", triton_ms)
 
-        json_writer.add_field("tflops", triton_tflops)
-        json_writer.add_field("total_ms", triton_ms)
+            for k in ["gemm", "communication"]:
+                json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
+                json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
 
-        for k in ["gemm", "communication"]:
-            json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
-            json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
+            # Wait for all to finish benchmarking
+            shmem.barrier()
 
-        # Wait for all to finish benchmarking
-        shmem.barrier()
+    # Export profiler trace (if profiler was enabled)
+    if args["profile"] and rank == 0:
+        trace_file = f"iris_gemm_iris_allreduce_trace_rank{rank}.json.gz"
+        prof.export_chrome_trace(trace_file)
+        shmem.info(f"Profiler trace saved to {trace_file}")
+
+    # Record kernel resource usage (for both validation and benchmark modes)
+    if not is_triton_interpret_set():
+        json_writer.add_field("gemm_registers", gemm_registers)
+        json_writer.add_field("gemm_spills", gemm_spills)
+        json_writer.add_field("comm_registers", comm_registers)
+        json_writer.add_field("comm_spills", comm_spills)
 
     if rank == 0:
         json_writer.flush()
