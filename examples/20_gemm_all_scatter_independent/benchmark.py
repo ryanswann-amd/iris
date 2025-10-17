@@ -211,7 +211,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         torch.cuda.nvtx.range_push("Communication")
         with torch.cuda.stream(comm_stream):
             kernel_timing["communication"]["start_event"].record()
-            comm_results =persistent_all_scatter[(args["comm_sms"],)](
+            comm_results = persistent_all_scatter[(args["comm_sms"],)](
                 C_comm_global,
                 args["m_comm"],
                 n_comm_local,
@@ -249,7 +249,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing[k]["ms"] += ms
 
         torch.cuda.nvtx.range_pop()
-   
+
     # Synchronize across all GPUs
     shmem.barrier()
 

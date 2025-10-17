@@ -224,7 +224,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing["communication"]["end_event"].record()
             kernel_timing["communication"]["experiments"] += 1
         torch.cuda.nvtx.range_pop()
-        
+
         torch.cuda.nvtx.range_push("GEMM")
         with torch.cuda.stream(gemm_stream):
             kernel_timing["gemm"]["start_event"].record()
@@ -250,7 +250,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing["gemm"]["experiments"] += 1
 
         torch.cuda.nvtx.range_pop()
-        
+
         shmem.barrier()
 
         for k in ["gemm", "communication"]:

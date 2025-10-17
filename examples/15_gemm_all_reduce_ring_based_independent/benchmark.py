@@ -230,7 +230,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             )
             kernel_timing["communication"]["end_event"].record(comm_stream)
         torch.cuda.nvtx.range_pop()
-        
+
         torch.cuda.nvtx.range_push("GEMM")
         with torch.cuda.stream(gemm_stream):
             kernel_timing["gemm"]["start_event"].record(gemm_stream)
@@ -255,7 +255,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing["gemm"]["end_event"].record(gemm_stream)
 
         torch.cuda.nvtx.range_pop()
-        
+
         # Synchronize events before calculating time
         torch.cuda.synchronize()
         for k in ["gemm", "communication"]:
@@ -409,16 +409,16 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             if rank == 0:
                 shmem.info("Benchmarking...")
             perf = lambda ms: 2 * args["m"] * args["n"] * args["k"] * 1e-12 / (ms * 1e-3)
-            
+
             benchmark_mode = args["benchmark_mode"]
-            
+
             if benchmark_mode == "all":
                 # Run all three benchmarks sequentially: GEMM -> Comm -> Overlap
                 if rank == 0:
-                    shmem.info("="*60)
+                    shmem.info("=" * 60)
                     shmem.info("Running sequential benchmarks: GEMM -> Comm -> Overlap")
-                    shmem.info("="*60)
-                
+                    shmem.info("=" * 60)
+
                 # 1. GEMM Only
                 if rank == 0:
                     shmem.info("\n[1/3] Benchmarking GEMM only...")
@@ -428,15 +428,17 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                     kernel_timing[k]["ms"] = 0
                     kernel_timing[k]["experiments"] = 0
                 shmem.barrier()
-                
+
                 gemm_ms = iris.do_bench(run_gemm_only, shmem.barrier, preamble)
                 gemm_tflops = perf(gemm_ms)
                 if rank == 0:
                     shmem.info(f"  GEMM only: {gemm_ms:.3f} ms  {gemm_tflops:.3f} tflops")
                 json_writer.add_field("gemm_only_ms", gemm_ms)
                 json_writer.add_field("gemm_only_tflops", gemm_tflops)
-                json_writer.add_field("gemm_only_measured_ms", kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"])
-                
+                json_writer.add_field(
+                    "gemm_only_measured_ms", kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"]
+                )
+
                 # 2. Communication Only
                 if rank == 0:
                     shmem.info("\n[2/3] Benchmarking Communication only...")
@@ -446,14 +448,17 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                     kernel_timing[k]["ms"] = 0
                     kernel_timing[k]["experiments"] = 0
                 shmem.barrier()
-                
+
                 comm_ms = iris.do_bench(run_comm_only, shmem.barrier, preamble)
                 algo_string = "all_reduce"
                 if rank == 0:
                     shmem.info(f"  Communication only ({algo_string}): {comm_ms:.3f} ms")
                 json_writer.add_field("comm_only_ms", comm_ms)
-                json_writer.add_field("comm_only_measured_ms", kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"])
-                
+                json_writer.add_field(
+                    "comm_only_measured_ms",
+                    kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"],
+                )
+
                 # 3. Overlap (Both)
                 if rank == 0:
                     shmem.info("\n[3/3] Benchmarking Overlap (GEMM + Comm)...")
@@ -463,30 +468,35 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                     kernel_timing[k]["ms"] = 0
                     kernel_timing[k]["experiments"] = 0
                 shmem.barrier()
-                
+
                 overlap_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
                 overlap_tflops = perf(overlap_ms)
                 if rank == 0:
                     shmem.info(f"  Overlap (GEMM + {algo_string}): {overlap_ms:.3f} ms  {overlap_tflops:.3f} tflops")
                 json_writer.add_field("overlap_ms", overlap_ms)
                 json_writer.add_field("overlap_tflops", overlap_tflops)
-                json_writer.add_field("overlap_gemm_measured_ms", kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"])
-                json_writer.add_field("overlap_comm_measured_ms", kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"])
-                
+                json_writer.add_field(
+                    "overlap_gemm_measured_ms", kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"]
+                )
+                json_writer.add_field(
+                    "overlap_comm_measured_ms",
+                    kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"],
+                )
+
                 # Summary
                 if rank == 0:
-                    shmem.info("\n" + "="*60)
+                    shmem.info("\n" + "=" * 60)
                     shmem.info("Summary:")
                     shmem.info(f"  GEMM only:       {gemm_ms:.3f} ms ({gemm_tflops:.3f} tflops)")
                     shmem.info(f"  Comm only:       {comm_ms:.3f} ms")
                     shmem.info(f"  Overlap:         {overlap_ms:.3f} ms ({overlap_tflops:.3f} tflops)")
                     shmem.info(f"  GEMM + Comm sum: {gemm_ms + comm_ms:.3f} ms")
                     shmem.info(f"  Speedup:         {(gemm_ms + comm_ms) / overlap_ms:.2f}x")
-                    shmem.info("="*60)
-                
+                    shmem.info("=" * 60)
+
                 json_writer.add_field("gemm_comm_sum_ms", gemm_ms + comm_ms)
                 json_writer.add_field("speedup", (gemm_ms + comm_ms) / overlap_ms)
-            
+
             elif benchmark_mode == "both":
                 triton_ms = iris.do_bench(run_experiment, shmem.barrier, preamble)
                 triton_tflops = perf(triton_ms)
@@ -497,32 +507,31 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                     )
                 json_writer.add_field("tflops", triton_tflops)
                 json_writer.add_field("total_ms", triton_ms)
-                
+
                 for k in ["gemm", "communication"]:
                     json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
                     json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
-            
+
             elif benchmark_mode == "gemm":
                 triton_ms = iris.do_bench(run_gemm_only, shmem.barrier, preamble)
                 triton_tflops = perf(triton_ms)
                 if rank == 0:
-                    shmem.info(
-                        f"GEMM only (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
-                    )
+                    shmem.info(f"GEMM only (grid={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops")
                 json_writer.add_field("tflops", triton_tflops)
                 json_writer.add_field("total_ms", triton_ms)
                 json_writer.add_field("gemm_ms", kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"])
                 json_writer.add_field("gemm_experiments", kernel_timing["gemm"]["experiments"])
-            
+
             elif benchmark_mode == "comm":
                 triton_ms = iris.do_bench(run_comm_only, shmem.barrier, preamble)
                 algo_string = "all_reduce"
                 if rank == 0:
-                    shmem.info(
-                        f"Communication only ({algo_string}, grid={total_tiles}): {triton_ms:.3f} ms"
-                    )
+                    shmem.info(f"Communication only ({algo_string}, grid={total_tiles}): {triton_ms:.3f} ms")
                 json_writer.add_field("total_ms", triton_ms)
-                json_writer.add_field("communication_ms", kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"])
+                json_writer.add_field(
+                    "communication_ms",
+                    kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"],
+                )
                 json_writer.add_field("communication_experiments", kernel_timing["communication"]["experiments"])
 
             # Wait for all to finish benchmarking
