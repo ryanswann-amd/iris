@@ -167,3 +167,52 @@ def read_realtime():
         pack=1,
     )
     return tmp
+
+
+@triton.jit
+def apply_xcd_reordering(pid, NUM_XCDS: tl.constexpr, NUM_SMS: tl.constexpr):
+    """
+    Apply XCD (compute die) space-filling curve reordering to program ID.
+
+    This function reorders program IDs to improve locality when multiple compute
+    dies (XCDs) are present. It ensures that consecutive PIDs are distributed
+    across different XCDs before moving to the next set of programs within an XCD.
+
+    Args:
+        pid: The original program ID from tl.program_id(0)
+        NUM_XCDS: Number of compute dies (XCDs) in the system
+        NUM_SMS: Total number of streaming multiprocessors
+
+    Returns:
+        Reordered program ID that optimizes for XCD locality
+    """
+    if NUM_XCDS != 1:
+        return (pid % NUM_XCDS) * (NUM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+    return pid
+
+
+@triton.jit
+def compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M: tl.constexpr):
+    """
+    Compute 2D tile coordinates (pid_m, pid_n) from linear tile_id using swizzling.
+
+    This function implements a space-filling curve that groups tiles along the M
+    dimension to improve memory coalescing and cache locality. Tiles are organized
+    into groups of size GROUP_SIZE_M along the M dimension.
+
+    Args:
+        tile_id: Linear tile index
+        num_pid_m: Number of tiles in the M dimension
+        num_pid_n: Number of tiles in the N dimension
+        GROUP_SIZE_M: Size of tile groups along M dimension for swizzling
+
+    Returns:
+        Tuple of (pid_m, pid_n) representing the 2D coordinates of the tile
+    """
+    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    group_id = tile_id // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
+    pid_n = (tile_id % num_pid_in_group) // group_size_m
+    return pid_m, pid_n

@@ -3,7 +3,7 @@
 
 import triton
 import triton.language as tl
-from examples.common.utils import read_realtime
+from examples.common.utils import read_realtime, apply_xcd_reordering, compute_tile_coordinates
 
 import sys
 import os
@@ -44,8 +44,7 @@ def persistent_gemm(
 ):
     pid = tl.program_id(0)
 
-    if NUM_XCDS != 1:
-        pid = (pid % NUM_XCDS) * (GEMM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+    pid = apply_xcd_reordering(pid, NUM_XCDS, GEMM_SMS)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
@@ -64,12 +63,7 @@ def persistent_gemm(
             timestamp = read_realtime()
             tl.atomic_min(mm_begin_timestamp_ptr + tile_id, timestamp)
 
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        group_id = tile_id // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
-        pid_n = (tile_id % num_pid_in_group) // group_size_m
+        pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
@@ -155,19 +149,13 @@ def persistent_all_scatter(
 ):
     pid = tl.program_id(0)
 
-    if NUM_XCDS != 1:
-        pid = (pid % NUM_XCDS) * (COMM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+    pid = apply_xcd_reordering(pid, NUM_XCDS, COMM_SMS)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
     for tile_id in range(pid, total_tiles, COMM_SMS):
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        group_id = tile_id // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
-        pid_n = (tile_id % num_pid_in_group) // group_size_m
+        pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
         tl.assume(pid_m >= 0)
         tl.assume(pid_n >= 0)
