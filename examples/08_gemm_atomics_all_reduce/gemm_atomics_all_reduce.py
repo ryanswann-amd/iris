@@ -144,12 +144,7 @@ def persistent_gemm_all_reduce(
             timestamp = read_realtime()
             tl.atomic_min(mm_begin_timestamp_ptr + tile_id, timestamp)
 
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        group_id = tile_id // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
-        pid_n = (tile_id % num_pid_in_group) // group_size_m
+        pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
