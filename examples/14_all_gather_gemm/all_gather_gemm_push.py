@@ -4,7 +4,7 @@
 
 import triton
 import triton.language as tl
-from examples.common.utils import apply_xcd_reordering, compute_tile_coordinates
+from examples.common.utils import chiplet_reorder, program_id_reorder
 import iris
 import torch
 
@@ -100,7 +100,7 @@ def gemm_push_kernel(
     world_size: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    pid = apply_xcd_reordering(pid, NUM_XCDS, NUM_SMS)
+    pid = chiplet_reorder(pid, NUM_XCDS, NUM_SMS)
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -121,7 +121,7 @@ def gemm_push_kernel(
     acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
 
     for tile_id in range(pid, total_tiles, NUM_SMS):
-        pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
+        pid_m, pid_n = program_id_reorder(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
         tl.assume(pid_m >= 0)
         tl.assume(pid_n >= 0)

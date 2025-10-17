@@ -170,13 +170,13 @@ def read_realtime():
 
 
 @triton.jit
-def apply_xcd_reordering(pid, NUM_XCDS: tl.constexpr, NUM_SMS: tl.constexpr):
+def chiplet_reorder(pid, NUM_XCDS: tl.constexpr, NUM_SMS: tl.constexpr):
     """
     Apply XCD (compute die) space-filling curve reordering to program ID.
 
-    This function reorders program IDs to improve locality when multiple compute
-    dies (XCDs) are present. It ensures that consecutive PIDs are distributed
-    across different XCDs before moving to the next set of programs within an XCD.
+    This function reorders program IDs such that you fill an XCD with work
+    before going to the next XCD, improving locality when multiple compute
+    dies (chiplets) are present.
 
     Args:
         pid: The original program ID from tl.program_id(0)
@@ -192,7 +192,7 @@ def apply_xcd_reordering(pid, NUM_XCDS: tl.constexpr, NUM_SMS: tl.constexpr):
 
 
 @triton.jit
-def compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M: tl.constexpr):
+def program_id_reorder(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M: tl.constexpr):
     """
     Compute 2D tile coordinates (pid_m, pid_n) from linear tile_id using swizzling.
 

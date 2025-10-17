@@ -3,7 +3,7 @@
 
 import triton
 import triton.language as tl
-from examples.common.utils import read_realtime, apply_xcd_reordering, compute_tile_coordinates
+from examples.common.utils import read_realtime, chiplet_reorder, program_id_reorder
 
 import sys
 import os
@@ -23,7 +23,7 @@ def tile_id_to_index_range(
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
 
-    pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
+    pid_m, pid_n = program_id_reorder(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
     rm_start = pid_m * BLOCK_SIZE_M
     rn_start = pid_n * BLOCK_SIZE_N
@@ -125,7 +125,7 @@ def persistent_gemm_all_reduce(
 ):
     pid = tl.program_id(0)
 
-    pid = apply_xcd_reordering(pid, NUM_XCDS, NUM_SMS)
+    pid = chiplet_reorder(pid, NUM_XCDS, NUM_SMS)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
@@ -144,7 +144,7 @@ def persistent_gemm_all_reduce(
             timestamp = read_realtime()
             tl.atomic_min(mm_begin_timestamp_ptr + tile_id, timestamp)
 
-        pid_m, pid_n = compute_tile_coordinates(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
+        pid_m, pid_n = program_id_reorder(tile_id, num_pid_m, num_pid_n, GROUP_SIZE_M)
 
         rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
         rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
