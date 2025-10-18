@@ -65,7 +65,7 @@ def parse_args():
         "--gemm_sms", type=int, default=256, help="Number of SMs for workgroup-specialized GEMM algorithm"
     )
     parser.add_argument("--comm_sms", type=int, default=48, help="Number of SMs for All-Scatter kernel")
-    parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
+    parser.add_argument("-r", "--num_ranks", type=int, default=8, help="Number of ranks/processes")
     parser.add_argument(
         "--csv",
         type=str,
@@ -96,9 +96,9 @@ def load_configs_from_csv(csv_path):
     """Load configurations from a CSV file.
 
     Expected CSV format:
-    m,n,k,datatype
-    8192,4608,36864,fp16
-    8192,4096,12288,fp32
+    m,n,k,datatype,BLK_M,BLK_N,BLK_K,gemm_sms,comm_sms
+    8192,4608,36864,fp16,128,128,64,256,48
+    8192,4096,12288,fp32,256,128,64,256,48
     ...
 
     Args:
@@ -116,6 +116,11 @@ def load_configs_from_csv(csv_path):
                 "n": int(row["n"]),
                 "k": int(row["k"]),
                 "datatype": row["datatype"],
+                "BLK_M": int(row["blk_m"]),
+                "BLK_N": int(row["blk_n"]),
+                "BLK_K": int(row["blk_k"]),
+                "gemm_sms": int(row["gemm_sms"]),
+                "comm_sms": int(row["comm_sms"]),
             }
             configs.append(config)
     return configs
@@ -151,7 +156,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         exit(1)
 
     assert args["n"] % world_size == 0, f"N ({args['n']}) must be divisible by world size ({world_size})."
-    assert args["k"] % world_size == 0, f"K ({args['k']}) must be divisible by world size ({world_size})."
+    # assert args["k"] % world_size == 0, f"K ({args['k']}) must be divisible by world size ({world_size})."
 
     # Set default values for communication dimensions if not provided
     if args["m_comm"] is None:
@@ -445,13 +450,22 @@ def main():
             run_args.update(config)
 
             print(
-                f"\n--- Running configuration {i + 1}/{len(configs)}: m={config['m']}, n={config['n']}, k={config['k']}, datatype={config['datatype']} ---"
+                f"\nRunning configuration {i + 1}/{len(configs)}:\
+                    \n\tm={config['m']}\
+                    \n\tn={config['n']}\
+                    \n\tk={config['k']}\
+                    \n\tdatatype={config['datatype']}\
+                    \n\tBLK_M={config['BLK_M']}\
+                    \n\tBLK_M={config['BLK_N']}\
+                    \n\tBLK_M={config['BLK_K']}\
+                    \n\tgemm_sms={config['gemm_sms']}\
+                    \n\tcomm_sms={config['comm_sms']}"
             )
 
             # Generate unique output filename for this configuration
             base_name, ext = os.path.splitext(args["output_file"])
             run_args["output_file"] = (
-                f"{base_name}_m{config['m']}_n{config['n']}_k{config['k']}_{config['datatype']}{ext}"
+                f"{base_name}_m{config['m']}_n{config['n']}_k{config['k']}_{config['datatype']}_{config['BLK_M']}_{config['BLK_N']}_{config['BLK_K']}_{config['gemm_sms']}_{config['comm_sms']}{ext}"
             )
 
             mp.spawn(
