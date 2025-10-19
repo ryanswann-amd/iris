@@ -28,6 +28,7 @@ import math
 import triton
 import triton.language as tl
 import torch
+from contextlib import nullcontext
 
 
 def get_empty_cache_for_benchmark():
@@ -142,3 +143,96 @@ def do_bench(
 
     times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
     return _summarize_statistics(times, quantiles, return_mode)
+
+
+class profile:
+    """
+    Context manager for PyTorch profiling with automatic trace file generation.
+    
+    This is a convenient wrapper around torch.profiler.profile that simplifies
+    profiling in distributed/multi-rank scenarios.
+    
+    Args:
+        enabled (bool, optional): Whether to enable profiling. Default: False.
+        rank (int, optional): Current rank for trace file naming. Default: None.
+        trace_file (str, optional): Custom trace file name. If not provided, 
+            generates a name based on rank. Default: None.
+        activities (list, optional): List of profiler activities. Default: [CUDA, CPU].
+        record_shapes (bool, optional): Whether to record tensor shapes. Default: True.
+        with_stack (bool, optional): Whether to record stack traces. Default: True.
+    
+    Returns:
+        Context manager that yields the profiler object (or None if disabled).
+    
+    Example:
+        >>> import iris
+        >>> shmem = iris.iris(1 << 30)
+        >>> rank = shmem.get_rank()
+        >>>
+        >>> with iris.profile(enabled=True, rank=rank) as prof:
+        >>>     # Your code to profile
+        >>>     result = my_function()
+        >>> # Trace file is automatically saved as iris_trace_rank{rank}.json.gz
+        
+        >>> # Or with custom trace file name
+        >>> with iris.profile(enabled=True, trace_file="my_trace.json.gz"):
+        >>>     result = my_function()
+    """
+    
+    def __init__(
+        self,
+        enabled=False,
+        rank=None,
+        trace_file=None,
+        activities=None,
+        record_shapes=True,
+        with_stack=True,
+    ):
+        self.enabled = enabled
+        self.rank = rank
+        self.trace_file = trace_file
+        self.activities = activities
+        self.record_shapes = record_shapes
+        self.with_stack = with_stack
+        self._profiler = None
+        self._context = None
+        
+    def __enter__(self):
+        if not self.enabled:
+            self._context = nullcontext()
+            return self._context.__enter__()
+        
+        # Set default activities if not provided
+        if self.activities is None:
+            self.activities = [
+                torch.profiler.ProfilerActivity.CUDA,
+                torch.profiler.ProfilerActivity.CPU,
+            ]
+        
+        # Create profiler
+        self._profiler = torch.profiler.profile(
+            activities=self.activities,
+            record_shapes=self.record_shapes,
+            with_stack=self.with_stack,
+        )
+        
+        return self._profiler.__enter__()
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self.enabled:
+            return self._context.__exit__(exc_type, exc_val, exc_tb)
+        
+        # Exit profiler context
+        result = self._profiler.__exit__(exc_type, exc_val, exc_tb)
+        
+        # Generate trace file name if not provided
+        if self.trace_file is None:
+            if self.rank is not None:
+                self.trace_file = f"iris_trace_rank{self.rank}.json"
+            else:
+                self.trace_file = "iris_trace.json"
+        
+        # Export trace
+        self._profiler.export_chrome_trace(self.trace_file)
+        
+        return result
