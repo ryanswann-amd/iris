@@ -381,12 +381,25 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         matmul.set_debug(False)
         shmem.info("Benchmarking...")
         perf = lambda ms: 2 * args["m"] * args["n"] * args["k"] * 1e-12 / (ms * 1e-3)
-        triton_ms = iris.do_bench(run_experiment, shmem.barrier)
-        triton_tflops = perf(triton_ms)
-
+        
         # Determine what was run based on flags
         run_gemm = not args["only_comm"]
         run_comm = not args["only_gemm"]
+
+        # When both operations run, measure total time including potential overlap
+        # When only one operation runs, use its individual kernel time to avoid overhead
+        if run_gemm and run_comm:
+            triton_ms = iris.do_bench(run_experiment, shmem.barrier)
+        else:
+            # Run benchmark to populate kernel_timing with accurate measurements
+            iris.do_bench(run_experiment, shmem.barrier)
+            # Use the individual kernel time as total time
+            if run_gemm:
+                triton_ms = kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"]
+            else:
+                triton_ms = kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"]
+        
+        triton_tflops = perf(triton_ms)
 
         if run_gemm and run_comm:
             op_string = "tile matmul + one_shot_all_reduce (independent)"
