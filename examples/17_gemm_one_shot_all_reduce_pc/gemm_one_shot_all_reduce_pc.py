@@ -131,9 +131,10 @@ def persistent_gemm(
         tl.debug_barrier()
         tl.store(locks + tile_id, 1, cache_modifier=".wt")
 
-        # Signal to all ranks (including self) that this tile is ready by incrementing their counter
+        # Signal to all remote ranks that this tile is ready by incrementing their counter
         for remote_rank in range(world_size):
-            iris.atomic_add(tile_ready + tile_id, 1, cur_rank, remote_rank, heap_bases, sem="release", scope="sys")
+            if remote_rank != cur_rank:
+                iris.atomic_add(tile_ready + tile_id, 1, cur_rank, remote_rank, heap_bases, sem="release", scope="sys")
 
         if COLLECT_TIMESTAMPS:
             timestamp = read_realtime()
@@ -212,22 +213,19 @@ def persistent_all_reduce(
         while tl.load(locks + tile_id, cache_modifier=".cv", volatile=True) != 1:
             pass
 
-        # Wait for all ranks - each rank increments tile_ready when done (including self)
-        # We expect world_size increments from all ranks
-        result = 0
-        while result < world_size:
-            compare = world_size
-            value = 0
-            result = iris.atomic_cas(
-                tile_ready + tile_id,
-                compare,
-                value,
-                cur_rank,
-                cur_rank,
-                heap_bases,
-                sem="acquire",
-                scope="sys",
-            )
+        # Wait for remote ranks - each remote rank increments tile_ready when done
+        # We expect (world_size - 1) increments from all other ranks
+        while iris.atomic_cas(
+            tile_ready + tile_id,
+            0,  # Never matches when ready, so acts as atomic read
+            0,
+            cur_rank,
+            cur_rank,
+            heap_bases,
+            sem="acquire",
+            scope="sys",
+        ) < (world_size - 1):
+            pass
 
         # Map tile_id to (pid_m, pid_n)
         num_pid_in_group = GROUP_SIZE_M * num_pid_n
