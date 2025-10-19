@@ -127,8 +127,10 @@ def persistent_gemm(
         # Write to local buffer
         tl.store(local_C + local_offset, acc, mask=mask, cache_modifier=".wt")
 
+        # Ensure local_C write is visible before signaling
+        tl.atomic_fence(sem="release", scope="sys")
+
         # Signal that this tile is ready
-        tl.debug_barrier()
         tl.store(locks + tile_id, 1, cache_modifier=".wt")
 
         # Signal to all remote ranks that this tile is ready by incrementing their counter
@@ -212,6 +214,9 @@ def persistent_all_reduce(
         # Local tile
         while tl.load(locks + tile_id, cache_modifier=".cv", volatile=True) != 1:
             pass
+
+        # Ensure local producer's writes are visible
+        tl.atomic_fence(sem="acquire", scope="gpu")
 
         # Wait for remote ranks - each remote rank increments tile_ready when done
         # We expect (world_size - 1) increments from all other ranks
