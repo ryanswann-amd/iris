@@ -220,6 +220,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             "ms": 0,
             "experiments": 0,
         },
+        "total": {
+            "start_event": torch.cuda.Event(enable_timing=True),
+            "end_event": torch.cuda.Event(enable_timing=True),
+            "ms": 0,
+            "experiments": 0,
+        },
     }
 
     # Allocate Timestamps
@@ -236,6 +242,9 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         if args["trace_tiles"]:
             timestamps.reset()
             shmem.barrier()
+
+        # Record start of actual work (after initial barrier)
+        kernel_timing["total"]["start_event"].record()
 
         # Determine what to run based on flags
         run_gemm = not args["only_comm"]
@@ -303,6 +312,10 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 kernel_timing["communication"]["experiments"] += 1
             torch.cuda.nvtx.range_pop()
 
+        # Record end of actual work (before final barrier)
+        kernel_timing["total"]["end_event"].record()
+        kernel_timing["total"]["experiments"] += 1
+
         shmem.barrier()
 
         # Update timing for operations that were run
@@ -312,6 +325,10 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         if run_comm:
             ms = kernel_timing["communication"]["start_event"].elapsed_time(kernel_timing["communication"]["end_event"])
             kernel_timing["communication"]["ms"] += ms
+        
+        # Update total timing
+        ms = kernel_timing["total"]["start_event"].elapsed_time(kernel_timing["total"]["end_event"])
+        kernel_timing["total"]["ms"] += ms
 
         torch.cuda.nvtx.range_pop()
 
@@ -323,7 +340,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
     shmem.barrier()
 
-    for k in ["gemm", "communication"]:
+    for k in ["gemm", "communication", "total"]:
         kernel_timing[k]["ms"] = 0
         kernel_timing[k]["experiments"] = 0
 
@@ -387,26 +404,16 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         matmul.set_debug(False)
         shmem.info("Benchmarking...")
         perf = lambda ms: 2 * args["m"] * args["n"] * args["k"] * 1e-12 / (ms * 1e-3)
-        
+        # Run benchmark to populate all timing measurements
+        iris.do_bench(run_experiment, shmem.barrier)
+        # Use the total timing recorded inside run_experiment (excludes do_bench overhead)
+        triton_ms = kernel_timing["total"]["ms"] / kernel_timing["total"]["experiments"]
+        triton_tflops = perf(triton_ms)
+        algo_string = "all_scatter"
+
         # Determine what was run based on flags
         run_gemm = not args["only_comm"]
         run_comm = not args["only_gemm"]
-
-        # When both operations run, measure total time including potential overlap
-        # When only one operation runs, use its individual kernel time to avoid overhead
-        if run_gemm and run_comm:
-            triton_ms = iris.do_bench(run_experiment, shmem.barrier)
-        else:
-            # Run benchmark to populate kernel_timing with accurate measurements
-            iris.do_bench(run_experiment, shmem.barrier)
-            # Use the individual kernel time as total time
-            if run_gemm:
-                triton_ms = kernel_timing["gemm"]["ms"] / kernel_timing["gemm"]["experiments"]
-            else:
-                triton_ms = kernel_timing["communication"]["ms"] / kernel_timing["communication"]["experiments"]
-        
-        triton_tflops = perf(triton_ms)
-        algo_string = "all_scatter"
 
         if run_gemm and run_comm:
             op_string = f"tile matmul + {algo_string}"
