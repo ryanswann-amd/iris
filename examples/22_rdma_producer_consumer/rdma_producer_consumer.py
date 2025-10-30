@@ -8,24 +8,40 @@ import torch
 import torch.distributed as dist
 import triton
 import triton.language as tl
+import time
 
 import iris.experimental.iris_rdma as iris_rdma
 
 
 @triton.jit
-def producer_kernel(
-    output_ptr,
+def producer_put_kernel(
+    src_ptr,
+    dst_ptr,
     n_elements,
     rank_id,
+    dst_rank: tl.constexpr,
+    device_ctx,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    Producer kernel that generates data and enqueues RDMA put operations.
+    """
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
     
+    # Generate data: rank_id * 1000 + offset
     data = (rank_id * 1000 + offsets).to(tl.float32)
-    tl.store(output_ptr + offsets, data, mask=mask)
+    
+    # src_ptr is a pointer to float32, adding offsets automatically scales by sizeof(float32)
+    src_ptrs = src_ptr + offsets
+    
+    # dst_ptr is an integer address, need to manually calculate byte offsets
+    dst_ptrs = dst_ptr + offsets * 4  # multiply by sizeof(float32) to get byte addresses
+    
+    # Enqueue RDMA put to remote rank
+    iris_rdma.put(dst_ptrs, src_ptrs, data, dst_rank, device_ctx, mask)
 
 
 @triton.jit
@@ -36,12 +52,18 @@ def consumer_kernel(
     expected_rank_id,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    Consumer kernel that verifies received data.
+    """
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
     
+    # Load received data
     data = tl.load(input_ptr + offsets, mask=mask, other=0.0)
+    
+    # Check if it matches expected pattern
     expected = (expected_rank_id * 1000 + offsets).to(tl.float32)
     is_correct = (data == expected).to(tl.float32)
     
@@ -49,6 +71,7 @@ def consumer_kernel(
 
 
 def main():
+    # Initialize distributed
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     device_id = torch.device(f"cuda:{local_rank}")
     
@@ -69,66 +92,97 @@ def main():
     
     print(f"[Rank {rank}/{world_size}] Initialized on {device}")
     
-    heap_size = 1024 * 1024 * 8
-    ctx = iris_rdma.iris(heap_size=heap_size)
+    # Create Iris RDMA context with queue
+    heap_size = 1024 * 1024 * 8  # 8MB
+    queue_size = 512
+    ctx = iris_rdma.iris(heap_size=heap_size, queue_size=queue_size)
     
     print(f"[Rank {rank}] Iris RDMA initialized")
+    print(f"[Rank {rank}]   - Heap base: {ctx.get_heap_base():#x}")
+    print(f"[Rank {rank}]   - Queue ptr: {ctx.get_queue_ptr():#x}")
     
+    # Get device context for Triton kernels
+    device_ctx = ctx.get_device_context()
+    
+    # Allocate buffers in symmetric heap
     n_elements = 4096
     BLOCK_SIZE = 256
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
     
-    local_buffer = ctx.zeros(n_elements, dtype=torch.float32)
+    # Allocate in symmetric heap (GPU memory for GPUDirect RDMA)
+    local_buffer = ctx.zeros(n_elements, dtype=torch.float32)  # Already on GPU
+    
+    # Move device_ctx to GPU
+    device_ctx_gpu = device_ctx.to(device)
+    
+    print(f"[Rank {rank}] Local buffer on device: {local_buffer.device}")
     
     ctx.barrier()
     
+    # ============================================================
+    # PRODUCER (Rank 0): Generate data and RDMA put to Rank 1
+    # ============================================================
     if rank == 0:
-        print(f"\n[Rank 0] Producing data")
+        print(f"\n[Rank 0] === Producer: Generating and Sending Data ===")
         
-        gpu_buffer = local_buffer.to(device)
+        # Get remote heap address for rank 1
+        dst_rank = 1
+        remote_heap_base = ctx.remote_heap_bases[dst_rank]
         
-        producer_kernel[grid](
-            gpu_buffer,
+        # local_buffer is already on GPU, just get its pointer
+        # Create pointer tensors on GPU
+        local_ptr = local_buffer.data_ptr()
+        remote_ptr = remote_heap_base
+        
+        print(f"[Rank 0] Launching Triton producer kernel")
+        print(f"[Rank 0]   - Local ptr:  {local_ptr:#x}")
+        print(f"[Rank 0]   - Remote ptr: {remote_ptr:#x}")
+        print(f"[Rank 0]   - Dst rank:   {dst_rank}")
+        
+        # Launch producer kernel
+        # This will:
+        # 1. Generate data
+        # 2. Store locally (in registered GPU heap)
+        # 3. Enqueue RDMA put operations to queue
+        producer_put_kernel[grid](
+            local_buffer,  # Pass tensor directly (pointer will be extracted in kernel)
+            remote_ptr,
             n_elements,
             rank_id=0,
+            dst_rank=dst_rank,
+            device_ctx=device_ctx_gpu,
             BLOCK_SIZE=BLOCK_SIZE,
         )
         
-        local_buffer.copy_(gpu_buffer.cpu())
+        # Wait for GPU to finish enqueueing
+        torch.cuda.synchronize()
+        print(f"[Rank 0] ✓ Triton kernel completed (operations enqueued to queue)")
+        print(f"[Rank 0]   Grid size was: {triton.cdiv(n_elements, BLOCK_SIZE)} programs")
+        print(f"[Rank 0]   Each program should enqueue 1 work item")
         
-        print(f"[Rank 0] First 10: {local_buffer[:10].tolist()}")
-        
-        dst_rank = 1
-        local_addr = local_buffer.data_ptr()
-        remote_addr = ctx.remote_heap_bases[dst_rank]
-        size = n_elements * 4
-        
-        print(f"[Rank 0] RDMA transfer to Rank {dst_rank}")
-        
-        ret = ctx.rdma_put(dst_rank, local_addr, remote_addr, size)
-        
-        if ret == 0:
-            import time
-            for attempt in range(100):
-                n_comp = ctx.poll_completion(dst_rank)
-                if n_comp > 0:
-                    print(f"[Rank 0] RDMA completed")
-                    break
-                time.sleep(0.001)
+        # Show what we sent
+        print(f"[Rank 0] Sent data first 10: {local_buffer[:10].tolist()}")
     
+    # Barrier: waits for queue to drain AND all ranks to sync
+    # This ensures all RDMA operations have completed before proceeding
+    print(f"[Rank {rank}] Waiting at barrier for RDMA completion...")
     ctx.barrier()
+    print(f"[Rank {rank}] ✓ Barrier complete, all RDMA operations finished")
     
+    # ============================================================
+    # CONSUMER (Rank 1): Verify received data
+    # ============================================================
     if rank == 1:
-        print(f"\n[Rank 1] Consuming data")
+        print(f"\n[Rank 1] === Consumer: Verifying Received Data ===")
         
-        gpu_buffer = local_buffer.to(device)
+        # Show received data (already on GPU)
+        print(f"[Rank 1] Received data first 10: {local_buffer[:10].tolist()}")
         
-        print(f"[Rank 1] Received first 10: {local_buffer[:10].tolist()}")
-        
+        # Verify data (already on GPU)
         result_buffer = torch.zeros(n_elements, dtype=torch.float32, device=device)
         
         consumer_kernel[grid](
-            gpu_buffer,
+            local_buffer,  # Already on GPU
             result_buffer,
             n_elements,
             expected_rank_id=0,
@@ -142,18 +196,19 @@ def main():
         print(f"[Rank 1] Verified: {int(num_correct)}/{num_total}")
         
         if num_correct == num_total:
-            print(f"[Rank 1] SUCCESS!")
+            print(f"\n" + "="*60)
+            print(f"[Rank 1] ✓ SUCCESS! Data matches perfectly!")
         else:
-            print(f"[Rank 1] FAILED")
+            print(f"[Rank 1] ✗ FAILED - Data mismatch!")
+            first_wrong_idx = (result_cpu == 0).nonzero(as_tuple=True)[0]
+            if len(first_wrong_idx) > 0:
+                idx = first_wrong_idx[0].item()
+                print(f"[Rank 1]   First wrong at index {idx}")
+                print(f"[Rank 1]   Expected: {0 * 1000 + idx}")
+                print(f"[Rank 1]   Got: {local_buffer[idx].item()}")
             sys.exit(1)
     
     ctx.barrier()
-    
-    if rank == 0:
-        print(f"\n{'='*60}")
-        print(f"RDMA Producer-Consumer Complete")
-        print(f"{'='*60}")
-    
     dist.destroy_process_group()
 
 
