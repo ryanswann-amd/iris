@@ -74,7 +74,7 @@ class IrisRDMA:
         >>> buffer = ctx.zeros(1024, dtype=torch.float32)
     """
     
-    def __init__(self, heap_size=1 << 30, process_group=None, device_name=None):
+    def __init__(self, heap_size=1 << 30, process_group=None, queue_size=512):
         # Check if distributed is initialized
         if not dist.is_initialized():
             raise RuntimeError(
@@ -96,32 +96,41 @@ class IrisRDMA:
         # Create TorchBootstrap
         self._bootstrap = backend.TorchBootstrap(process_group)
         
-        # Create NetworkBackend
-        self._backend = backend.NetworkBackend(self._bootstrap, device_name)
-        
-        # Initialize network (create QPs, transition to RTS)
-        self._backend.init()
-        
         # Allocate symmetric heap (CPU pinned memory for now)
         # TODO: Support GPU memory with GPUDirect RDMA
         self.heap_size = heap_size
         self.heap_offset = 0
         self.alignment = 1024
         
-        # Create CPU pinned memory pool
-        # For GPU memory, use: torch.empty(heap_size, device=self.device, dtype=torch.int8)
-        self.memory_pool = torch.empty(heap_size, device='cpu', dtype=torch.int8).pin_memory()
+        # Create GPU memory pool
+        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
         
-        # Register memory with RDMA
-        self._backend.register_memory(self.memory_pool)
+        self._manager = backend.IrisManager(self._bootstrap, self.memory_pool, queue_size)
+        self._manager.start_proxy_thread()
         
-        # Store remote heap bases (already exchanged in register_memory)
+        self._backend = self._manager
+        
+        logger.info(f"[Rank {self.rank}] Using IrisManager with queue (size={queue_size})")
+        
         self.remote_heap_bases = []
         for i in range(self.world_size):
-            self.remote_heap_bases.append(self._backend.get_remote_heap_base(i))
+            self.remote_heap_bases.append(self._manager.get_remote_heap_base(i))
         
         logger.info(f"[Rank {self.rank}] Iris RDMA initialized: heap_size={heap_size}, "
-                   f"heap_base={self._backend.get_heap_base():#x}")
+                   f"heap_base={self._manager.get_heap_base():#x}")
+    
+    def __del__(self):
+        """Clean up resources"""
+        if hasattr(self, '_manager') and self._manager is not None:
+            self._manager.stop_proxy_thread()
+    
+    def get_heap_base(self):
+        """Get local heap base address"""
+        return self._manager.get_heap_base()
+    
+    def get_queue_ptr(self):
+        """Get queue pointer for Triton kernels"""
+        return self._manager.get_queue_ptr()
     
     def get_device_context(self):
         """
@@ -130,7 +139,8 @@ class IrisRDMA:
         The context tensor encodes:
         - [0]: current rank
         - [1]: world size
-        - [2:]: heap base addresses for all ranks
+        - [2]: queue pointer (for enqueueing RDMA operations)
+        - [3:]: heap base addresses for all ranks
         
         Returns:
             torch.Tensor: Device context tensor (on GPU)
@@ -140,15 +150,16 @@ class IrisRDMA:
             >>> device_ctx = ctx.get_device_context()
             >>> # Pass device_ctx to Triton kernel
         """
-        # Create context tensor: [rank, world_size, heap_base_0, heap_base_1, ...]
-        context_size = 2 + self.world_size
+        # Create context tensor: [rank, world_size, queue_ptr, heap_base_0, heap_base_1, ...]
+        context_size = 3 + self.world_size
         context = torch.zeros(context_size, dtype=torch.int64, device=self.device)
         
         context[0] = self.rank
         context[1] = self.world_size
+        context[2] = self.get_queue_ptr()
         
         for i in range(self.world_size):
-            context[2 + i] = self.remote_heap_bases[i]
+            context[3 + i] = self.remote_heap_bases[i]
         
         return context
     
@@ -159,16 +170,16 @@ class IrisRDMA:
         Args:
             *size: Tensor dimensions
             dtype: Data type (default: torch.float32)
-            device: Device placement ('cpu' or 'cuda', default: match context)
+            device: Device placement (default: GPU for direct kernel access)
         
         Returns:
-            torch.Tensor: Allocated tensor
+            torch.Tensor: Allocated tensor (on GPU by default)
         
         Example:
             >>> buffer = ctx.zeros(1024, 1024, dtype=torch.float32)
         """
         if device is None:
-            device = 'cpu'  # Use CPU for now (pinned memory)
+            device = self.device  # Use GPU by default (for GPUDirect)
         
         # Calculate size in bytes
         elem_size = torch.tensor([], dtype=dtype).element_size()
@@ -203,12 +214,46 @@ class IrisRDMA:
     
     def barrier(self):
         """
-        Synchronize all ranks.
+        Synchronize all ranks and drain RDMA queue.
+        
+        Waits for:
+        1. All enqueued RDMA operations to complete (queue drains)
+        2. All ranks to reach this barrier
         
         Example:
-            >>> ctx.barrier()  # Wait for all ranks
+            >>> ctx.barrier()  # Wait for all ranks and RDMA completion
         """
+        # First, wait for queue to drain (all work processed)
+        self.wait_queue_drain()
+        
+        # Then synchronize with other ranks
         dist.barrier()
+    
+    def wait_queue_drain(self, timeout=30.0):
+        """
+        Wait for the CPU proxy thread to process all enqueued work items.
+        
+        Spins until queue is empty (head == tail), meaning all work has been
+        processed and popped by the CPU proxy thread.
+        
+        Args:
+            timeout: Maximum time to wait in seconds
+            
+        Raises:
+            TimeoutError: If queue doesn't drain within timeout
+        """
+        import time
+        start = time.time()
+        
+        while time.time() - start < timeout:
+            # Check if queue is empty (head == tail)
+            if self._manager.is_queue_empty():
+                return
+            
+            # Small sleep to avoid burning CPU
+            time.sleep(0.0001)  # 100 microseconds
+        
+        raise TimeoutError(f"Queue did not drain within {timeout}s")
     
     def rdma_put(self, dst_rank, local_addr, remote_addr, size):
         """
@@ -278,14 +323,14 @@ class IrisRDMA:
         return f"<IrisRDMA rank={self.rank} world_size={self.world_size}>"
 
 
-def iris(heap_size=1 << 30, process_group=None, device_name=None):
+def iris(heap_size=1 << 30, process_group=None, queue_size=512):
     """
     Factory function to create Iris RDMA context.
     
     Args:
         heap_size (int): Size of the symmetric heap in bytes
         process_group: PyTorch distributed process group
-        device_name (str): InfiniBand device name (optional)
+        queue_size (int): Queue size for GPU->CPU RDMA operations
     
     Returns:
         IrisRDMA: RDMA context object
@@ -294,7 +339,7 @@ def iris(heap_size=1 << 30, process_group=None, device_name=None):
         >>> import iris.experimental.iris_rdma as iris_rdma
         >>> ctx = iris_rdma.iris(heap_size=2**30)
     """
-    return IrisRDMA(heap_size, process_group, device_name)
+    return IrisRDMA(heap_size, process_group, queue_size)
 
 
 #############################################################################
@@ -302,15 +347,146 @@ def iris(heap_size=1 << 30, process_group=None, device_name=None):
 #############################################################################
 
 @triton.jit
-def put(dst_ptr, data, dst_rank: tl.constexpr, device_ctx, mask):
+def _wait_for_completion(queue_ptr, queue_pos):
+    """
+    Wait for CPU to process a queue item.
+    
+    Spins until tail pointer advances past our queue position,
+    indicating the CPU has processed and popped our item.
+    
+    Args:
+        queue_ptr: Queue context pointer
+        queue_pos: Queue position to wait for (returned from _enqueue_rdma_op)
+    """
+    state_ptr = queue_ptr.to(tl.pointer_type(tl.uint64))
+    
+    # Load tail pointer (offset 2 in QueueState)
+    # Use volatile and cache modifier to prevent caching
+    tail_ptr = tl.load(state_ptr + 2, cache_modifier=".cv", volatile=True)
+    tail_ptr_typed = tail_ptr.to(tl.pointer_type(tl.uint64))
+    current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+    
+    # Spin until CPU advances tail past our position
+    while queue_pos >= current_tail:
+        tail_ptr = tl.load(state_ptr + 2, cache_modifier=".cv", volatile=True)
+        tail_ptr_typed = tail_ptr.to(tl.pointer_type(tl.uint64))
+        current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+
+
+@triton.jit
+def _enqueue_rdma_op(dst_ptr, src_ptr, to_rank: tl.constexpr, op_code: tl.constexpr, queue_ptr, mask):
+    """
+    Internal: Enqueue an RDMA operation to the queue.
+    
+    Args:
+        dst_ptr: Destination pointer on remote rank
+        src_ptr: Source pointer (local address where data is stored in registered heap)
+        to_rank: Target rank ID
+        op_code: Operation type (1=PUT, 2=GET)
+        queue_ptr: Queue pointer from device context
+        mask: Triton mask for valid elements
+    """
+    # Queue structure (from queue.hpp):
+    # struct QueueState {
+    #   WorkItem* items;      // offset 0
+    #   uint64_t* head;       // offset 8
+    #   uint64_t* tail;       // offset 16
+    #   uint64_t* tailCache;  // offset 24
+    #   int32_t size;         // offset 32
+    # };
+    
+    state_ptr = queue_ptr.to(tl.pointer_type(tl.uint64))
+    
+    # Load QueueState fields
+    items_ptr = tl.load(state_ptr + 0)
+    head_ptr = tl.load(state_ptr + 1)
+    tail_ptr = tl.load(state_ptr + 2)
+    
+    # Load size (at offset 32 bytes = 4 * uint64)
+    size_ptr = queue_ptr.to(tl.pointer_type(tl.int32))
+    size = tl.load(size_ptr + 8)
+    
+    # Atomic increment head to reserve slot
+    head_ptr_typed = head_ptr.to(tl.pointer_type(tl.uint64))
+    prev_head = tl.atomic_add(head_ptr_typed, 1, sem='relaxed', scope='sys')
+    
+    # Wait for slot to be free: spin if prev_head >= size + *tail
+    size_u64 = size.to(tl.uint64)
+    tail_ptr_typed = tail_ptr.to(tl.pointer_type(tl.uint64))
+    current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+    
+    while prev_head >= size_u64 + current_tail:
+        current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+    
+    # Calculate slot position
+    slot_idx = prev_head % size_u64
+    
+    # WorkItem structure (32 bytes):
+    # struct WorkItem {
+    #   uint64_t dst_ptr;      // offset 0
+    #   uint64_t src_ptr;      // offset 8
+    #   uint32_t size_bytes;   // offset 16 - WRITE LAST as ready flag
+    #   uint16_t rank;         // offset 20
+    #   uint8_t  op_type;      // offset 22
+    #   uint8_t  reserved;     // offset 23
+    # };
+    WORK_ITEM_SIZE_BYTES = 32
+    
+    slot_offset_bytes = slot_idx * WORK_ITEM_SIZE_BYTES
+    
+    # Get pointer to this work item
+    items_ptr_u64 = items_ptr.to(tl.pointer_type(tl.uint64))
+    slot_ptr_u64 = items_ptr_u64 + (slot_offset_bytes // 8).to(tl.int32)
+    
+    # Extract destination address (min of pointer block)
+    dst_ptr_u64 = dst_ptr.to(tl.uint64)
+    dst_ptr_val = tl.min(dst_ptr_u64, axis=0)
+    
+    # Extract source address (min of pointer block where data is stored)
+    src_ptr_u64 = src_ptr.to(tl.uint64)
+    src_ptr_val = tl.min(src_ptr_u64, axis=0)
+    
+    # Calculate size in bytes from pointer range
+    # max_ptr - min_ptr gives us the byte distance to the last element
+    # Add element_size to include the last element itself
+    max_src_ptr = tl.max(src_ptr_u64, axis=0)
+    element_size_bytes = 4  # float32
+    num_bytes = (max_src_ptr - src_ptr_val + element_size_bytes).to(tl.uint32)
+    size_bytes = num_bytes
+    
+    # Write header fields (but NOT size_bytes yet - it's the ready flag)
+    # Write dst_ptr (offset 0)
+    tl.store(slot_ptr_u64 + 0, dst_ptr_val)
+    
+    # Write src_ptr (offset 8)
+    tl.store(slot_ptr_u64 + 1, src_ptr_val)
+    
+    # Write rank + op_type (offset 20-23)
+    metadata = (to_rank & 0xFFFF) | ((op_code & 0xFF) << 16)
+    slot_ptr_u32 = slot_ptr_u64.to(tl.pointer_type(tl.uint32))
+    tl.store(slot_ptr_u32 + 5, metadata.to(tl.uint32))
+    
+    # Write size_bytes LAST as ready flag (offset 16)
+    size_bytes_ptr = (slot_ptr_u32 + 4).to(tl.pointer_type(tl.uint32))
+    tl.atomic_xchg(size_bytes_ptr, size_bytes, sem='release', scope='sys')
+    
+    # Return queue position for waiting
+    return prev_head
+
+
+@triton.jit
+def put(dst_ptr, src_ptr, data, dst_rank: tl.constexpr, device_ctx, mask):
     """
     RDMA put (write) operation from Triton kernel.
     
-    Writes data to remote rank's memory via RDMA.
+    Enqueues data to be written to remote rank via RDMA.
+    Data must first be stored in the registered heap at src_ptr location.
+    The CPU proxy thread will dequeue and perform the actual RDMA write.
     
     Args:
         dst_ptr: Destination pointer (remote address) - can be block of pointers
-        data: Data values to write (block)
+        src_ptr: Source pointer (local address in registered heap) - can be block of pointers
+        data: Data values to write (block) - will be stored at src_ptr
         dst_rank: Target rank ID (must be compile-time constant)
         device_ctx: Device context from iris_rdma.get_device_context()
         mask: Triton mask for valid elements
@@ -322,59 +498,63 @@ def put(dst_ptr, data, dst_rank: tl.constexpr, device_ctx, mask):
         >>>     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         >>>     mask = offsets < n_elements
         >>>     
-        >>>     data = tl.load(src_ptr + offsets, mask=mask)
-        >>>     iris_rdma.put(dst_ptr + offsets, data, dst_rank, device_ctx, mask)
+        >>>     data = generate_data(offsets)
+        >>>     # Store data locally first (in registered heap)
+        >>>     tl.store(src_ptr + offsets, data, mask=mask)
+        >>>     # Enqueue RDMA operation
+        >>>     iris_rdma.put(dst_ptr + offsets, src_ptr + offsets, data, dst_rank, device_ctx, mask)
     """
-    # Extract heap bases from device context
-    # Context format: [rank, world_size, heap_base_0, heap_base_1, ...]
-    dst_heap_base = tl.load(device_ctx + 2 + dst_rank)
+    # Extract queue pointer from device context
+    # Context format: [rank, world_size, queue_ptr, heap_base_0, heap_base_1, ...]
+    queue_ptr = tl.load(device_ctx + 2)
     
-    # For now, use tl.store as placeholder
-    # TODO: Implement actual RDMA put via queue or direct posting
-    # This will require either:
-    # 1. A device-side queue that CPU polls (like iris-rdma prototype)
-    # 2. Or direct ibv_post_send from GPU (requires GPU Direct Async)
+    # Store data in registered heap first
+    tl.store(src_ptr, data, mask=mask)
     
-    # Translate pointer to remote address space
-    # dst_ptr should already be in the remote address space
-    # Just store for now - in full implementation, this would queue RDMA request
-    tl.store(dst_ptr, data, mask=mask)
+    # Enqueue PUT operation (op_code=1)
+    _enqueue_rdma_op(dst_ptr, src_ptr, dst_rank, 1, queue_ptr, mask)
 
 
 @triton.jit
-def get(src_ptr, from_rank: tl.constexpr, device_ctx, mask):
+def get(dst_ptr, src_ptr, from_rank: tl.constexpr, device_ctx, mask):
     """
     RDMA get (read) operation from Triton kernel.
     
-    Reads data from remote rank's memory via RDMA.
+    Enqueues a request to read data from remote rank via RDMA and WAITS for completion.
+    The CPU proxy thread will dequeue, perform the RDMA read, then pop the item.
+    This function spins until the tail pointer advances, then data is ready at dst_ptr.
     
     Args:
+        dst_ptr: Local destination pointer where data will be written - can be block of pointers
         src_ptr: Source pointer (remote address) - can be block of pointers
         from_rank: Source rank ID (must be compile-time constant)
         device_ctx: Device context from iris_rdma.get_device_context()
         mask: Triton mask for valid elements
     
-    Returns:
-        Block of data read from remote rank
-    
     Example:
         >>> @triton.jit
-        >>> def kernel(dst_ptr, src_ptr, device_ctx, from_rank, BLOCK_SIZE: tl.constexpr):
+        >>> def kernel(local_ptr, remote_ptr, device_ctx, from_rank, BLOCK_SIZE: tl.constexpr):
         >>>     pid = tl.program_id(0)
         >>>     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         >>>     mask = offsets < n_elements
         >>>     
-        >>>     data = iris_rdma.get(src_ptr + offsets, from_rank, device_ctx, mask)
-        >>>     tl.store(dst_ptr + offsets, data, mask=mask)
+        >>>     # RDMA read from remote rank - blocks until complete
+        >>>     iris_rdma.get(local_ptr + offsets, remote_ptr + offsets, from_rank, device_ctx, mask)
+        >>>     
+        >>>     # Data is now ready at local_ptr, can use it immediately
+        >>>     data = tl.load(local_ptr + offsets, mask=mask)
     """
-    # Extract heap bases from device context
-    src_heap_base = tl.load(device_ctx + 2 + from_rank)
+    # Extract queue pointer from device context
+    queue_ptr = tl.load(device_ctx + 2)
     
-    # For now, use tl.load as placeholder
-    # TODO: Implement actual RDMA get via queue or direct posting
-    data = tl.load(src_ptr, mask=mask)
+    # Enqueue GET operation (op_code=2)
+    # For GET: src_ptr is remote source, dst_ptr is local destination
+    queue_pos = _enqueue_rdma_op(src_ptr, dst_ptr, from_rank, 2, queue_ptr, mask)
     
-    return data
+    # Wait for CPU to complete the RDMA read
+    _wait_for_completion(queue_ptr, queue_pos)
+    
+    # Data is now ready at dst_ptr (CPU has written it there via RDMA)
 
 
 __all__ = [
