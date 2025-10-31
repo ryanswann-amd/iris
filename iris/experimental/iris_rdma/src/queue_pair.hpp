@@ -97,6 +97,17 @@ class queue_pair {
     return info;
   }
 
+
+  void dump_cq_info() const {
+    LOG_DEBUG("cq: %p", cq_);
+    LOG_DEBUG("handle: %u", cq_->channel);
+    LOG_DEBUG("cq_context: %p", cq_->cq_context);
+    LOG_DEBUG("context: %p", cq_->context);
+    LOG_DEBUG("cqe: %u", cq_->cqe);
+    LOG_DEBUG("comp_events_completed: %u", cq_->comp_events_completed);
+    LOG_DEBUG("async_events_completed: %u", cq_->async_events_completed);
+
+  }
  private:
   struct ibv_qp* qp_;
   struct ibv_cq* cq_;

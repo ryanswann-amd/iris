@@ -62,6 +62,29 @@ inline void log_message(log_level level, const char* level_str, const char* fmt,
   fflush(stderr);
 }
 
+// Internal logging function with rank
+inline void log_message_rank(int rank, log_level level, const char* level_str, const char* fmt, ...) {
+  if (level < get_log_level()) return;
+  
+  // Get timestamp
+  time_t now = time(nullptr);
+  struct tm* tm_info = localtime(&now);
+  char time_buf[64];
+  strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+  
+  // Print level, timestamp, and rank
+  fprintf(stderr, "[%s] [%s] [RANK %d] ", time_buf, level_str, rank);
+  
+  // Print message
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  
+  fprintf(stderr, "\n");
+  fflush(stderr);
+}
+
 }  // namespace rdma
 }  // namespace iris
 
@@ -77,6 +100,19 @@ inline void log_message(log_level level, const char* level_str, const char* fmt,
 
 #define LOG_ERROR(fmt, ...) \
   iris::rdma::log_message(iris::rdma::log_level::ERROR, "ERROR", fmt, ##__VA_ARGS__)
+
+// Rank-aware logging macros
+#define LOG_DEBUG_RANK(rank, fmt, ...) \
+  iris::rdma::log_message_rank(rank, iris::rdma::log_level::DEBUG, "DEBUG", fmt, ##__VA_ARGS__)
+
+#define LOG_INFO_RANK(rank, fmt, ...) \
+  iris::rdma::log_message_rank(rank, iris::rdma::log_level::INFO, "INFO", fmt, ##__VA_ARGS__)
+
+#define LOG_WARN_RANK(rank, fmt, ...) \
+  iris::rdma::log_message_rank(rank, iris::rdma::log_level::WARN, "WARN", fmt, ##__VA_ARGS__)
+
+#define LOG_ERROR_RANK(rank, fmt, ...) \
+  iris::rdma::log_message_rank(rank, iris::rdma::log_level::ERROR, "ERROR", fmt, ##__VA_ARGS__)
 
 // For data debugging (separate from regular logging)
 #define LOG_DATA_DEBUG(fmt, ...) \

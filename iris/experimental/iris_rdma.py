@@ -639,10 +639,184 @@ def get(dst_ptr, src_ptr, from_rank: tl.constexpr, device_ctx, mask):
     # Data is now ready at dst_ptr (CPU has written it there via RDMA)
 
 
+@triton.jit
+def atomic_add(result_ptr, dst_ptr, add_value, dst_rank: tl.constexpr, device_ctx, mask):
+    """
+    RDMA atomic fetch-and-add operation from Triton kernel.
+    
+    Atomically adds a value to remote memory and returns the original value.
+    Uses symmetric heap model: dst_ptr is in current rank's address space,
+    and will be automatically translated to remote rank's address space.
+    
+    Args:
+        result_ptr: Local pointer where the original value will be stored
+        dst_ptr: Destination pointer in CURRENT rank's address space (symmetric heap)
+        add_value: Value to add (must be scalar uint64 or int64)
+        dst_rank: Destination rank ID (must be compile-time constant)
+        device_ctx: Device context from iris_rdma.get_device_context()
+        mask: Triton mask for valid elements
+    
+    Note: Only supports 8-byte (uint64/int64) atomic operations.
+    The result_ptr will contain the original value before the add.
+    """
+    # Extract context fields
+    my_rank = tl.load(device_ctx + 0)
+    queue_ptr = tl.load(device_ctx + 2)
+    heap_bases = device_ctx + 3
+    
+    # Translate dst_ptr from current rank's address space to remote rank's
+    translated_dst_ptr = _translate(dst_ptr, my_rank, dst_rank, heap_bases)
+    
+    # Enqueue ATOMIC_ADD operation (op_code=4)
+    # For ATOMIC_ADD: result_ptr is local result buffer, translated_dst_ptr is remote target
+    queue_pos = _enqueue_atomic_op(result_ptr, translated_dst_ptr, dst_rank, 4, 
+                                     add_value, 0, queue_ptr, mask)
+    
+    # Wait for CPU to complete the atomic operation
+    _wait_for_completion(queue_ptr, queue_pos)
+    
+    # Result is now ready at result_ptr (original value before add)
+
+
+@triton.jit
+def atomic_cas(result_ptr, dst_ptr, compare_value, swap_value, dst_rank: tl.constexpr, device_ctx, mask):
+    """
+    RDMA atomic compare-and-swap operation from Triton kernel.
+    
+    Atomically compares remote memory with expected value and swaps if equal.
+    Returns the original value. Uses symmetric heap model.
+    
+    Args:
+        result_ptr: Local pointer where the original value will be stored
+        dst_ptr: Destination pointer in CURRENT rank's address space (symmetric heap)
+        compare_value: Expected value (must be scalar uint64 or int64)
+        swap_value: New value if comparison succeeds (must be scalar uint64 or int64)
+        dst_rank: Destination rank ID (must be compile-time constant)
+        device_ctx: Device context from iris_rdma.get_device_context()
+        mask: Triton mask for valid elements
+    
+    Note: Only supports 8-byte (uint64/int64) atomic operations.
+    The result_ptr will contain the original value at the remote location.
+    If result == compare_value, the swap succeeded.
+    """
+    # Extract context fields
+    my_rank = tl.load(device_ctx + 0)
+    queue_ptr = tl.load(device_ctx + 2)
+    heap_bases = device_ctx + 3
+    
+    # Translate dst_ptr from current rank's address space to remote rank's
+    translated_dst_ptr = _translate(dst_ptr, my_rank, dst_rank, heap_bases)
+    
+    # Enqueue ATOMIC_CAS operation (op_code=6)
+    queue_pos = _enqueue_atomic_op(result_ptr, translated_dst_ptr, dst_rank, 6,
+                                     swap_value, compare_value, queue_ptr, mask)
+    
+    # Wait for CPU to complete the atomic operation
+    _wait_for_completion(queue_ptr, queue_pos)
+    
+    # Result is now ready at result_ptr (original value from remote)
+
+
+@triton.jit
+def _enqueue_atomic_op(result_ptr, dst_ptr, to_rank: tl.constexpr, op_code: tl.constexpr,
+                        operand, compare, queue_ptr, mask):
+    """
+    Internal: Enqueue an atomic RDMA operation to the queue.
+    
+    Args:
+        result_ptr: Local pointer for result
+        dst_ptr: Destination pointer on remote rank (already translated)
+        to_rank: Target rank ID
+        op_code: Operation type (4=ATOMIC_ADD, 6=ATOMIC_CAS)
+        operand: Operand value (add_value or swap_value)
+        compare: Compare value (0 for ADD, compare_value for CAS)
+        queue_ptr: Queue pointer from device context
+        mask: Triton mask for valid elements
+    """
+    state_ptr = queue_ptr.to(tl.pointer_type(tl.uint64))
+    
+    # Load QueueState fields
+    items_ptr = tl.load(state_ptr + 0)
+    head_ptr = tl.load(state_ptr + 1)
+    tail_ptr = tl.load(state_ptr + 2)
+    
+    # Load size (at offset 32 bytes = 4 * uint64)
+    size_ptr = queue_ptr.to(tl.pointer_type(tl.int32))
+    size = tl.load(size_ptr + 8)
+    
+    # Atomic increment head to reserve slot
+    head_ptr_typed = head_ptr.to(tl.pointer_type(tl.uint64))
+    prev_head = tl.atomic_add(head_ptr_typed, 1, sem='relaxed', scope='sys')
+    
+    # Wait for slot to be free
+    size_u64 = size.to(tl.uint64)
+    tail_ptr_typed = tail_ptr.to(tl.pointer_type(tl.uint64))
+    current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+    
+    while prev_head >= size_u64 + current_tail:
+        current_tail = tl.atomic_add(tail_ptr_typed, 0, sem='acquire', scope='sys')
+    
+    # Calculate slot position
+    slot_idx = prev_head % size_u64
+    
+    # WorkItem structure (48 bytes total):
+    # Header (32 bytes due to alignas(16)):
+    # offset 0:  uint64_t dst_ptr
+    # offset 8:  uint64_t src_ptr (result_ptr for atomics)
+    # offset 16: uint32_t size_bytes (WRITE LAST as ready flag)
+    # offset 20: uint16_t rank
+    # offset 22: uint8_t op_type
+    # offset 23: uint8_t reserved
+    # offset 24-31: padding (alignas(16) pads header to 32 bytes)
+    # Atomic fields (16 bytes):
+    # offset 32: uint64_t atomic_operand
+    # offset 40: uint64_t atomic_compare
+    WORK_ITEM_SIZE_BYTES = 48  # Header (32 with padding) + atomic fields (16)
+    
+    slot_offset_bytes = slot_idx * WORK_ITEM_SIZE_BYTES
+    
+    # Get pointer to this work item
+    items_ptr_u64 = items_ptr.to(tl.pointer_type(tl.uint64))
+    slot_ptr_u64 = items_ptr_u64 + (slot_offset_bytes // 8).to(tl.int32)
+    
+    # Cast pointers to uint64
+    dst_ptr_val = tl.cast(dst_ptr, tl.uint64)
+    result_ptr_val = tl.cast(result_ptr, tl.uint64)
+    operand_u64 = tl.cast(operand, tl.uint64)
+    compare_u64 = tl.cast(compare, tl.uint64)
+    
+    # Write WorkItem fields (except size which is written last as ready flag)
+    # Offset 0: dst_ptr (remote target)
+    tl.store(slot_ptr_u64 + 0, dst_ptr_val)
+    
+    # Offset 8: src_ptr (result buffer)
+    tl.store(slot_ptr_u64 + 1, result_ptr_val)
+    
+    # Offset 32: atomic_operand (offset 32 bytes = 4 * 8 bytes)
+    tl.store(slot_ptr_u64 + 4, operand_u64)
+    
+    # Offset 40: atomic_compare (offset 40 bytes = 5 * 8 bytes)
+    tl.store(slot_ptr_u64 + 5, compare_u64)
+    
+    # Offset 20 (bytes): Pack rank (16 bits) + op_type (8 bits) into 32 bits
+    # Same as regular RDMA operations
+    slot_ptr_u32 = slot_ptr_u64.to(tl.pointer_type(tl.uint32))
+    metadata = (to_rank & 0xFFFF) | ((op_code & 0xFF) << 16)
+    tl.store(slot_ptr_u32 + 5, metadata)  # offset 20 bytes = 5 * 4 bytes
+    
+    # Offset 16 (bytes) / 4 (uint32): size_bytes - WRITE LAST as ready flag
+    # For atomics, size is always 8 bytes
+    tl.store(slot_ptr_u32 + 4, tl.cast(8, tl.uint32))  # offset 16 bytes = 4 * 4 bytes
+    
+    return prev_head
+
+
 __all__ = [
     "IrisRDMA",
     "iris",
     "put",
     "get",
+    "atomic_add",
+    "atomic_cas",
 ]
 

@@ -49,7 +49,6 @@ class network_backend {
         requested_dev_(device_name),
         context_(nullptr),
         pd_orig_(nullptr),
-        pd_parent_(nullptr),
         vendor_(rdma::nic_vendor::NONE),
         port_(1),
         gid_index_(0),
@@ -84,11 +83,6 @@ class network_backend {
     if (heap_mr_) {
       ibv_dereg_mr(heap_mr_);
       heap_mr_ = nullptr;
-    }
-    
-    if (pd_parent_) {
-      ibv_dealloc_pd(pd_parent_);
-      pd_parent_ = nullptr;
     }
     
     if (pd_orig_) {
@@ -333,6 +327,133 @@ class network_backend {
   }
 
   /**
+   * @brief RDMA atomic fetch-and-add operation
+   * @param dst_rank Destination rank
+   * @param result_addr Local buffer to store the original value
+   * @param remote_addr Remote address to perform atomic add on
+   * @param add_value Value to add
+   * @param size Size in bytes (must be 4 or 8)
+   * @param wr_id Work request ID (for completion tracking)
+   * @return 0 on success, non-zero on error
+   */
+  int rdma_atomic_fetch_add(int dst_rank, void* result_addr, uint64_t remote_addr,
+                            uint64_t add_value, size_t size, uint64_t wr_id = 0) {
+    queue_pair* qp = get_qp(dst_rank);
+    if (!qp) {
+      return -1;
+    }
+
+    if (size != 4 && size != 8) {
+      LOG_ERROR("Atomic operations only support 4 or 8 byte sizes, got %zu", size);
+      return -1;
+    }
+
+    struct ibv_sge sge;
+    sge.addr = (uintptr_t)result_addr;
+    sge.length = size;
+    sge.lkey = qp->get_lkey();
+
+    struct ibv_send_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = wr_id;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
+    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.wr.atomic.remote_addr = remote_addr;
+    wr.wr.atomic.rkey = qp->get_rkey();
+    wr.wr.atomic.compare_add = add_value;  // Value to add
+
+    struct ibv_send_wr* bad_wr = nullptr;
+    int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
+    
+    LOG_DEBUG("RDMA Atomic Fetch-Add to rank %d: result=%p remote=%lx add=%lu size=%zu ret=%d",
+              dst_rank, result_addr, remote_addr, add_value, size, ret);
+    
+    return ret;
+  }
+
+  /**
+   * @brief RDMA atomic exchange (swap) operation
+   * @param dst_rank Destination rank
+   * @param result_addr Local buffer to store the original value
+   * @param remote_addr Remote address to exchange
+   * @param new_value New value to write
+   * @param size Size in bytes (must be 4 or 8)
+   * @param wr_id Work request ID (for completion tracking)
+   * @return 0 on success, non-zero on error
+   */
+  int rdma_atomic_exchange(int dst_rank, void* result_addr, uint64_t remote_addr,
+                           uint64_t new_value, size_t size, uint64_t wr_id = 0) {
+    queue_pair* qp = get_qp(dst_rank);
+    if (!qp) {
+      return -1;
+    }
+
+    if (size != 4 && size != 8) {
+      LOG_ERROR("Atomic operations only support 4 or 8 byte sizes, got %zu", size);
+      return -1;
+    }
+
+    // For exchange, we need a staging buffer for the new value
+    // ibverbs doesn't have a direct exchange, so we use CAS in a loop
+    // But for simplicity, we can use MLX5 extended atomics if available
+    // For now, we'll return an error and note this needs vendor-specific support
+    LOG_ERROR("RDMA atomic exchange not yet implemented - needs vendor-specific support");
+    return -1;
+  }
+
+  /**
+   * @brief RDMA atomic compare-and-swap operation
+   * @param dst_rank Destination rank
+   * @param result_addr Local buffer to store the original value
+   * @param remote_addr Remote address to perform CAS on
+   * @param compare_value Expected value
+   * @param swap_value Value to swap in if comparison succeeds
+   * @param size Size in bytes (must be 4 or 8)
+   * @param wr_id Work request ID (for completion tracking)
+   * @return 0 on success, non-zero on error
+   */
+  int rdma_atomic_compare_swap(int dst_rank, void* result_addr, uint64_t remote_addr,
+                                uint64_t compare_value, uint64_t swap_value,
+                                size_t size, uint64_t wr_id = 0) {
+    queue_pair* qp = get_qp(dst_rank);
+    if (!qp) {
+      return -1;
+    }
+
+    if (size != 4 && size != 8) {
+      LOG_ERROR("Atomic operations only support 4 or 8 byte sizes, got %zu", size);
+      return -1;
+    }
+
+    struct ibv_sge sge;
+    sge.addr = (uintptr_t)result_addr;
+    sge.length = size;
+    sge.lkey = qp->get_lkey();
+
+    struct ibv_send_wr wr;
+    memset(&wr, 0, sizeof(wr));
+    wr.wr_id = wr_id;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_ATOMIC_CMP_AND_SWP;
+    wr.send_flags = IBV_SEND_SIGNALED;
+    wr.wr.atomic.remote_addr = remote_addr;
+    wr.wr.atomic.rkey = qp->get_rkey();
+    wr.wr.atomic.compare_add = compare_value;  // Expected value
+    wr.wr.atomic.swap = swap_value;             // New value if compare succeeds
+
+    struct ibv_send_wr* bad_wr = nullptr;
+    int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
+    
+    LOG_DEBUG("RDMA Atomic CAS to rank %d: result=%p remote=%lx compare=%lu swap=%lu size=%zu ret=%d",
+              dst_rank, result_addr, remote_addr, compare_value, swap_value, size, ret);
+    
+    return ret;
+  }
+
+  /**
    * @brief Poll completion queue for RDMA operations
    * @param dst_rank Destination rank (to poll specific CQ)
    * @param max_completions Maximum number of completions to poll
@@ -349,20 +470,25 @@ class network_backend {
     int n = ibv_poll_cq(qp->get_ibv_cq(), num_to_poll, wc);
     
     if (n < 0) {
-        LOG_ERROR("CQ poll error for rank %d", dst_rank);
+      LOG_ERROR_RANK(rank_, "CQ poll error for QP to rank %d", dst_rank);
       return n;
     }
     
     // Check for errors in completions
     for (int i = 0; i < n; i++) {
       if (wc[i].status != IBV_WC_SUCCESS) {
-        fprintf(stderr, "[ERROR] Work completion failed: status=%d (%s) wr_id=%lu\n",
-                wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id);
+        LOG_ERROR_RANK(rank_, "Work completion failed: status=%d (%s) opcode=%d wr_id=%lu dst_rank=%d",
+                       wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].opcode, wc[i].wr_id, dst_rank);
         return -1;
       }
+      LOG_DEBUG_RANK(rank_, "Work completion: status=SUCCESS opcode=%d wr_id=%lu dst_rank=%d", 
+                     wc[i].opcode, wc[i].wr_id, dst_rank);
     }
     
-    LOG_DEBUG("Polled %d completions from rank %d", n, dst_rank);
+    // Dump CQ info and check its healthy
+    qp->dump_cq_info();
+
+    //LOG_DEBUG_RANK(rank_, "Polled %d completions from CQ for QP to rank %d", n, dst_rank);
     return n;
   }
 
@@ -378,7 +504,7 @@ class network_backend {
   const char* requested_dev_;
   struct ibv_context* context_;
   struct ibv_pd* pd_orig_;
-  struct ibv_pd* pd_parent_;  // For MLX5/IONIC
+  struct ibv_device_attr device_attr_;
   rdma::nic_vendor vendor_;
 
   // Port configuration
@@ -491,18 +617,19 @@ class network_backend {
     rdma::dump_ibv_context(context_);
     rdma::dump_ibv_device(context_->device);
 
+    // Query device attributes (needed for atomic operations)
+    int err = ibv_query_device(context_, &device_attr_);
+    CHECK_ZERO(err, "ibv_query_device");
+    LOG_DEBUG("Device attributes: max_qp_rd_atom=%d max_qp_init_rd_atom=%d",
+              device_attr_.max_qp_rd_atom, device_attr_.max_qp_init_rd_atom);
+
     // Allocate protection domain
     pd_orig_ = ibv_alloc_pd(context_);
     CHECK_NNULL(pd_orig_, "ibv_alloc_pd");
     rdma::dump_ibv_pd(pd_orig_);
 
-    // Create parent domain for MLX5/IONIC
-    if (vendor_ == rdma::nic_vendor::MLX5) {
-      create_parent_domain();
-    }
-
     // Query port
-    int err = ibv_query_port(context_, port_, &portinfo_);
+    err = ibv_query_port(context_, port_, &portinfo_);
     CHECK_ZERO(err, "ibv_query_port");
     rdma::dump_ibv_port_attr(&portinfo_);
 
@@ -513,21 +640,6 @@ class network_backend {
 
     LOG_INFO("InfiniBand device opened: %s",
              ibv_get_device_name(context_->device));
-  }
-
-  void create_parent_domain() {
-    LOG_DEBUG("Creating parent domain...");
-
-    struct ibv_parent_domain_init_attr pattr;
-    memset(&pattr, 0, sizeof(pattr));
-
-    pattr.pd = pd_orig_;
-    pattr.td = nullptr;
-    pattr.comp_mask = 0;
-
-    pd_parent_ = ibv_alloc_parent_domain(context_, &pattr);
-    CHECK_NNULL(pd_parent_, "ibv_alloc_parent_domain");
-    rdma::dump_ibv_pd(pd_parent_);
   }
 
   void select_gid_index() {
@@ -575,7 +687,7 @@ class network_backend {
     LOG_DEBUG("Creating queues...");
 
     int ncqes = 64;      // Number of CQ entries
-    int sq_length = 64;  // Send queue length
+    int sq_length = 64;  // Send queue length // TODO: FIX THAT
 
     // Resize vectors
     dest_info_.resize(world_size_);
@@ -592,33 +704,16 @@ class network_backend {
   void create_cqs(int ncqes) {
     LOG_DEBUG("Creating completion queues: ncqes=%d", ncqes);
 
-    struct ibv_cq_init_attr_ex cq_attr;
-    memset(&cq_attr, 0, sizeof(cq_attr));
-
-    cq_attr.cqe = ncqes;
-    cq_attr.cq_context = nullptr;
-    cq_attr.channel = nullptr;
-    cq_attr.comp_vector = 0;
-    cq_attr.flags = 0;
-
-    if (pd_parent_) {
-      cq_attr.comp_mask = IBV_CQ_INIT_ATTR_MASK_PD;
-      cq_attr.parent_domain = pd_parent_;
-    }
-
     for (int i = 0; i < world_size_; i++) {
-      struct ibv_cq_ex* cq_ex = ibv_create_cq_ex(context_, &cq_attr);
-      CHECK_NNULL(cq_ex, "ibv_create_cq_ex");
-
-      cqs_[i] = ibv_cq_ex_to_cq(cq_ex);
-      CHECK_NNULL(cqs_[i], "ibv_cq_ex_to_cq");
+      cqs_[i] = ibv_create_cq(context_, ncqes, nullptr, nullptr, 0);
+      CHECK_NNULL(cqs_[i], "ibv_create_cq");
     }
   }
 
   void create_qps(int sq_length) {
     LOG_DEBUG("Creating queue pairs: sq_length=%d", sq_length);
 
-    struct ibv_qp_init_attr_ex attr;
+    struct ibv_qp_init_attr attr;
     memset(&attr, 0, sizeof(attr));
 
     attr.cap.max_send_wr = sq_length;
@@ -626,15 +721,13 @@ class network_backend {
     attr.cap.max_inline_data = 8;
     attr.sq_sig_all = 0;
     attr.qp_type = IBV_QPT_RC;
-    attr.comp_mask = IBV_QP_INIT_ATTR_PD;
-    attr.pd = pd_parent_ ? pd_parent_ : pd_orig_;
 
     for (int i = 0; i < world_size_; i++) {
       attr.send_cq = cqs_[i];
       attr.recv_cq = cqs_[i];
 
-      struct ibv_qp* qp = ibv_create_qp_ex(context_, &attr);
-      CHECK_NNULL(qp, "ibv_create_qp_ex");
+      struct ibv_qp* qp = ibv_create_qp(pd_orig_, &attr);
+      CHECK_NNULL(qp, "ibv_create_qp");
 
       qps_[i] = std::make_unique<queue_pair>(qp, cqs_[i], i, vendor_);
     }
@@ -687,7 +780,7 @@ class network_backend {
     attr.qp_state = IBV_QPS_RTR;
     attr.path_mtu = portinfo_.active_mtu;
     attr.min_rnr_timer = 12;
-    attr.max_dest_rd_atomic = 1;
+    attr.max_dest_rd_atomic = device_attr_.max_qp_rd_atom;  // Use device capability
     attr.ah_attr.port_num = port_;
 
     if (portinfo_.link_layer == IBV_LINK_LAYER_ETHERNET) {
@@ -727,7 +820,7 @@ class network_backend {
     attr.timeout = 14;
     attr.retry_cnt = 7;
     attr.rnr_retry = 7;
-    attr.max_rd_atomic = 1;
+    attr.max_rd_atomic = device_attr_.max_qp_init_rd_atom;  // Use device capability
 
     int attr_mask = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC |
                     IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY;

@@ -15,10 +15,27 @@
 
 #include <thread>
 #include <atomic>
+#include <cstdlib>
 #include "network_backend.hpp"
 #include "queue.hpp"
 
 namespace iris {
+
+/**
+ * @brief Get maximum number of polling attempts from environment variable
+ * @return Max attempts (default 100, configurable via IRIS_RDMA_POLL_MAX_ATTEMPTS)
+ */
+inline int get_max_poll_attempts() {
+  static int max_attempts = []() {
+    const char* env = std::getenv("IRIS_RDMA_POLL_MAX_ATTEMPTS");
+    if (env) {
+      int val = std::atoi(env);
+      if (val > 0) return val;
+    }
+    return 100;  // Default
+  }();
+  return max_attempts;
+}
 
 /**
  * @brief Complete Iris RDMA Proxy
@@ -181,11 +198,65 @@ class rdma_proxy {
   }
 
   /**
+   * @brief Convert operation type to string
+   */
+  const char* op_type_to_string(uint8_t op_type) {
+    switch (static_cast<rdma::operation_type>(op_type)) {
+      case rdma::operation_type::NOP: return "NOP";
+      case rdma::operation_type::PUT: return "PUT";
+      case rdma::operation_type::GET: return "GET";
+      case rdma::operation_type::FLUSH: return "FLUSH";
+      case rdma::operation_type::ATOMIC_ADD: return "ATOMIC_ADD";
+      case rdma::operation_type::ATOMIC_EXCH: return "ATOMIC_EXCH";
+      case rdma::operation_type::ATOMIC_CAS: return "ATOMIC_CAS";
+      default: return "UNKNOWN";
+    }
+  }
+
+  /**
+   * @brief Dump raw work item bytes for debugging
+   */
+  void dump_work_item_raw(const rdma::work_item_t& item) {
+    if (!iris::rdma::is_debug_data_enabled()) return;
+    
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&item);
+    fprintf(stderr, "[DEBUG-DATA] Raw WorkItem (48 bytes):\n");
+    fprintf(stderr, "[DEBUG-DATA]   Header (32 bytes with alignas(16) padding):\n");
+    fprintf(stderr, "[DEBUG-DATA]     [0-7]   dst_ptr:     0x%016lx\n", item.header.dst_ptr);
+    fprintf(stderr, "[DEBUG-DATA]     [8-15]  src_ptr:     0x%016lx\n", item.header.src_ptr);
+    fprintf(stderr, "[DEBUG-DATA]     [16-19] size_bytes:  %u\n", item.header.size_bytes);
+    fprintf(stderr, "[DEBUG-DATA]     [20-21] rank:        %u\n", item.header.rank);
+    fprintf(stderr, "[DEBUG-DATA]     [22]    op_type:     %u (%s)\n", 
+            item.header.op_type, op_type_to_string(item.header.op_type));
+    fprintf(stderr, "[DEBUG-DATA]     [23]    reserved:    %u\n", item.header.reserved);
+    fprintf(stderr, "[DEBUG-DATA]     [24-31] padding (alignas)\n");
+    fprintf(stderr, "[DEBUG-DATA]   Atomic fields (16 bytes):\n");
+    fprintf(stderr, "[DEBUG-DATA]     [32-39] operand:     0x%016lx (%lu)\n", 
+            item.atomic_operand, item.atomic_operand);
+    fprintf(stderr, "[DEBUG-DATA]     [40-47] compare:     0x%016lx (%lu)\n", 
+            item.atomic_compare, item.atomic_compare);
+    fprintf(stderr, "[DEBUG-DATA]   Raw bytes: ");
+    for (int i = 0; i < 48; i++) {
+      fprintf(stderr, "%02x ", bytes[i]);
+      if ((i + 1) % 8 == 0) fprintf(stderr, " ");
+    }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+  }
+
+  /**
    * @brief Process a single work item from the queue
    */
   void process_work_item(const rdma::work_item_t& item) {
     auto op_type = static_cast<rdma::operation_type>(item.header.op_type);
     int dst_rank = item.header.rank;
+    
+    // Dump raw packet for atomic operations
+    if (op_type == rdma::operation_type::ATOMIC_ADD ||
+        op_type == rdma::operation_type::ATOMIC_EXCH ||
+        op_type == rdma::operation_type::ATOMIC_CAS) {
+      dump_work_item_raw(item);
+    }
     
     // Get addresses from queue metadata
     uint64_t src_ptr = item.header.src_ptr;  // Pointer/offset in registered heap
@@ -209,7 +280,8 @@ class rdma_proxy {
         } else {
           // Poll for completion
           int n = 0;
-          for (int attempt = 0; attempt < 100; attempt++) {
+          int max_attempts = get_max_poll_attempts();
+          for (int attempt = 0; attempt < max_attempts; attempt++) {
             n = backend_->poll_cq(dst_rank, 1);
             if (n > 0) break;
             std::this_thread::sleep_for(std::chrono::microseconds(10));
@@ -225,20 +297,24 @@ class rdma_proxy {
       }
       
       case rdma::operation_type::GET: {
-        // RDMA Read: Read from remote directly into registered heap at src_ptr
-        // GPU will read from heap after completion
-        void* local_addr = (void*)src_ptr;
+        // RDMA Read: Read from remote into local
+        // NOTE: WorkItem field naming is confusing for GET!
+        // WorkItem.dst_ptr contains REMOTE source (translated by Triton kernel)
+        // WorkItem.src_ptr contains LOCAL destination
+        void* local_addr = (void*)src_ptr;   // src_ptr field has local dest
+        uint64_t remote_addr = dst_ptr;      // dst_ptr field has remote source
         
-        LOG_DEBUG("GET: rank=%d src=%lx dst=%lx size=%zu", 
-                  dst_rank, dst_ptr, src_ptr, size);
+        LOG_DEBUG("GET: rank=%d remote_src=%lx local_dst=%lx size=%zu", 
+                  dst_rank, remote_addr, local_addr, size);
         
-        int ret = backend_->rdma_read(dst_rank, local_addr, dst_ptr, size);
+        int ret = backend_->rdma_read(dst_rank, local_addr, remote_addr, size);
         if (ret != 0) {
           LOG_ERROR("RDMA read failed: dst=%d size=%lu", dst_rank, size);
         } else {
           // Poll for completion
           int n = 0;
-          for (int attempt = 0; attempt < 100; attempt++) {
+          int max_attempts = get_max_poll_attempts();
+          for (int attempt = 0; attempt < max_attempts; attempt++) {
             n = backend_->poll_cq(dst_rank, 1);
             if (n > 0) break;
             std::this_thread::sleep_for(std::chrono::microseconds(10));
@@ -263,6 +339,113 @@ class rdma_proxy {
           n = backend_->poll_cq(dst_rank, 16);
           if (n > 0) total += n;
         } while (n > 0);
+        
+        queue_->pop();
+        break;
+      }
+      
+      case rdma::operation_type::ATOMIC_ADD: {
+        // Atomic add: fetch-and-add operation
+        // src_ptr = local result buffer, dst_ptr = remote target, atomic_operand = value to add
+        void* result_addr = (void*)src_ptr;
+        uint64_t operand = item.atomic_operand;
+        
+        LOG_DEBUG("ATOMIC_ADD: rank=%d dst=%lx operand=%lu result_buf=%lx size=%zu",
+                  dst_rank, dst_ptr, operand, src_ptr, size);
+        
+        // Local atomics should be handled directly by the GPU kernel, not offloaded to CPU
+        if (dst_rank == backend_->get_rank()) {
+          LOG_ERROR("ERROR: Local atomic operation detected (rank %d -> rank %d). "
+                    "Local atomics should be handled directly in the Triton kernel, "
+                    "not offloaded through the RDMA queue!", 
+                    backend_->get_rank(), dst_rank);
+          queue_->pop();
+          break;
+        }
+        
+        // Remote atomic - use RDMA
+        int ret = backend_->rdma_atomic_fetch_add(dst_rank, result_addr, dst_ptr, operand, size);
+        if (ret != 0) {
+          LOG_ERROR("RDMA atomic add failed: dst=%d size=%lu ret=%d", dst_rank, size, ret);
+        } else {
+          LOG_DEBUG("RDMA atomic add posted successfully, polling for completion...");
+          // Poll for completion
+          int max_attempts = get_max_poll_attempts();
+          int n = 0;
+          for (int attempt = 0; attempt < max_attempts; attempt++) {
+            n = backend_->poll_cq(dst_rank, 1);
+            if (n > 0) {
+              LOG_DEBUG("ATOMIC_ADD completed after %d attempts, completions=%d", attempt+1, n);
+              break;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+          }
+          if (n <= 0) {
+            LOG_ERROR("Warning: ATOMIC_ADD completion not polled after %d attempts!", max_attempts);
+          }
+        }
+        
+        queue_->pop();
+        break;
+      }
+      
+      case rdma::operation_type::ATOMIC_EXCH: {
+        // Atomic exchange: swap operation
+        // src_ptr = local result buffer, dst_ptr = remote target, atomic_operand = new value
+        void* result_addr = (void*)src_ptr;
+        uint64_t new_value = item.atomic_operand;
+        
+        LOG_DEBUG("ATOMIC_EXCH: rank=%d dst=%lx new_val=%lu result_buf=%lx size=%zu",
+                  dst_rank, dst_ptr, new_value, src_ptr, size);
+        
+        int ret = backend_->rdma_atomic_exchange(dst_rank, result_addr, dst_ptr, new_value, size);
+        if (ret != 0) {
+          LOG_ERROR("RDMA atomic exchange failed: dst=%d size=%lu", dst_rank, size);
+        } else {
+          // Poll for completion
+          int n = 0;
+          int max_attempts = get_max_poll_attempts();
+          for (int attempt = 0; attempt < max_attempts; attempt++) {
+            n = backend_->poll_cq(dst_rank, 1);
+            if (n > 0) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+          }
+          if (n <= 0) {
+            LOG_DEBUG("Warning: ATOMIC_EXCH completion not polled (may be OK if async)");
+          }
+        }
+        
+        queue_->pop();
+        break;
+      }
+      
+      case rdma::operation_type::ATOMIC_CAS: {
+        // Atomic compare-and-swap
+        // src_ptr = local result buffer, dst_ptr = remote target,
+        // atomic_compare = expected value, atomic_operand = new value
+        void* result_addr = (void*)src_ptr;
+        uint64_t compare = item.atomic_compare;
+        uint64_t swap = item.atomic_operand;
+        
+        LOG_DEBUG("ATOMIC_CAS: rank=%d dst=%lx compare=%lu swap=%lu result_buf=%lx size=%zu",
+                  dst_rank, dst_ptr, compare, swap, src_ptr, size);
+        
+        int ret = backend_->rdma_atomic_compare_swap(dst_rank, result_addr, dst_ptr, compare, swap, size);
+        if (ret != 0) {
+          LOG_ERROR("RDMA atomic CAS failed: dst=%d size=%lu", dst_rank, size);
+        } else {
+          // Poll for completion
+          int n = 0;
+          int max_attempts = get_max_poll_attempts();
+          for (int attempt = 0; attempt < max_attempts; attempt++) {
+            n = backend_->poll_cq(dst_rank, 1);
+            if (n > 0) break;
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+          }
+          if (n <= 0) {
+            LOG_DEBUG("Warning: ATOMIC_CAS completion not polled (may be OK if async)");
+          }
+        }
         
         queue_->pop();
         break;

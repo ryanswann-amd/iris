@@ -19,9 +19,12 @@ namespace rdma {
 // Operation types - simplified for Iris
 enum class operation_type : uint8_t {
   NOP = 0,
-  PUT = 1,    // RDMA write
-  GET = 2,    // RDMA read
-  FLUSH = 3,  // Flush connection
+  PUT = 1,         // RDMA write
+  GET = 2,         // RDMA read
+  FLUSH = 3,       // Flush connection
+  ATOMIC_ADD = 4,  // Atomic add
+  ATOMIC_EXCH = 5, // Atomic exchange
+  ATOMIC_CAS = 6,  // Atomic compare-and-swap
 };
 
 // Work item structure - metadata only, no data storage
@@ -37,7 +40,11 @@ struct alignas(16) work_item_header_t {
 
 // Note: Completion is signaled by tail pointer advancement, not a flag
 struct alignas(16) work_item_t {
-  work_item_header_t header;
+  work_item_header_t header;    // 32 bytes (0-31, padded due to alignas(16))
+  // For atomic operations: operand values
+  uint64_t atomic_operand;      // Value to add/exchange (offset 32)
+  uint64_t atomic_compare;      // For CAS: compare value (offset 40)
+  // Total size: 48 bytes
 };
 
 // Queue state visible to both CPU and GPU
