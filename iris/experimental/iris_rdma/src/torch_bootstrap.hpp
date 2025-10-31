@@ -32,7 +32,7 @@ class torch_bootstrap {
     }
     rank_ = process_group_->getRank();
     world_size_ = process_group_->getSize();
-    DEBUG_PRINT("torch_bootstrap initialized: rank=%d, world_size=%d", rank_, world_size_);
+    LOG_INFO("torch_bootstrap initialized: rank=%d, world_size=%d", rank_, world_size_);
   }
 
   /**

@@ -63,14 +63,14 @@ class network_backend {
     }
     rank_ = bootstrap_->get_rank();
     world_size_ = bootstrap_->get_world_size();
-    DEBUG_PRINT("network_backend created: rank=%d, world_size=%d", rank_, world_size_);
+    LOG_INFO("network_backend created: rank=%d, world_size=%d", rank_, world_size_);
   }
 
   /**
    * @brief Destructor - cleanup InfiniBand resources
    */
   ~network_backend() {
-    DEBUG_PRINT("network_backend cleanup started");
+    LOG_DEBUG("network_backend cleanup started");
     
     qps_.clear();
     
@@ -118,7 +118,7 @@ class network_backend {
    * @brief Initialize the network (setup QPs, transition to RTS)
    */
   void init() {
-    DEBUG_PRINT("network_backend::init() started");
+    LOG_INFO("network_backend::init() started");
     
     autodetect_dv_libs();
     open_ib_device();
@@ -129,7 +129,7 @@ class network_backend {
     modify_qps_rtr_to_rts();
     bootstrap_->barrier();
     
-    DEBUG_PRINT("NetworkBackend::init() completed");
+    LOG_INFO("network_backend::init() completed");
   }
 
   /**
@@ -138,7 +138,7 @@ class network_backend {
    * @param size Size in bytes
    */
   void register_memory(void* ptr, size_t size) {
-    DEBUG_PRINT("Registering memory: ptr=%p, size=%zu", ptr, size);
+    LOG_INFO("Registering memory: ptr=%p, size=%zu", ptr, size);
 
     int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
                  IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
@@ -186,8 +186,8 @@ class network_backend {
       }
     }
 
-    DEBUG_PRINT("Memory registered: lkey=%u, rkey=%u, heap_base=%p", 
-                lkey, heap_mr_->rkey, ptr);
+    LOG_INFO("Memory registered: lkey=%u, rkey=%u, heap_base=%p", 
+             lkey, heap_mr_->rkey, ptr);
   }
 
   /**
@@ -349,7 +349,7 @@ class network_backend {
     int n = ibv_poll_cq(qp->get_ibv_cq(), num_to_poll, wc);
     
     if (n < 0) {
-      DEBUG_PRINT("CQ poll error for rank %d", dst_rank);
+        LOG_ERROR("CQ poll error for rank %d", dst_rank);
       return n;
     }
     
@@ -407,25 +407,25 @@ class network_backend {
 
   // Vendor-specific init
   void autodetect_dv_libs() {
-    DEBUG_PRINT("Auto-detecting vendor libraries...");
+    LOG_DEBUG("Auto-detecting vendor libraries...");
 
     // Try MLX5
     if (mlx5_dv_dl_init() == 0) {
       vendor_ = rdma::nic_vendor::MLX5;
-      DEBUG_PRINT("Detected MLX5 vendor");
+      LOG_INFO("Detected MLX5 vendor");
       return;
     }
 
     // Try BNXT
     if (bnxt_dv_dl_init() == 0) {
       vendor_ = rdma::nic_vendor::BNXT;
-      DEBUG_PRINT("Detected BNXT vendor");
+      LOG_INFO("Detected BNXT vendor");
       return;
     }
 
     // Default to standard verbs
     vendor_ = rdma::nic_vendor::NONE;
-    DEBUG_PRINT("Using standard InfiniBand verbs");
+    LOG_INFO("Using standard InfiniBand verbs");
   }
 
   int mlx5_dv_dl_init() {
@@ -457,7 +457,7 @@ class network_backend {
   }
 
   void open_ib_device() {
-    DEBUG_PRINT("Opening InfiniBand device...");
+    LOG_INFO("Opening InfiniBand device...");
 
     struct ibv_device** device_list = nullptr;
     struct ibv_device* device = nullptr;
@@ -511,12 +511,12 @@ class network_backend {
 
     ibv_free_device_list(device_list);
 
-    DEBUG_PRINT("InfiniBand device opened: %s",
-                ibv_get_device_name(context_->device));
+    LOG_INFO("InfiniBand device opened: %s",
+             ibv_get_device_name(context_->device));
   }
 
   void create_parent_domain() {
-    DEBUG_PRINT("Creating parent domain...");
+    LOG_DEBUG("Creating parent domain...");
 
     struct ibv_parent_domain_init_attr pattr;
     memset(&pattr, 0, sizeof(pattr));
@@ -531,7 +531,7 @@ class network_backend {
   }
 
   void select_gid_index() {
-    DEBUG_PRINT("Selecting GID index...");
+    LOG_DEBUG("Selecting GID index...");
 
     const uint8_t local_gid_prefix[2] = {0xFE, 0x80};
     int selected_gid_index = -1;
@@ -568,11 +568,11 @@ class network_backend {
     gid_index_ = selected_gid_index;
     gid_ = selected_gid;
 
-    DEBUG_PRINT("Selected GID index: %d", gid_index_);
+    LOG_DEBUG("Selected GID index: %d", gid_index_);
   }
 
   void create_queues() {
-    DEBUG_PRINT("Creating queues...");
+    LOG_DEBUG("Creating queues...");
 
     int ncqes = 64;      // Number of CQ entries
     int sq_length = 64;  // Send queue length
@@ -586,11 +586,11 @@ class network_backend {
     create_cqs(ncqes);
     create_qps(sq_length);
 
-    DEBUG_PRINT("Created %d queue pairs", world_size_);
+    LOG_INFO("Created %d queue pairs", world_size_);
   }
 
   void create_cqs(int ncqes) {
-    DEBUG_PRINT("Creating completion queues: ncqes=%d", ncqes);
+    LOG_DEBUG("Creating completion queues: ncqes=%d", ncqes);
 
     struct ibv_cq_init_attr_ex cq_attr;
     memset(&cq_attr, 0, sizeof(cq_attr));
@@ -616,7 +616,7 @@ class network_backend {
   }
 
   void create_qps(int sq_length) {
-    DEBUG_PRINT("Creating queue pairs: sq_length=%d", sq_length);
+    LOG_DEBUG("Creating queue pairs: sq_length=%d", sq_length);
 
     struct ibv_qp_init_attr_ex attr;
     memset(&attr, 0, sizeof(attr));
@@ -641,7 +641,7 @@ class network_backend {
   }
 
   void exchange_qp_dest_info() {
-    DEBUG_PRINT("Exchanging QP destination info...");
+    LOG_DEBUG("Exchanging QP destination info...");
 
     // Fill local dest info
     for (int i = 0; i < world_size_; i++) {
@@ -654,11 +654,11 @@ class network_backend {
     // All-gather dest info
     bootstrap_->all_gather(dest_info_.data(), sizeof(rdma::qp_dest_info_t));
 
-    DEBUG_PRINT("QP destination info exchanged");
+    LOG_DEBUG("QP destination info exchanged");
   }
 
   void modify_qps_reset_to_init() {
-    DEBUG_PRINT("Transitioning QPs: RESET -> INIT");
+    LOG_DEBUG("Transitioning QPs: RESET -> INIT");
 
     struct ibv_qp_attr attr;
     memset(&attr, 0, sizeof(attr));
@@ -679,7 +679,7 @@ class network_backend {
   }
 
   void modify_qps_init_to_rtr() {
-    DEBUG_PRINT("Transitioning QPs: INIT -> RTR");
+    LOG_DEBUG("Transitioning QPs: INIT -> RTR");
 
     struct ibv_qp_attr attr;
     memset(&attr, 0, sizeof(attr));
@@ -718,7 +718,7 @@ class network_backend {
   }
 
   void modify_qps_rtr_to_rts() {
-    DEBUG_PRINT("Transitioning QPs: RTR -> RTS");
+    LOG_DEBUG("Transitioning QPs: RTR -> RTS");
 
     struct ibv_qp_attr attr;
     memset(&attr, 0, sizeof(attr));

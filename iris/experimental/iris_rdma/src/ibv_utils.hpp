@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "logging.hpp"
+
 namespace iris {
 namespace rdma {
 
@@ -15,8 +17,7 @@ namespace rdma {
   do {                                                                  \
     int ret = (expr);                                                   \
     if (ret != 0) {                                                     \
-      fprintf(stderr, "[ERROR] %s failed with code %d: %s\n", msg, ret, \
-              strerror(ret));                                           \
+      LOG_ERROR("%s failed with code %d: %s", msg, ret, strerror(ret)); \
       abort();                                                          \
     }                                                                   \
   } while (0)
@@ -24,16 +25,9 @@ namespace rdma {
 #define CHECK_NNULL(ptr, msg)                             \
   do {                                                    \
     if ((ptr) == nullptr) {                               \
-      fprintf(stderr, "[ERROR] %s returned NULL\n", msg); \
+      LOG_ERROR("%s returned NULL", msg);                 \
       abort();                                            \
     }                                                     \
-  } while (0)
-
-#define DEBUG_PRINT(fmt, ...)                                       \
-  do {                                                              \
-    if (getenv("IRIS_RDMA_DEBUG")) {                                \
-      fprintf(stderr, "[IRIS_RDMA_DEBUG] " fmt "\n", ##__VA_ARGS__); \
-    }                                                               \
   } while (0)
 
 // Vendor detection
@@ -57,20 +51,20 @@ struct qp_info_t {
 
 // Helper functions
 inline void dump_ibv_device(struct ibv_device* device) {
-  DEBUG_PRINT("IBV Device: %s", ibv_get_device_name(device));
+  LOG_DEBUG("IBV Device: %s", ibv_get_device_name(device));
 }
 
 inline void dump_ibv_context(struct ibv_context* ctx) {
-  DEBUG_PRINT("IBV Context: device=%s", ctx->device->name);
+  LOG_DEBUG("IBV Context: device=%s", ctx->device->name);
 }
 
 inline void dump_ibv_pd(struct ibv_pd* pd) {
-  DEBUG_PRINT("IBV PD: handle=%u", pd->handle);
+  LOG_DEBUG("IBV PD: handle=%u", pd->handle);
 }
 
 inline void dump_ibv_port_attr(struct ibv_port_attr* attr) {
-  DEBUG_PRINT("Port Attr: state=%d, lid=%d, link_layer=%d, active_mtu=%d",
-              attr->state, attr->lid, attr->link_layer, attr->active_mtu);
+  LOG_DEBUG("Port Attr: state=%d, lid=%d, link_layer=%d, active_mtu=%d",
+            attr->state, attr->lid, attr->link_layer, attr->active_mtu);
 }
 
 inline int ibv_mtu_to_int(enum ibv_mtu mtu) {

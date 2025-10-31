@@ -155,29 +155,29 @@ class rdma_proxy {
     bool is_fp16 = (dtype_env && strcmp(dtype_env, "float16") == 0);
     bool is_fp32 = (!dtype_env || strcmp(dtype_env, "float32") == 0);
     
-    fprintf(stderr, "[DEBUG-%s] rank=%d dst=%d size=%zu ", 
-            op_name, backend_->get_rank(), dst_rank, size);
-    
     if (is_bf16 || is_fp16) {
       // 2-byte types
       int elem_count = std::min((int)(size / 2), 10);
       uint16_t* data_ptr = (uint16_t*)data;
-      fprintf(stderr, "(bf16) src=%lx dst=%lx: ", src_ptr, dst_ptr);
+      LOG_DATA_DEBUG("[%s] rank=%d dst=%d size=%zu (bf16) src=%lx dst=%lx: first values", 
+                     op_name, backend_->get_rank(), dst_rank, size, src_ptr, dst_ptr);
       for (int i = 0; i < elem_count; i++) {
         uint32_t fp32_bits = ((uint32_t)data_ptr[i]) << 16;
         float value = *reinterpret_cast<float*>(&fp32_bits);
         fprintf(stderr, "%.1f ", value);
       }
+      fprintf(stderr, "\n");
     } else if (is_fp32) {
       // 4-byte types
       int elem_count = std::min((int)(size / 4), 10);
       float* float_ptr = (float*)data;
-      fprintf(stderr, "(fp32) src=%lx dst=%lx: ", src_ptr, dst_ptr);
+      LOG_DATA_DEBUG("[%s] rank=%d dst=%d size=%zu (fp32) src=%lx dst=%lx: first values", 
+                     op_name, backend_->get_rank(), dst_rank, size, src_ptr, dst_ptr);
       for (int i = 0; i < elem_count; i++) {
         fprintf(stderr, "%.1f ", float_ptr[i]);
       }
+      fprintf(stderr, "\n");
     }
-    fprintf(stderr, "\n");
   }
 
   /**
@@ -198,14 +198,14 @@ class rdma_proxy {
         // No memcpy needed - just RDMA directly from heap!
         void* local_addr = (void*)src_ptr;
         
-        DEBUG_PRINT("[IrisManager] PUT: rank=%d src=%lx dst=%lx size=%zu", 
-                    dst_rank, src_ptr, dst_ptr, size);
+        LOG_DEBUG("PUT: rank=%d src=%lx dst=%lx size=%zu", 
+                  dst_rank, src_ptr, dst_ptr, size);
         
         debug_print_work_item(item);
         
         int ret = backend_->rdma_write(dst_rank, local_addr, dst_ptr, size);
         if (ret != 0) {
-          fprintf(stderr, "[IrisManager] RDMA write failed: dst=%d size=%lu\n", dst_rank, size);
+          LOG_ERROR("RDMA write failed: dst=%d size=%lu", dst_rank, size);
         } else {
           // Poll for completion
           int n = 0;
@@ -229,12 +229,12 @@ class rdma_proxy {
         // GPU will read from heap after completion
         void* local_addr = (void*)src_ptr;
         
-        DEBUG_PRINT("[IrisManager] GET: rank=%d src=%lx dst=%lx size=%zu", 
-                    dst_rank, dst_ptr, src_ptr, size);
+        LOG_DEBUG("GET: rank=%d src=%lx dst=%lx size=%zu", 
+                  dst_rank, dst_ptr, src_ptr, size);
         
         int ret = backend_->rdma_read(dst_rank, local_addr, dst_ptr, size);
         if (ret != 0) {
-          fprintf(stderr, "[IrisManager] RDMA read failed: dst=%d size=%lu\n", dst_rank, size);
+          LOG_ERROR("RDMA read failed: dst=%d size=%lu", dst_rank, size);
         } else {
           // Poll for completion
           int n = 0;
@@ -255,7 +255,7 @@ class rdma_proxy {
       
       case rdma::operation_type::FLUSH: {
         // Flush all pending operations for this rank
-        DEBUG_PRINT("[IrisManager] FLUSH: rank=%d", dst_rank);
+        LOG_DEBUG("FLUSH: rank=%d", dst_rank);
         
         int total = 0;
         int n;
@@ -269,7 +269,7 @@ class rdma_proxy {
       }
       
       default:
-        fprintf(stderr, "[IrisManager] Unknown operation type: %d\n", item.header.op_type);
+        LOG_ERROR("Unknown operation type: %d", item.header.op_type);
         queue_->pop();
     }
   }

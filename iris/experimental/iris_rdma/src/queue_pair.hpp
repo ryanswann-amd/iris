@@ -35,14 +35,14 @@ class queue_pair {
     CHECK_NNULL(qp_, "QueuePair: ibv_qp");
     CHECK_NNULL(cq_, "QueuePair: ibv_cq");
     qp_num_ = qp_->qp_num;
-    DEBUG_PRINT("QueuePair created: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
+    LOG_DEBUG("queue_pair created: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
   }
 
   /**
    * @brief Destructor
    */
   inline ~queue_pair() {
-    DEBUG_PRINT("queue_pair destroyed: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
+    LOG_DEBUG("queue_pair destroyed: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
   }
 
   /**
