@@ -215,7 +215,7 @@ class rdma_proxy {
             std::this_thread::sleep_for(std::chrono::microseconds(10));
           }
           if (n <= 0) {
-            DEBUG_PRINT("[IrisManager] Warning: PUT completion not polled (may be OK if async)");
+            LOG_DEBUG("Warning: PUT completion not polled (may be OK if async)");
           }
         }
         
@@ -244,7 +244,7 @@ class rdma_proxy {
             std::this_thread::sleep_for(std::chrono::microseconds(10));
           }
           if (n <= 0) {
-            DEBUG_PRINT("[IrisManager] Warning: GET completion not polled (may be OK if async)");
+            LOG_DEBUG("Warning: GET completion not polled (may be OK if async)");
           }
         }
         

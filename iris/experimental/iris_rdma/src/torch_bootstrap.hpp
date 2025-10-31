@@ -77,7 +77,7 @@ class torch_bootstrap {
       std::memcpy(static_cast<uint8_t*>(allData) + i * size,
                   cpu_output.data_ptr<uint8_t>(), size);
     }
-    DEBUG_PRINT("AllGather completed: %d bytes per rank", size);
+    LOG_DEBUG("AllGather completed: %d bytes per rank", size);
   }
 
   /**
@@ -88,7 +88,7 @@ class torch_bootstrap {
   inline void barrier() {
     auto work = process_group_->barrier();
     work->wait();
-    DEBUG_PRINT("Barrier completed");
+    LOG_DEBUG("Barrier completed");
   }
 
   /**

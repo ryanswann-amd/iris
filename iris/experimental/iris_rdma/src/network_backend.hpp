@@ -111,7 +111,7 @@ class network_backend {
       bnxtdv_handle_ = nullptr;
     }
     
-    DEBUG_PRINT("NetworkBackend cleanup completed");
+    LOG_DEBUG("NetworkBackend cleanup completed");
   }
 
   /**
@@ -286,8 +286,8 @@ class network_backend {
     struct ibv_send_wr* bad_wr;
     int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
     
-    DEBUG_PRINT("RDMA Write to rank %d: local=%p remote=%lx size=%zu ret=%d", 
-                dst_rank, local_addr, remote_addr, size, ret);
+    LOG_DEBUG("RDMA Write to rank %d: local=%p remote=%lx size=%zu ret=%d", 
+              dst_rank, local_addr, remote_addr, size, ret);
     
     return ret;
   }
@@ -326,8 +326,8 @@ class network_backend {
     struct ibv_send_wr* bad_wr;
     int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
     
-    DEBUG_PRINT("RDMA Read from rank %d: local=%p remote=%lx size=%zu ret=%d", 
-                dst_rank, local_addr, remote_addr, size, ret);
+    LOG_DEBUG("RDMA Read from rank %d: local=%p remote=%lx size=%zu ret=%d", 
+              dst_rank, local_addr, remote_addr, size, ret);
     
     return ret;
   }
@@ -362,7 +362,7 @@ class network_backend {
       }
     }
     
-    DEBUG_PRINT("Polled %d completions from rank %d", n, dst_rank);
+    LOG_DEBUG("Polled %d completions from rank %d", n, dst_rank);
     return n;
   }
 
@@ -435,7 +435,7 @@ class network_backend {
     }
 
     if (!mlx5dv_handle_) {
-      DEBUG_PRINT("Could not open libmlx5.so");
+      LOG_DEBUG("Could not open libmlx5.so");
       return -1;
     }
 
@@ -449,7 +449,7 @@ class network_backend {
     }
 
     if (!bnxtdv_handle_) {
-      DEBUG_PRINT("Could not open libbnxt_re.so");
+      LOG_DEBUG("Could not open libbnxt_re.so");
       return -1;
     }
 
