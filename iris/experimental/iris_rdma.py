@@ -223,11 +223,15 @@ class IrisRDMA:
         Example:
             >>> ctx.barrier()  # Wait for all ranks and RDMA completion
         """
-        # First, wait for queue to drain (all work processed)
-        self.wait_queue_drain()
         
-        # Then synchronize with other ranks
+        # First, synchronize with all GPUs
+        torch.cuda.synchronize()
+        
+        # Then, synchronize with all ranks
         dist.barrier()
+        
+        # Finally, wait for queue to drain (all work processed)
+        self.wait_queue_drain()
     
     def wait_queue_drain(self, timeout=30.0):
         """

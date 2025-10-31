@@ -96,11 +96,6 @@ PYBIND11_MODULE(_iris_rdma_backend, m) {
               auto t = THPVariable_Unpack(obj.ptr());
               ptr = t.data_ptr();
               actual_size = t.numel() * t.element_size();
-              
-              // Note: For GPU tensors, ibv_reg_mr will work if:
-              // 1. GPUDirect RDMA is enabled (check with ibstat/ibv_devinfo)
-              // 2. The memory is allocated with hipMalloc (native GPU memory)
-              // PyTorch tensors should work as they use hipMalloc internally
             }
             else {
               throw std::runtime_error("Expected a PyTorch tensor or integer address");

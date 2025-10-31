@@ -13,7 +13,6 @@
 #include <functional>
 #include <iostream>
 #include <memory>
-#include <thread>
 
 namespace gpu_cpu_queue {
 
@@ -36,8 +35,6 @@ struct alignas(16) WorkItemHeader {
   uint8_t reserved;     // Reserved for future use
 };
 
-// WorkItem is now just the header - no data array needed!
-// All data lives in the registered symmetric heap
 // Note: Completion is signaled by tail pointer advancement, not a flag
 struct alignas(16) WorkItem {
   WorkItemHeader header;
@@ -55,7 +52,7 @@ struct QueueState {
 // CPU-side queue management
 class Queue {
  public:
-  explicit Queue(int size = 512) : size_(size), running_(false) {
+  explicit Queue(int size = 512) : size_(size) {
     // Allocate pinned memory for QueueState struct (GPU needs to read this)
     hipHostMalloc(&state_, sizeof(QueueState));
 
@@ -79,9 +76,6 @@ class Queue {
   }
 
   ~Queue() {
-    if (running_) {
-      stopProxy();
-    }
     hipHostFree(state_->items);
     hipFree(state_->head);
     hipHostFree(state_->tail);
@@ -125,21 +119,6 @@ class Queue {
     reinterpret_cast<std::atomic<uint64_t>*>(state_->tail)->store(newTail, std::memory_order_release);
   }
 
-  // Start proxy thread
-  void startProxy() {
-    if (running_) return;
-
-    running_ = true;
-    proxyThread_ = std::thread([this]() { this->proxyLoop(); });
-  }
-
-  void stopProxy() {
-    running_ = false;
-    if (proxyThread_.joinable()) {
-      proxyThread_.join();
-    }
-  }
-
   // Get queue statistics
   uint64_t getTail() const { return *state_->tail; }
 
@@ -159,72 +138,8 @@ class Queue {
   }
 
  private:
-  void proxyLoop() {
-    WorkItem item;
-    int checkCounter = 1000;
-
-    while (true) {
-      // Check if should stop
-      if (checkCounter-- == 0) {
-        checkCounter = 1000;
-        if (!running_) break;
-      }
-
-      // Poll for work
-      if (poll(item)) {
-        // Process the work item: print to stdout (later: send to NIC)
-        OperationType op = static_cast<OperationType>(item.header.op_type);
-
-        // Get operation name
-        const char* opName = "UNKNOWN";
-        switch (op) {
-          case OperationType::NOP:
-            opName = "NOP";
-            break;
-          case OperationType::PUT:
-            opName = "PUT";
-            break;
-          case OperationType::GET:
-            opName = "GET";
-            break;
-          case OperationType::FLUSH:
-            opName = "FLUSH";
-            break;
-        }
-
-        // Silent processing (uncomment to debug)
-        // std::cout << "[CPU Proxy] Op=" << opName << " (0x" << std::hex << (int)item.header.op_type << std::dec << ")"
-        //           << " rank=" << item.header.rank << " dst=0x" << std::hex << item.header.dst_ptr << std::dec
-        //           << " size=" << item.header.block_size << " first_values=[";
-        // for (int i = 0; i < std::min(5, (int)item.header.block_size); i++) {
-        //   std::cout << item.data[i];
-        //   if (i < std::min(5, (int)item.header.block_size) - 1) std::cout << ", ";
-        // }
-        // std::cout << "...]" << std::endl;
-
-        // Process based on operation type
-        if (op == OperationType::PUT) {
-          // TODO: Replace with actual NIC write
-          // nic->write(item.header.dst_ptr, item.data, item.header.block_size, item.header.rank);
-          pop();
-
-        } else if (op == OperationType::GET) {
-          std::cout << "[CPU Proxy] Processing GET operation - rank=" << item.header.rank
-                    << " size=" << item.header.size_bytes << std::endl;
-
-          // This is a test/debug proxy - IrisManager has the real proxy with RDMA
-          // Just mark as complete for testing
-          pop();
-          std::cout << "[CPU Proxy] GET operation complete" << std::endl;
-        }
-      }
-    }
-  }
-
   QueueState* state_;
   int size_;
-  std::atomic<bool> running_;
-  std::thread proxyThread_;
 };
 
 }  // namespace gpu_cpu_queue
