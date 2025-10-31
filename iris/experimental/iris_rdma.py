@@ -347,6 +347,44 @@ def iris(heap_size=1 << 30, process_group=None, queue_size=512):
 #############################################################################
 
 @triton.jit
+def _translate(ptr, from_rank, to_rank, heap_bases):
+    """
+    Translate a pointer from one rank's address space to another.
+    
+    This implements the symmetric heap model where each rank has a heap at
+    a different base address, but offsets are preserved across ranks.
+    
+    Args:
+        ptr: Pointer in from_rank's address space
+        from_rank: Source rank ID
+        to_rank: Target rank ID
+        heap_bases: Pointer to array of heap base addresses
+    
+    Returns:
+        Translated pointer in to_rank's address space
+    """
+    from_base = tl.load(heap_bases + from_rank)
+    to_base = tl.load(heap_bases + to_rank)
+    
+    # Convert to int to compute difference
+    ptr_int = ptr.to(tl.uint64)
+    
+    # Find the offset from from_rank heap
+    offset = ptr_int - from_base
+    
+    # Byte cast for byte offset addition
+    to_base_byte = to_base.to(tl.pointer_type(tl.int8))
+    
+    # Find the offset into the to_rank heap
+    translated_ptr_byte = to_base_byte + offset
+    
+    # Cast back to original pointer type
+    translated_ptr = translated_ptr_byte.to(ptr.dtype)
+    
+    return translated_ptr
+
+
+@triton.jit
 def _wait_for_completion(queue_ptr, queue_pos):
     """
     Wait for CPU to process a queue item.
@@ -445,14 +483,35 @@ def _enqueue_rdma_op(dst_ptr, src_ptr, to_rank: tl.constexpr, op_code: tl.conste
     # Extract source address (min of pointer block where data is stored)
     src_ptr_u64 = src_ptr.to(tl.uint64)
     src_ptr_val = tl.min(src_ptr_u64, axis=0)
-    
-    # Calculate size in bytes from pointer range
-    # max_ptr - min_ptr gives us the byte distance to the last element
-    # Add element_size to include the last element itself
     max_src_ptr = tl.max(src_ptr_u64, axis=0)
-    element_size_bytes = 4  # float32
-    num_bytes = (max_src_ptr - src_ptr_val + element_size_bytes).to(tl.uint32)
-    size_bytes = num_bytes
+    
+    # Infer element size from pointer type
+    # src_ptr is a block of pointers with a specific element type (e.g., pointer<float32>)
+    # The pointer dtype tells us the element type, which has a known size
+    # Map Triton dtypes to their byte sizes
+    ptr_dtype = src_ptr.dtype.element_ty  # Get the element type that the pointer points to
+    
+    # Get element size in bytes from the dtype
+    # tl.float16 -> 2, tl.float32 -> 4, tl.float64 -> 8, etc.
+    if ptr_dtype == tl.float16 or ptr_dtype == tl.bfloat16:
+        element_size_bytes = 2
+    elif ptr_dtype == tl.float32 or ptr_dtype == tl.int32 or ptr_dtype == tl.uint32:
+        element_size_bytes = 4
+    elif ptr_dtype == tl.float64 or ptr_dtype == tl.int64 or ptr_dtype == tl.uint64:
+        element_size_bytes = 8
+    elif ptr_dtype == tl.int8 or ptr_dtype == tl.uint8:
+        element_size_bytes = 1
+    elif ptr_dtype == tl.int16 or ptr_dtype == tl.uint16:
+        element_size_bytes = 2
+    else:
+        # Default to 4 bytes for unknown types
+        element_size_bytes = 4
+    
+    # Calculate total size in bytes
+    # Count number of valid elements based on mask
+    mask_int = mask.to(tl.int32)
+    num_elements = tl.sum(mask_int, axis=0)
+    size_bytes = (num_elements * element_size_bytes).to(tl.uint32)
     
     # Write header fields (but NOT size_bytes yet - it's the ready flag)
     # Write dst_ptr (offset 0)
@@ -475,44 +534,52 @@ def _enqueue_rdma_op(dst_ptr, src_ptr, to_rank: tl.constexpr, op_code: tl.conste
 
 
 @triton.jit
-def put(dst_ptr, src_ptr, data, dst_rank: tl.constexpr, device_ctx, mask):
+def put(dst_ptr, src_ptr, dst_rank: tl.constexpr, device_ctx, mask):
     """
     RDMA put (write) operation from Triton kernel.
     
-    Enqueues data to be written to remote rank via RDMA.
-    Data must first be stored in the registered heap at src_ptr location.
+    Uses symmetric heap model: dst_ptr is in current rank's address space,
+    and will be automatically translated to remote rank's address space.
+    
+    IMPORTANT: Data must be stored at src_ptr BEFORE calling this function.
+    This avoids race conditions between GPU writes and CPU RDMA reads.
     The CPU proxy thread will dequeue and perform the actual RDMA write.
     
     Args:
-        dst_ptr: Destination pointer (remote address) - can be block of pointers
-        src_ptr: Source pointer (local address in registered heap) - can be block of pointers
-        data: Data values to write (block) - will be stored at src_ptr
+        dst_ptr: Destination pointer in CURRENT rank's address space (symmetric heap)
+        src_ptr: Source pointer (local address in registered heap) where data is already stored - can be block of pointers
         dst_rank: Target rank ID (must be compile-time constant)
         device_ctx: Device context from iris_rdma.get_device_context()
         mask: Triton mask for valid elements
     
     Example:
         >>> @triton.jit
-        >>> def kernel(dst_ptr, src_ptr, device_ctx, dst_rank, BLOCK_SIZE: tl.constexpr):
+        >>> def kernel(local_buffer, device_ctx, dst_rank, BLOCK_SIZE: tl.constexpr):
         >>>     pid = tl.program_id(0)
         >>>     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         >>>     mask = offsets < n_elements
         >>>     
         >>>     data = generate_data(offsets)
-        >>>     # Store data locally first (in registered heap)
-        >>>     tl.store(src_ptr + offsets, data, mask=mask)
-        >>>     # Enqueue RDMA operation
-        >>>     iris_rdma.put(dst_ptr + offsets, src_ptr + offsets, data, dst_rank, device_ctx, mask)
+        >>>     src_ptrs = local_buffer + offsets
+        >>>     dst_ptrs = local_buffer + offsets  # Same offset, symmetric heap!
+        >>>     
+        >>>     # Store data FIRST to avoid race condition
+        >>>     tl.store(src_ptrs, data, mask=mask)
+        >>>     
+        >>>     # Then enqueue RDMA operation
+        >>>     iris_rdma.put(dst_ptrs, src_ptrs, dst_rank, device_ctx, mask)
     """
-    # Extract queue pointer from device context
+    # Extract context fields
     # Context format: [rank, world_size, queue_ptr, heap_base_0, heap_base_1, ...]
+    my_rank = tl.load(device_ctx + 0)
     queue_ptr = tl.load(device_ctx + 2)
+    heap_bases = device_ctx + 3
     
-    # Store data in registered heap first
-    tl.store(src_ptr, data, mask=mask)
+    # Translate dst_ptr from current rank's address space to remote rank's
+    translated_dst_ptr = _translate(dst_ptr, my_rank, dst_rank, heap_bases)
     
-    # Enqueue PUT operation (op_code=1)
-    _enqueue_rdma_op(dst_ptr, src_ptr, dst_rank, 1, queue_ptr, mask)
+    # Enqueue PUT operation (op_code=1) with translated address
+    _enqueue_rdma_op(translated_dst_ptr, src_ptr, dst_rank, 1, queue_ptr, mask)
 
 
 @triton.jit
@@ -520,36 +587,47 @@ def get(dst_ptr, src_ptr, from_rank: tl.constexpr, device_ctx, mask):
     """
     RDMA get (read) operation from Triton kernel.
     
+    Uses symmetric heap model: src_ptr is in current rank's address space,
+    and will be automatically translated to remote rank's address space.
+    
     Enqueues a request to read data from remote rank via RDMA and WAITS for completion.
     The CPU proxy thread will dequeue, perform the RDMA read, then pop the item.
     This function spins until the tail pointer advances, then data is ready at dst_ptr.
     
     Args:
         dst_ptr: Local destination pointer where data will be written - can be block of pointers
-        src_ptr: Source pointer (remote address) - can be block of pointers
+        src_ptr: Source pointer in CURRENT rank's address space (symmetric heap)
         from_rank: Source rank ID (must be compile-time constant)
         device_ctx: Device context from iris_rdma.get_device_context()
         mask: Triton mask for valid elements
     
     Example:
         >>> @triton.jit
-        >>> def kernel(local_ptr, remote_ptr, device_ctx, from_rank, BLOCK_SIZE: tl.constexpr):
+        >>> def kernel(local_buffer, device_ctx, from_rank, BLOCK_SIZE: tl.constexpr):
         >>>     pid = tl.program_id(0)
         >>>     offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         >>>     mask = offsets < n_elements
         >>>     
+        >>>     src_ptrs = local_buffer + offsets  # Same offset in symmetric heap!
+        >>>     dst_ptrs = local_buffer + offsets
         >>>     # RDMA read from remote rank - blocks until complete
-        >>>     iris_rdma.get(local_ptr + offsets, remote_ptr + offsets, from_rank, device_ctx, mask)
+        >>>     iris_rdma.get(dst_ptrs, src_ptrs, from_rank, device_ctx, mask)
         >>>     
-        >>>     # Data is now ready at local_ptr, can use it immediately
-        >>>     data = tl.load(local_ptr + offsets, mask=mask)
+        >>>     # Data is now ready at dst_ptrs, can use it immediately
+        >>>     data = tl.load(dst_ptrs, mask=mask)
     """
-    # Extract queue pointer from device context
+    # Extract context fields
+    # Context format: [rank, world_size, queue_ptr, heap_base_0, heap_base_1, ...]
+    my_rank = tl.load(device_ctx + 0)
     queue_ptr = tl.load(device_ctx + 2)
+    heap_bases = device_ctx + 3
+    
+    # Translate src_ptr from current rank's address space to remote rank's
+    translated_src_ptr = _translate(src_ptr, my_rank, from_rank, heap_bases)
     
     # Enqueue GET operation (op_code=2)
-    # For GET: src_ptr is remote source, dst_ptr is local destination
-    queue_pos = _enqueue_rdma_op(src_ptr, dst_ptr, from_rank, 2, queue_ptr, mask)
+    # For GET: translated_src_ptr is remote source, dst_ptr is local destination
+    queue_pos = _enqueue_rdma_op(translated_src_ptr, dst_ptr, from_rank, 2, queue_ptr, mask)
     
     # Wait for CPU to complete the RDMA read
     _wait_for_completion(queue_ptr, queue_pos)

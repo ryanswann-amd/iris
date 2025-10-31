@@ -161,6 +161,42 @@ class IrisManager {
         DEBUG_PRINT("[IrisManager] PUT: rank=%d src=%lx dst=%lx size=%zu", 
                     dst_rank, src_ptr, dst_ptr, size);
         
+        // Debug: print first few values if environment variable is set
+        static bool debug_data = (getenv("IRIS_DEBUG_DATA") != nullptr);
+        static const char* dtype_env = getenv("IRIS_DTYPE");
+        if (debug_data && size >= 4) {
+          // Determine element size and print accordingly
+          bool is_bf16 = (dtype_env && strcmp(dtype_env, "bfloat16") == 0);
+          bool is_fp16 = (dtype_env && strcmp(dtype_env, "float16") == 0);
+          bool is_fp32 = (!dtype_env || strcmp(dtype_env, "float32") == 0);
+          
+          if (is_bf16 || is_fp16) {
+            // 2-byte types - convert to float for display
+            int elem_count = std::min((int)(size / 2), 10);
+            uint16_t* data_ptr = (uint16_t*)local_addr;
+            fprintf(stderr, "[DEBUG-PUT] rank=%d dst=%d size=%zu (bf16) src=%lx dst=%lx: ", 
+                    backend_->getRank(), dst_rank, size, src_ptr, dst_ptr);
+            
+            for (int i = 0; i < elem_count; i++) {
+              // Convert bfloat16 to float: shift left 16 bits
+              uint32_t fp32_bits = ((uint32_t)data_ptr[i]) << 16;
+              float value = *reinterpret_cast<float*>(&fp32_bits);
+              fprintf(stderr, "%.1f ", value);
+            }
+            fprintf(stderr, "\n");
+          } else if (is_fp32) {
+            // 4-byte float32
+            int elem_count = std::min((int)(size / 4), 10);
+            float* float_ptr = (float*)local_addr;
+            fprintf(stderr, "[DEBUG-PUT] rank=%d dst=%d size=%zu (fp32) src=%lx dst=%lx: ", 
+                    backend_->getRank(), dst_rank, size, src_ptr, dst_ptr);
+            for (int i = 0; i < elem_count; i++) {
+              fprintf(stderr, "%.1f ", float_ptr[i]);
+            }
+            fprintf(stderr, "\n");
+          }
+        }
+        
         int ret = backend_->rdmaWrite(dst_rank, local_addr, dst_ptr, size);
         if (ret != 0) {
           fprintf(stderr, "[IrisManager] RDMA write failed: dst=%d size=%lu\n", dst_rank, size);
