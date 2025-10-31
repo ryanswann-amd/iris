@@ -93,8 +93,8 @@ class IrisRDMA:
         
         torch.cuda.set_device(self.device_id)
         
-        # Create TorchBootstrap
-        self._bootstrap = backend.TorchBootstrap(process_group)
+        # Create torch_bootstrap
+        self._bootstrap = backend.torch_bootstrap(process_group)
         
         # Allocate symmetric heap (CPU pinned memory for now)
         # TODO: Support GPU memory with GPUDirect RDMA
@@ -105,12 +105,12 @@ class IrisRDMA:
         # Create GPU memory pool
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
         
-        self._manager = backend.IrisManager(self._bootstrap, self.memory_pool, queue_size)
+        self._manager = backend.rdma_proxy(self._bootstrap, self.memory_pool, queue_size)
         self._manager.start_proxy_thread()
         
         self._backend = self._manager
         
-        logger.info(f"[Rank {self.rank}] Using IrisManager with queue (size={queue_size})")
+        logger.info(f"[Rank {self.rank}] Using rdma_proxy with queue (size={queue_size})")
         
         self.remote_heap_bases = []
         for i in range(self.world_size):

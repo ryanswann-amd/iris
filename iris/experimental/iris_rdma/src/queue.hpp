@@ -1,8 +1,7 @@
 // GPU-to-CPU Queue - C++ Host Side
 // Exposes queue pointer to Python/Triton
 
-#ifndef QUEUE_HPP_
-#define QUEUE_HPP_
+#pragma once
 
 #include <hip/hip_runtime.h>
 
@@ -14,10 +13,11 @@
 #include <iostream>
 #include <memory>
 
-namespace gpu_cpu_queue {
+namespace iris {
+namespace rdma {
 
 // Operation types - simplified for Iris
-enum class OperationType : uint8_t {
+enum class operation_type : uint8_t {
   NOP = 0,
   PUT = 1,    // RDMA write
   GET = 2,    // RDMA read
@@ -26,23 +26,23 @@ enum class OperationType : uint8_t {
 
 // Work item structure - metadata only, no data storage
 // Data is stored in the registered symmetric heap
-struct alignas(16) WorkItemHeader {
+struct alignas(16) work_item_header_t {
   uint64_t dst_ptr;     // Destination pointer (where to write on remote)
   uint64_t src_ptr;     // Source pointer (offset in local registered heap)
   uint32_t size_bytes;  // Size in bytes to transfer (WRITE LAST as ready flag)
   uint16_t rank;        // Remote rank
-  uint8_t op_type;      // Operation type (see OperationType enum)
+  uint8_t op_type;      // Operation type (see operation_type enum)
   uint8_t reserved;     // Reserved for future use
 };
 
 // Note: Completion is signaled by tail pointer advancement, not a flag
-struct alignas(16) WorkItem {
-  WorkItemHeader header;
+struct alignas(16) work_item_t {
+  work_item_header_t header;
 };
 
 // Queue state visible to both CPU and GPU
-struct QueueState {
-  WorkItem* items;      // Queue buffer (pinned host memory)
+struct queue_state_t {
+  work_item_t* items;   // Queue buffer (pinned host memory)
   uint64_t* head;       // Head pointer (device memory, GPU writes)
   uint64_t* tail;       // Tail pointer (host memory, CPU writes, GPU reads)
   uint64_t* tailCache;  // Cached tail (device memory)
@@ -50,15 +50,15 @@ struct QueueState {
 };
 
 // CPU-side queue management
-class Queue {
+class queue {
  public:
-  explicit Queue(int size = 512) : size_(size) {
-    // Allocate pinned memory for QueueState struct (GPU needs to read this)
-    hipHostMalloc(&state_, sizeof(QueueState));
+  explicit queue(int size = 512) : size_(size) {
+    // Allocate pinned memory for queue_state_t struct (GPU needs to read this)
+    hipHostMalloc(&state_, sizeof(queue_state_t));
 
     // Allocate pinned memory for queue items
-    hipHostMalloc(&state_->items, size * sizeof(WorkItem));
-    memset(state_->items, 0, size * sizeof(WorkItem));
+    hipHostMalloc(&state_->items, size * sizeof(work_item_t));
+    memset(state_->items, 0, size * sizeof(work_item_t));
 
     // Allocate device memory for head
     hipMalloc(&state_->head, sizeof(uint64_t));
@@ -75,7 +75,7 @@ class Queue {
     state_->size = size;
   }
 
-  ~Queue() {
+  ~queue() {
     hipHostFree(state_->items);
     hipFree(state_->head);
     hipHostFree(state_->tail);
@@ -84,12 +84,12 @@ class Queue {
   }
 
   // Get raw pointer to queue state for Triton
-  QueueState* getQueuePtr() { return state_; }
+  queue_state_t* get_queue_ptr() { return state_; }
 
   // Poll for new work item (non-blocking)
-  bool poll(WorkItem& item) {
+  bool poll(work_item_t& item) {
     uint64_t currentTail = *state_->tail;
-    WorkItem* ptr = &state_->items[currentTail % size_];
+    work_item_t* ptr = &state_->items[currentTail % size_];
 
     // Atomic load of size_bytes (acquire semantics) - use as ready flag
     // size_bytes == 0 means slot is empty/processed
@@ -102,7 +102,7 @@ class Queue {
     }
 
     // Copy entire work item (just header now, no data array)
-    memcpy(&item, ptr, sizeof(WorkItem));
+    memcpy(&item, ptr, sizeof(work_item_t));
 
     return true;
   }
@@ -120,28 +120,27 @@ class Queue {
   }
 
   // Get queue statistics
-  uint64_t getTail() const { return *state_->tail; }
+  uint64_t get_tail() const { return *state_->tail; }
 
-  uint64_t getHead() const {
+  uint64_t get_head() const {
     uint64_t h;
     hipMemcpy(&h, state_->head, sizeof(uint64_t), hipMemcpyDeviceToHost);
     return h;
   }
 
-  int getSize() const { return size_; }
+  int get_size() const { return size_; }
   
   // Check if queue is empty (all work processed)
-  bool isEmpty() const {
+  bool is_empty() const {
     uint64_t h;
     hipMemcpy(&h, state_->head, sizeof(uint64_t), hipMemcpyDeviceToHost);
     return h == *state_->tail;
   }
 
  private:
-  QueueState* state_;
+  queue_state_t* state_;
   int size_;
 };
 
-}  // namespace gpu_cpu_queue
-
-#endif  // QUEUE_HPP_
+}  // namespace rdma
+}  // namespace iris

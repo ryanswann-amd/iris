@@ -7,7 +7,8 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace iris_rdma {
+namespace iris {
+namespace rdma {
 
 // Error checking macros
 #define CHECK_ZERO(expr, msg)                                           \
@@ -36,10 +37,10 @@ namespace iris_rdma {
   } while (0)
 
 // Vendor detection
-enum class NICVendor { NONE, IONIC, BNXT, MLX5 };
+enum class nic_vendor { NONE, IONIC, BNXT, MLX5 };
 
 // QP destination info for connection
-struct QPDestInfo {
+struct qp_dest_info_t {
   int lid;
   int qpn;
   int psn;
@@ -47,7 +48,7 @@ struct QPDestInfo {
 };
 
 // QP metadata exposed to Python
-struct QPInfo {
+struct qp_info_t {
   uint32_t qp_num;
   uint32_t lkey;
   uint32_t rkey;
@@ -90,5 +91,6 @@ inline int ibv_mtu_to_int(enum ibv_mtu mtu) {
   }
 }
 
-}  // namespace iris_rdma
+}  // namespace rdma
+}  // namespace iris
 

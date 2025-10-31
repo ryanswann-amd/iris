@@ -10,39 +10,40 @@
 #include <cstring>
 #include "ibv_utils.hpp"
 
-namespace iris_rdma {
+namespace iris {
+namespace rdma {
 
 /**
  * @brief Bootstrap implementation using PyTorch Distributed
  *
  * Wraps PyTorch's c10d process group to provide synchronization
- * primitives needed for InfiniBand setup (allGather, barrier)
+ * primitives needed for InfiniBand setup (all_gather, barrier)
  */
-class TorchBootstrap {
+class torch_bootstrap {
  public:
   /**
    * @brief Constructor
    * @param process_group PyTorch distributed process group
    */
-  inline explicit TorchBootstrap(c10::intrusive_ptr<c10d::ProcessGroup> process_group)
+  inline explicit torch_bootstrap(c10::intrusive_ptr<c10d::ProcessGroup> process_group)
       : process_group_(process_group) {
     if (!process_group_) {
       throw std::runtime_error("Process group cannot be null");
     }
     rank_ = process_group_->getRank();
     world_size_ = process_group_->getSize();
-    DEBUG_PRINT("TorchBootstrap initialized: rank=%d, world_size=%d", rank_, world_size_);
+    DEBUG_PRINT("torch_bootstrap initialized: rank=%d, world_size=%d", rank_, world_size_);
   }
 
   /**
    * @brief Get rank of current process
    */
-  int getRank() const { return rank_; }
+  int get_rank() const { return rank_; }
 
   /**
    * @brief Get total number of ranks
    */
-  int getWorldSize() const { return world_size_; }
+  int get_world_size() const { return world_size_; }
 
   /**
    * @brief All-gather operation
@@ -53,7 +54,7 @@ class TorchBootstrap {
    * @param allData Buffer to hold all gathered data (world_size * size bytes)
    * @param size Size of data contributed by each rank
    */
-  inline void allGather(void* allData, int size) {
+  inline void all_gather(void* allData, int size) {
     auto cpu_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCPU);
     auto cuda_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA);
 
@@ -118,5 +119,6 @@ class TorchBootstrap {
   int world_size_;
 };
 
-}  // namespace iris_rdma
+}  // namespace rdma
+}  // namespace iris
 

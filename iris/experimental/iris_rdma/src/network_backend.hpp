@@ -24,7 +24,7 @@
 #include <infiniband/bnxt_re-abi.h>
 #endif
 
-namespace iris_rdma {
+namespace iris {
 
 /**
  * @brief Main network backend for InfiniBand setup
@@ -36,21 +36,21 @@ namespace iris_rdma {
  * - Memory registration
  * - QP connection info exchange
  */
-class NetworkBackend {
+class network_backend {
  public:
   /**
    * @brief Constructor
    * @param bootstrap PyTorch bootstrap for cross-rank communication
    * @param device_name Optional device name (NULL for auto-detect)
    */
-  NetworkBackend(std::shared_ptr<TorchBootstrap> bootstrap,
-                 const char* device_name = nullptr)
+  network_backend(std::shared_ptr<rdma::torch_bootstrap> bootstrap,
+                  const char* device_name = nullptr)
       : bootstrap_(bootstrap),
         requested_dev_(device_name),
         context_(nullptr),
         pd_orig_(nullptr),
         pd_parent_(nullptr),
-        vendor_(NICVendor::NONE),
+        vendor_(rdma::nic_vendor::NONE),
         port_(1),
         gid_index_(0),
         heap_mr_(nullptr),
@@ -61,16 +61,16 @@ class NetworkBackend {
     if (!bootstrap_) {
       throw std::runtime_error("Bootstrap cannot be null");
     }
-    rank_ = bootstrap_->getRank();
-    world_size_ = bootstrap_->getWorldSize();
-    DEBUG_PRINT("NetworkBackend created: rank=%d, world_size=%d", rank_, world_size_);
+    rank_ = bootstrap_->get_rank();
+    world_size_ = bootstrap_->get_world_size();
+    DEBUG_PRINT("network_backend created: rank=%d, world_size=%d", rank_, world_size_);
   }
 
   /**
    * @brief Destructor - cleanup InfiniBand resources
    */
-  ~NetworkBackend() {
-    DEBUG_PRINT("NetworkBackend cleanup started");
+  ~network_backend() {
+    DEBUG_PRINT("network_backend cleanup started");
     
     qps_.clear();
     
@@ -118,15 +118,15 @@ class NetworkBackend {
    * @brief Initialize the network (setup QPs, transition to RTS)
    */
   void init() {
-    DEBUG_PRINT("NetworkBackend::init() started");
+    DEBUG_PRINT("network_backend::init() started");
     
-    autodetectDVLibs();
-    openIBDevice();
-    createQueues();
-    exchangeQPDestInfo();
-    modifyQPsResetToInit();
-    modifyQPsInitToRTR();
-    modifyQPsRTRToRTS();
+    autodetect_dv_libs();
+    open_ib_device();
+    create_queues();
+    exchange_qp_dest_info();
+    modify_qps_reset_to_init();
+    modify_qps_init_to_rtr();
+    modify_qps_rtr_to_rts();
     bootstrap_->barrier();
     
     DEBUG_PRINT("NetworkBackend::init() completed");
@@ -137,7 +137,7 @@ class NetworkBackend {
    * @param ptr Pointer to memory region
    * @param size Size in bytes
    */
-  void registerMemory(void* ptr, size_t size) {
+  void register_memory(void* ptr, size_t size) {
     DEBUG_PRINT("Registering memory: ptr=%p, size=%zu", ptr, size);
 
     int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
@@ -163,7 +163,7 @@ class NetworkBackend {
     rkeys_.resize(world_size_);
     std::vector<uint32_t> all_rkeys(world_size_);
     all_rkeys[rank_] = heap_mr_->rkey;
-    bootstrap_->allGather(all_rkeys.data(), sizeof(uint32_t));
+    bootstrap_->all_gather(all_rkeys.data(), sizeof(uint32_t));
     for (int i = 0; i < world_size_; i++) {
       rkeys_[i] = all_rkeys[i];
     }
@@ -172,7 +172,7 @@ class NetworkBackend {
     remote_heap_bases_.resize(world_size_);
     std::vector<uint64_t> all_heap_bases(world_size_);
     all_heap_bases[rank_] = heap_base_;
-    bootstrap_->allGather(all_heap_bases.data(), sizeof(uint64_t));
+    bootstrap_->all_gather(all_heap_bases.data(), sizeof(uint64_t));
     for (int i = 0; i < world_size_; i++) {
       remote_heap_bases_[i] = all_heap_bases[i];
     }
@@ -181,8 +181,8 @@ class NetworkBackend {
     uint32_t lkey = heap_mr_->lkey;
     for (int i = 0; i < world_size_; i++) {
       if (i < qps_.size() && qps_[i]) {
-        qps_[i]->setLKey(lkey);
-        qps_[i]->setRKey(rkeys_[i]);
+        qps_[i]->set_lkey(lkey);
+        qps_[i]->set_rkey(rkeys_[i]);
       }
     }
 
@@ -195,7 +195,7 @@ class NetworkBackend {
    * @param dst_rank Destination rank
    * @return Pointer to QueuePair object
    */
-  QueuePair* getQP(int dst_rank) {
+  queue_pair* get_qp(int dst_rank) {
     if (dst_rank >= 0 && dst_rank < qps_.size()) {
       return qps_[dst_rank].get();
     }
@@ -207,12 +207,12 @@ class NetworkBackend {
    * @param dst_rank Destination rank
    * @return QPInfo structure
    */
-  QPInfo getQPInfo(int dst_rank) {
-    QueuePair* qp = getQP(dst_rank);
+  rdma::qp_info_t get_qp_info(int dst_rank) {
+    queue_pair* qp = get_qp(dst_rank);
     if (qp) {
-      return qp->getInfo();
+      return qp->get_info();
     }
-    return QPInfo{0, 0, 0, dst_rank};
+    return rdma::qp_info_t{0, 0, 0, dst_rank};
   }
 
 
@@ -221,19 +221,19 @@ class NetworkBackend {
   /**
    * @brief Get rank
    */
-  int getRank() const { return rank_; }
+  int get_rank() const { return rank_; }
 
   /**
    * @brief Get world size
    */
-  int getWorldSize() const { return world_size_; }
+  int get_world_size() const { return world_size_; }
 
   /**
    * @brief Get remote heap base address for a rank
    * @param rank Remote rank
    * @return Remote heap base address (0 if not registered)
    */
-  uint64_t getRemoteHeapBase(int rank) const {
+  uint64_t get_remote_heap_base(int rank) const {
     if (rank >= 0 && rank < remote_heap_bases_.size()) {
       return remote_heap_bases_[rank];
     }
@@ -244,13 +244,13 @@ class NetworkBackend {
    * @brief Get local heap base address
    * @return Local heap base address (0 if not registered)
    */
-  uint64_t getHeapBase() const { return heap_base_; }
+  uint64_t get_heap_base() const { return heap_base_; }
 
   /**
    * @brief Get heap size
    * @return Heap size in bytes (0 if not registered)
    */
-  size_t getHeapSize() const { return heap_size_; }
+  size_t get_heap_size() const { return heap_size_; }
 
   /**
    * @brief RDMA Write operation
@@ -261,9 +261,9 @@ class NetworkBackend {
    * @param wr_id Work request ID (for completion tracking)
    * @return 0 on success, non-zero on error
    */
-  int rdmaWrite(int dst_rank, void* local_addr, uint64_t remote_addr, 
+  int rdma_write(int dst_rank, void* local_addr, uint64_t remote_addr, 
                 size_t size, uint64_t wr_id = 0) {
-    QueuePair* qp = getQP(dst_rank);
+    queue_pair* qp = get_qp(dst_rank);
     if (!qp) {
       return -1;
     }
@@ -271,7 +271,7 @@ class NetworkBackend {
     struct ibv_sge sge;
     sge.addr = (uintptr_t)local_addr;
     sge.length = size;
-    sge.lkey = qp->getLKey();
+    sge.lkey = qp->get_lkey();
 
     struct ibv_send_wr wr;
     memset(&wr, 0, sizeof(wr));
@@ -281,10 +281,10 @@ class NetworkBackend {
     wr.opcode = IBV_WR_RDMA_WRITE;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = remote_addr;
-    wr.wr.rdma.rkey = qp->getRKey();
+    wr.wr.rdma.rkey = qp->get_rkey();
 
     struct ibv_send_wr* bad_wr;
-    int ret = ibv_post_send(qp->getIBVQP(), &wr, &bad_wr);
+    int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
     
     DEBUG_PRINT("RDMA Write to rank %d: local=%p remote=%lx size=%zu ret=%d", 
                 dst_rank, local_addr, remote_addr, size, ret);
@@ -301,9 +301,9 @@ class NetworkBackend {
    * @param wr_id Work request ID (for completion tracking)
    * @return 0 on success, non-zero on error
    */
-  int rdmaRead(int dst_rank, void* local_addr, uint64_t remote_addr,
+  int rdma_read(int dst_rank, void* local_addr, uint64_t remote_addr,
                size_t size, uint64_t wr_id = 0) {
-    QueuePair* qp = getQP(dst_rank);
+    queue_pair* qp = get_qp(dst_rank);
     if (!qp) {
       return -1;
     }
@@ -311,7 +311,7 @@ class NetworkBackend {
     struct ibv_sge sge;
     sge.addr = (uintptr_t)local_addr;
     sge.length = size;
-    sge.lkey = qp->getLKey();
+    sge.lkey = qp->get_lkey();
 
     struct ibv_send_wr wr;
     memset(&wr, 0, sizeof(wr));
@@ -321,10 +321,10 @@ class NetworkBackend {
     wr.opcode = IBV_WR_RDMA_READ;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.wr.rdma.remote_addr = remote_addr;
-    wr.wr.rdma.rkey = qp->getRKey();
+    wr.wr.rdma.rkey = qp->get_rkey();
 
     struct ibv_send_wr* bad_wr;
-    int ret = ibv_post_send(qp->getIBVQP(), &wr, &bad_wr);
+    int ret = ibv_post_send(qp->get_ibv_qp(), &wr, &bad_wr);
     
     DEBUG_PRINT("RDMA Read from rank %d: local=%p remote=%lx size=%zu ret=%d", 
                 dst_rank, local_addr, remote_addr, size, ret);
@@ -338,15 +338,15 @@ class NetworkBackend {
    * @param max_completions Maximum number of completions to poll
    * @return Number of completions polled (negative on error)
    */
-  int pollCQ(int dst_rank, int max_completions = 1) {
-    QueuePair* qp = getQP(dst_rank);
+  int poll_cq(int dst_rank, int max_completions = 1) {
+    queue_pair* qp = get_qp(dst_rank);
     if (!qp) {
       return -1;
     }
 
     struct ibv_wc wc[16];
     int num_to_poll = (max_completions < 16) ? max_completions : 16;
-    int n = ibv_poll_cq(qp->getIBVCQ(), num_to_poll, wc);
+    int n = ibv_poll_cq(qp->get_ibv_cq(), num_to_poll, wc);
     
     if (n < 0) {
       DEBUG_PRINT("CQ poll error for rank %d", dst_rank);
@@ -370,7 +370,7 @@ class NetworkBackend {
 
  private:
   // Bootstrap
-  std::shared_ptr<TorchBootstrap> bootstrap_;
+  std::shared_ptr<rdma::torch_bootstrap> bootstrap_;
   int rank_;
   int world_size_;
 
@@ -379,7 +379,7 @@ class NetworkBackend {
   struct ibv_context* context_;
   struct ibv_pd* pd_orig_;
   struct ibv_pd* pd_parent_;  // For MLX5/IONIC
-  NICVendor vendor_;
+  rdma::nic_vendor vendor_;
 
   // Port configuration
   struct ibv_port_attr portinfo_;
@@ -395,9 +395,9 @@ class NetworkBackend {
   std::vector<uint64_t> remote_heap_bases_;  // Heap base addresses from all ranks
 
   // Queue pairs
-  std::vector<std::unique_ptr<QueuePair>> qps_;
+  std::vector<std::unique_ptr<queue_pair>> qps_;
   std::vector<struct ibv_cq*> cqs_;
-  std::vector<QPDestInfo> dest_info_;
+  std::vector<rdma::qp_dest_info_t> dest_info_;
 
   // Dynamic library handles for vendor-specific libraries
   void* mlx5dv_handle_;
@@ -406,29 +406,29 @@ class NetworkBackend {
   // Setup functions (extracted from rocSHMEM)
 
   // Vendor-specific init
-  void autodetectDVLibs() {
+  void autodetect_dv_libs() {
     DEBUG_PRINT("Auto-detecting vendor libraries...");
 
     // Try MLX5
-    if (mlx5DVDLInit() == 0) {
-      vendor_ = NICVendor::MLX5;
+    if (mlx5_dv_dl_init() == 0) {
+      vendor_ = rdma::nic_vendor::MLX5;
       DEBUG_PRINT("Detected MLX5 vendor");
       return;
     }
 
     // Try BNXT
-    if (bnxtDVDLInit() == 0) {
-      vendor_ = NICVendor::BNXT;
+    if (bnxt_dv_dl_init() == 0) {
+      vendor_ = rdma::nic_vendor::BNXT;
       DEBUG_PRINT("Detected BNXT vendor");
       return;
     }
 
     // Default to standard verbs
-    vendor_ = NICVendor::NONE;
+    vendor_ = rdma::nic_vendor::NONE;
     DEBUG_PRINT("Using standard InfiniBand verbs");
   }
 
-  int mlx5DVDLInit() {
+  int mlx5_dv_dl_init() {
     mlx5dv_handle_ = dlopen("libmlx5.so", RTLD_NOW);
     if (!mlx5dv_handle_) {
       mlx5dv_handle_ = dlopen("libmlx5.so.1", RTLD_NOW);
@@ -442,7 +442,7 @@ class NetworkBackend {
     return 0;
   }
 
-  int bnxtDVDLInit() {
+  int bnxt_dv_dl_init() {
     bnxtdv_handle_ = dlopen("libbnxt_re.so", RTLD_NOW);
     if (!bnxtdv_handle_) {
       bnxtdv_handle_ = dlopen("/usr/local/lib/libbnxt_re.so", RTLD_NOW);
@@ -456,7 +456,7 @@ class NetworkBackend {
     return 0;
   }
 
-  void openIBDevice() {
+  void open_ib_device() {
     DEBUG_PRINT("Opening InfiniBand device...");
 
     struct ibv_device** device_list = nullptr;
@@ -488,26 +488,26 @@ class NetworkBackend {
     // Open device
     context_ = ibv_open_device(device);
     CHECK_NNULL(context_, "ibv_open_device");
-    dump_ibv_context(context_);
-    dump_ibv_device(context_->device);
+    rdma::dump_ibv_context(context_);
+    rdma::dump_ibv_device(context_->device);
 
     // Allocate protection domain
     pd_orig_ = ibv_alloc_pd(context_);
     CHECK_NNULL(pd_orig_, "ibv_alloc_pd");
-    dump_ibv_pd(pd_orig_);
+    rdma::dump_ibv_pd(pd_orig_);
 
     // Create parent domain for MLX5/IONIC
-    if (vendor_ == NICVendor::MLX5) {
-      createParentDomain();
+    if (vendor_ == rdma::nic_vendor::MLX5) {
+      create_parent_domain();
     }
 
     // Query port
     int err = ibv_query_port(context_, port_, &portinfo_);
     CHECK_ZERO(err, "ibv_query_port");
-    dump_ibv_port_attr(&portinfo_);
+    rdma::dump_ibv_port_attr(&portinfo_);
 
     // Select GID index
-    selectGIDIndex();
+    select_gid_index();
 
     ibv_free_device_list(device_list);
 
@@ -515,7 +515,7 @@ class NetworkBackend {
                 ibv_get_device_name(context_->device));
   }
 
-  void createParentDomain() {
+  void create_parent_domain() {
     DEBUG_PRINT("Creating parent domain...");
 
     struct ibv_parent_domain_init_attr pattr;
@@ -527,10 +527,10 @@ class NetworkBackend {
 
     pd_parent_ = ibv_alloc_parent_domain(context_, &pattr);
     CHECK_NNULL(pd_parent_, "ibv_alloc_parent_domain");
-    dump_ibv_pd(pd_parent_);
+    rdma::dump_ibv_pd(pd_parent_);
   }
 
-  void selectGIDIndex() {
+  void select_gid_index() {
     DEBUG_PRINT("Selecting GID index...");
 
     const uint8_t local_gid_prefix[2] = {0xFE, 0x80};
@@ -571,7 +571,7 @@ class NetworkBackend {
     DEBUG_PRINT("Selected GID index: %d", gid_index_);
   }
 
-  void createQueues() {
+  void create_queues() {
     DEBUG_PRINT("Creating queues...");
 
     int ncqes = 64;      // Number of CQ entries
@@ -583,13 +583,13 @@ class NetworkBackend {
     qps_.resize(world_size_);
 
     // Create CQs and QPs
-    createCQs(ncqes);
-    createQPs(sq_length);
+    create_cqs(ncqes);
+    create_qps(sq_length);
 
     DEBUG_PRINT("Created %d queue pairs", world_size_);
   }
 
-  void createCQs(int ncqes) {
+  void create_cqs(int ncqes) {
     DEBUG_PRINT("Creating completion queues: ncqes=%d", ncqes);
 
     struct ibv_cq_init_attr_ex cq_attr;
@@ -615,7 +615,7 @@ class NetworkBackend {
     }
   }
 
-  void createQPs(int sq_length) {
+  void create_qps(int sq_length) {
     DEBUG_PRINT("Creating queue pairs: sq_length=%d", sq_length);
 
     struct ibv_qp_init_attr_ex attr;
@@ -636,28 +636,28 @@ class NetworkBackend {
       struct ibv_qp* qp = ibv_create_qp_ex(context_, &attr);
       CHECK_NNULL(qp, "ibv_create_qp_ex");
 
-      qps_[i] = std::make_unique<QueuePair>(qp, cqs_[i], i, vendor_);
+      qps_[i] = std::make_unique<queue_pair>(qp, cqs_[i], i, vendor_);
     }
   }
 
-  void exchangeQPDestInfo() {
+  void exchange_qp_dest_info() {
     DEBUG_PRINT("Exchanging QP destination info...");
 
     // Fill local dest info
     for (int i = 0; i < world_size_; i++) {
       dest_info_[i].lid = portinfo_.lid;
-      dest_info_[i].qpn = qps_[i]->getQPNum();
+      dest_info_[i].qpn = qps_[i]->get_qp_num();
       dest_info_[i].psn = 0;
       dest_info_[i].gid = gid_;
     }
 
     // All-gather dest info
-    bootstrap_->allGather(dest_info_.data(), sizeof(QPDestInfo));
+    bootstrap_->all_gather(dest_info_.data(), sizeof(rdma::qp_dest_info_t));
 
     DEBUG_PRINT("QP destination info exchanged");
   }
 
-  void modifyQPsResetToInit() {
+  void modify_qps_reset_to_init() {
     DEBUG_PRINT("Transitioning QPs: RESET -> INIT");
 
     struct ibv_qp_attr attr;
@@ -673,12 +673,12 @@ class NetworkBackend {
         IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
 
     for (int i = 0; i < world_size_; i++) {
-      int err = ibv_modify_qp(qps_[i]->getIBVQP(), &attr, attr_mask);
+      int err = ibv_modify_qp(qps_[i]->get_ibv_qp(), &attr, attr_mask);
       CHECK_ZERO(err, "modify_qp (RESET->INIT)");
     }
   }
 
-  void modifyQPsInitToRTR() {
+  void modify_qps_init_to_rtr() {
     DEBUG_PRINT("Transitioning QPs: INIT -> RTR");
 
     struct ibv_qp_attr attr;
@@ -712,12 +712,12 @@ class NetworkBackend {
         attr.ah_attr.dlid = dest_info_[i].lid;
       }
 
-      int err = ibv_modify_qp(qps_[i]->getIBVQP(), &attr, attr_mask);
+      int err = ibv_modify_qp(qps_[i]->get_ibv_qp(), &attr, attr_mask);
       CHECK_ZERO(err, "modify_qp (INIT->RTR)");
     }
   }
 
-  void modifyQPsRTRToRTS() {
+  void modify_qps_rtr_to_rts() {
     DEBUG_PRINT("Transitioning QPs: RTR -> RTS");
 
     struct ibv_qp_attr attr;
@@ -735,11 +735,11 @@ class NetworkBackend {
     for (int i = 0; i < world_size_; i++) {
       attr.sq_psn = dest_info_[i].psn;
 
-      int err = ibv_modify_qp(qps_[i]->getIBVQP(), &attr, attr_mask);
+      int err = ibv_modify_qp(qps_[i]->get_ibv_qp(), &attr, attr_mask);
       CHECK_ZERO(err, "modify_qp (RTR->RTS)");
     }
   }
 
 };
 
-}  // namespace iris_rdma
+}  // namespace iris

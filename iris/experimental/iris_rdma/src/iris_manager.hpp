@@ -21,12 +21,12 @@
 namespace iris {
 
 /**
- * @brief Complete Iris RDMA Manager
+ * @brief Complete Iris RDMA Proxy
  *
- * Integration of NetworkBackend + TritonDeviceQueue + Proxy Thread
+ * Integration of network_backend + TritonDeviceQueue + Proxy Thread
  * Provides a unified interface for Triton kernels to perform RDMA operations
  */
-class IrisManager {
+class rdma_proxy {
  public:
   /**
    * @brief Constructor
@@ -35,44 +35,44 @@ class IrisManager {
    * @param heap_size Size of symmetric heap in bytes
    * @param queue_size Queue capacity (default: 512)
    */
-  IrisManager(std::shared_ptr<iris_rdma::TorchBootstrap> bootstrap,
-              void* heap_base,
-              size_t heap_size,
-              int queue_size = 512)
+  rdma_proxy(std::shared_ptr<rdma::torch_bootstrap> bootstrap,
+             void* heap_base,
+             size_t heap_size,
+             int queue_size = 512)
       : heap_base_((uint64_t)heap_base),
         heap_size_(heap_size),
         running_(false) {
     
-    // Step 1: Create NetworkBackend and initialize
-    backend_ = std::make_unique<iris_rdma::NetworkBackend>(bootstrap);
+    // Step 1: Create network_backend and initialize
+    backend_ = std::make_unique<network_backend>(bootstrap);
     backend_->init();
     
     // Step 2: Register symmetric heap (collective operation)
-    backend_->registerMemory(heap_base, heap_size);
+    backend_->register_memory(heap_base, heap_size);
     
     // Step 3: Create CPU-GPU queue
-    queue_ = std::make_unique<gpu_cpu_queue::Queue>(queue_size);
+    queue_ = std::make_unique<rdma::queue>(queue_size);
   }
 
-  ~IrisManager() {
+  ~rdma_proxy() {
     if (running_) {
-      stopProxyThread();
+      stop_proxy_thread();
     }
   }
 
   /**
    * @brief Start the proxy thread that processes RDMA operations
    */
-  void startProxyThread() {
+  void start_proxy_thread() {
     if (running_) return;
     running_ = true;
-    proxy_thread_ = std::thread(&IrisManager::proxyLoop, this);
+    proxy_thread_ = std::thread(&rdma_proxy::proxy_loop, this);
   }
 
   /**
    * @brief Stop the proxy thread
    */
-  void stopProxyThread() {
+  void stop_proxy_thread() {
     running_ = false;
     if (proxy_thread_.joinable()) {
       proxy_thread_.join();
@@ -82,53 +82,53 @@ class IrisManager {
   /**
    * @brief Get the queue state pointer (for passing to Triton kernels)
    */
-  gpu_cpu_queue::QueueState* getQueuePtr() {
-    return queue_->getQueuePtr();
+  rdma::queue_state_t* get_queue_ptr() {
+    return queue_->get_queue_ptr();
   }
 
   /**
    * @brief Get heap base address
    */
-  uint64_t getHeapBase() { return heap_base_; }
+  uint64_t get_heap_base() { return heap_base_; }
 
   /**
-   * @brief Get the NetworkBackend (for direct RDMA operations)
+   * @brief Get the network_backend (for direct RDMA operations)
    */
-  iris_rdma::NetworkBackend* getBackend() { return backend_.get(); }
+  network_backend* get_backend() { return backend_.get(); }
 
   /**
    * @brief Get remote heap base for a given rank
    */
-  uint64_t getRemoteHeapBase(int rank) {
-    return backend_->getRemoteHeapBase(rank);
+  uint64_t get_remote_heap_base(int rank) {
+    return backend_->get_remote_heap_base(rank);
   }
 
   /**
    * @brief Get rank
    */
-  int getRank() const { return backend_->getRank(); }
+  int get_rank() const { return backend_->get_rank(); }
 
   /**
    * @brief Get world size
    */
-  int getWorldSize() const { return backend_->getWorldSize(); }
+  int get_world_size() const { return backend_->get_world_size(); }
   
   /**
    * @brief Check if queue is empty (all work processed)
    */
-  bool isQueueEmpty() const { return queue_->isEmpty(); }
+  bool is_queue_empty() const { return queue_->is_empty(); }
 
  private:
   /**
    * @brief Main proxy loop - processes RDMA operations from GPU queue
    */
-  void proxyLoop() {
-    gpu_cpu_queue::WorkItem item;
+  void proxy_loop() {
+    rdma::work_item_t item;
 
     while (running_) {
       // Poll for work from GPU queue
       if (queue_->poll(item)) {
-        processWorkItem(item);
+        process_work_item(item);
       }
     }
   }
@@ -136,14 +136,14 @@ class IrisManager {
   /**
    * @brief Debug helper to print work item data
    */
-  void debugPrintWorkItem(const gpu_cpu_queue::WorkItem& item) {
+  void debug_print_work_item(const rdma::work_item_t& item) {
     static bool debug_enabled = (getenv("IRIS_DEBUG_DATA") != nullptr);
     if (!debug_enabled || item.header.size_bytes < 4) return;
     
     // Extract info from work item
-    auto op_type = static_cast<gpu_cpu_queue::OperationType>(item.header.op_type);
-    const char* op_name = (op_type == gpu_cpu_queue::OperationType::PUT) ? "PUT" : 
-                          (op_type == gpu_cpu_queue::OperationType::GET) ? "GET" : "OP";
+    auto op_type = static_cast<rdma::operation_type>(item.header.op_type);
+    const char* op_name = (op_type == rdma::operation_type::PUT) ? "PUT" : 
+                          (op_type == rdma::operation_type::GET) ? "GET" : "OP";
     int dst_rank = item.header.rank;
     uint64_t src_ptr = item.header.src_ptr;
     uint64_t dst_ptr = item.header.dst_ptr;
@@ -156,7 +156,7 @@ class IrisManager {
     bool is_fp32 = (!dtype_env || strcmp(dtype_env, "float32") == 0);
     
     fprintf(stderr, "[DEBUG-%s] rank=%d dst=%d size=%zu ", 
-            op_name, backend_->getRank(), dst_rank, size);
+            op_name, backend_->get_rank(), dst_rank, size);
     
     if (is_bf16 || is_fp16) {
       // 2-byte types
@@ -183,8 +183,8 @@ class IrisManager {
   /**
    * @brief Process a single work item from the queue
    */
-  void processWorkItem(const gpu_cpu_queue::WorkItem& item) {
-    auto op_type = static_cast<gpu_cpu_queue::OperationType>(item.header.op_type);
+  void process_work_item(const rdma::work_item_t& item) {
+    auto op_type = static_cast<rdma::operation_type>(item.header.op_type);
     int dst_rank = item.header.rank;
     
     // Get addresses from queue metadata
@@ -193,7 +193,7 @@ class IrisManager {
     size_t size = item.header.size_bytes;
     
     switch (op_type) {
-      case gpu_cpu_queue::OperationType::PUT: {
+      case rdma::operation_type::PUT: {
         // RDMA Write: Data is already in the registered heap at src_ptr
         // No memcpy needed - just RDMA directly from heap!
         void* local_addr = (void*)src_ptr;
@@ -201,16 +201,16 @@ class IrisManager {
         DEBUG_PRINT("[IrisManager] PUT: rank=%d src=%lx dst=%lx size=%zu", 
                     dst_rank, src_ptr, dst_ptr, size);
         
-        debugPrintWorkItem(item);
+        debug_print_work_item(item);
         
-        int ret = backend_->rdmaWrite(dst_rank, local_addr, dst_ptr, size);
+        int ret = backend_->rdma_write(dst_rank, local_addr, dst_ptr, size);
         if (ret != 0) {
           fprintf(stderr, "[IrisManager] RDMA write failed: dst=%d size=%lu\n", dst_rank, size);
         } else {
           // Poll for completion
           int n = 0;
           for (int attempt = 0; attempt < 100; attempt++) {
-            n = backend_->pollCQ(dst_rank, 1);
+            n = backend_->poll_cq(dst_rank, 1);
             if (n > 0) break;
             std::this_thread::sleep_for(std::chrono::microseconds(10));
           }
@@ -224,7 +224,7 @@ class IrisManager {
         break;
       }
       
-      case gpu_cpu_queue::OperationType::GET: {
+      case rdma::operation_type::GET: {
         // RDMA Read: Read from remote directly into registered heap at src_ptr
         // GPU will read from heap after completion
         void* local_addr = (void*)src_ptr;
@@ -232,14 +232,14 @@ class IrisManager {
         DEBUG_PRINT("[IrisManager] GET: rank=%d src=%lx dst=%lx size=%zu", 
                     dst_rank, dst_ptr, src_ptr, size);
         
-        int ret = backend_->rdmaRead(dst_rank, local_addr, dst_ptr, size);
+        int ret = backend_->rdma_read(dst_rank, local_addr, dst_ptr, size);
         if (ret != 0) {
           fprintf(stderr, "[IrisManager] RDMA read failed: dst=%d size=%lu\n", dst_rank, size);
         } else {
           // Poll for completion
           int n = 0;
           for (int attempt = 0; attempt < 100; attempt++) {
-            n = backend_->pollCQ(dst_rank, 1);
+            n = backend_->poll_cq(dst_rank, 1);
             if (n > 0) break;
             std::this_thread::sleep_for(std::chrono::microseconds(10));
           }
@@ -253,14 +253,14 @@ class IrisManager {
         break;
       }
       
-      case gpu_cpu_queue::OperationType::FLUSH: {
+      case rdma::operation_type::FLUSH: {
         // Flush all pending operations for this rank
         DEBUG_PRINT("[IrisManager] FLUSH: rank=%d", dst_rank);
         
         int total = 0;
         int n;
         do {
-          n = backend_->pollCQ(dst_rank, 16);
+          n = backend_->poll_cq(dst_rank, 16);
           if (n > 0) total += n;
         } while (n > 0);
         
@@ -274,8 +274,8 @@ class IrisManager {
     }
   }
 
-  std::unique_ptr<iris_rdma::NetworkBackend> backend_;
-  std::unique_ptr<gpu_cpu_queue::Queue> queue_;
+  std::unique_ptr<network_backend> backend_;
+  std::unique_ptr<rdma::queue> queue_;
   
   uint64_t heap_base_;
   size_t heap_size_;

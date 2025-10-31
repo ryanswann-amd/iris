@@ -5,7 +5,7 @@
 #include <infiniband/verbs.h>
 #include "ibv_utils.hpp"
 
-namespace iris_rdma {
+namespace iris {
 
 /**
  * @brief Simplified Queue Pair wrapper for host-side operations
@@ -13,7 +13,7 @@ namespace iris_rdma {
  * Unlike the full rocSHMEM QueuePair, this version only maintains
  * metadata needed for RDMA operations from Python/host code.
  */
-class QueuePair {
+class queue_pair {
  public:
   /**
    * @brief Constructor
@@ -22,10 +22,10 @@ class QueuePair {
    * @param dst_rank Destination rank for this QP
    * @param vendor NIC vendor type
    */
-  inline QueuePair(struct ibv_qp* qp,
-                   struct ibv_cq* cq,
-                   int dst_rank,
-                   NICVendor vendor)
+  inline queue_pair(struct ibv_qp* qp,
+                    struct ibv_cq* cq,
+                    int dst_rank,
+                    rdma::nic_vendor vendor)
       : qp_(qp),
         cq_(cq),
         dst_rank_(dst_rank),
@@ -41,55 +41,55 @@ class QueuePair {
   /**
    * @brief Destructor
    */
-  inline ~QueuePair() {
-    DEBUG_PRINT("QueuePair destroyed: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
+  inline ~queue_pair() {
+    DEBUG_PRINT("queue_pair destroyed: qp_num=%u, dst_rank=%d", qp_num_, dst_rank_);
   }
 
   /**
    * @brief Get QP number
    */
-  uint32_t getQPNum() const { return qp_num_; }
+  uint32_t get_qp_num() const { return qp_num_; }
 
   /**
    * @brief Get local key for memory region
    */
-  uint32_t getLKey() const { return lkey_; }
+  uint32_t get_lkey() const { return lkey_; }
 
   /**
    * @brief Get remote key for destination rank
    */
-  uint32_t getRKey() const { return rkey_; }
+  uint32_t get_rkey() const { return rkey_; }
 
   /**
    * @brief Get destination rank
    */
-  int getDstRank() const { return dst_rank_; }
+  int get_dst_rank() const { return dst_rank_; }
 
   /**
    * @brief Set remote key (after exchange)
    */
-  void setRKey(uint32_t rkey) { rkey_ = rkey; }
+  void set_rkey(uint32_t rkey) { rkey_ = rkey; }
 
   /**
    * @brief Set local key (from memory registration)
    */
-  void setLKey(uint32_t lkey) { lkey_ = lkey; }
+  void set_lkey(uint32_t lkey) { lkey_ = lkey; }
 
   /**
    * @brief Get underlying ibv_qp pointer
    */
-  struct ibv_qp* getIBVQP() { return qp_; }
+  struct ibv_qp* get_ibv_qp() { return qp_; }
 
   /**
    * @brief Get underlying ibv_cq pointer
    */
-  struct ibv_cq* getIBVCQ() { return cq_; }
+  struct ibv_cq* get_ibv_cq() { return cq_; }
 
   /**
    * @brief Get QP info for Python
    */
-  inline QPInfo getInfo() const {
-    QPInfo info;
+  inline rdma::qp_info_t get_info() const {
+    rdma::qp_info_t info;
     info.qp_num = qp_num_;
     info.lkey = lkey_;
     info.rkey = rkey_;
@@ -101,12 +101,12 @@ class QueuePair {
   struct ibv_qp* qp_;
   struct ibv_cq* cq_;
   int dst_rank_;
-  NICVendor vendor_;
+  rdma::nic_vendor vendor_;
 
   uint32_t qp_num_;
   uint32_t lkey_;
   uint32_t rkey_;
 };
 
-}  // namespace iris_rdma
+}  // namespace iris
 
