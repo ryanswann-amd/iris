@@ -12,6 +12,8 @@ on:
         default: 'aafec417bded34db6308f5b3d6023daefae43905'
         type: string
 
+# This workflow always runs, even with [skip ci] or [ci skip] in commit message
+
 env:
   DOCKERHUB_USERNAME: muhaawad
   IMAGE_NAME: iris-dev
