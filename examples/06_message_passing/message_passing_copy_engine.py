@@ -39,7 +39,15 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    iris.put_ce(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask)
+    iris.put_ce(
+        source_buffer + offsets,
+        target_buffer + offsets,
+        producer_rank,
+        consumer_rank,
+        heap_bases_ptr,
+        copy_engine_handle_ptr,
+        mask=mask,
+    )
 
     # Set flag to signal completion
     iris.signal_ce(flag + pid, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr)
@@ -63,7 +71,7 @@ def consumer_kernel(
     # Spin-wait until writer sets flag[pid] = 1
     # zero_u64 = tl.zeros((1,), tl.uint64)
     # one_u64 = tl.full((1,), 1, tl.uint64)
-    done = 0 #zero_u64
+    done = 0  # zero_u64
     while done == 0:
         done = iris.atomic_cas(
             flag + pid, 1, 0, consumer_rank, consumer_rank, heap_bases_ptr, sem="acquire", scope="sys"

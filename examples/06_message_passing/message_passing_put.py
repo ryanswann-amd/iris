@@ -219,7 +219,6 @@ def main():
     # TODO local_rank
     torch.cuda.set_device(rank)
 
-
     # Synchronize all processes
     comm.barrier()
 

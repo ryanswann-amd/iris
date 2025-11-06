@@ -1756,12 +1756,13 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
 def nontemporal_store(addr, value):
     tl.inline_asm_elementwise(
         asm="""flat_store_dwordx2 $1 $2 sc0 nt; s_waitcnt vmcnt(0)""",
-        constraints=("=r,v,v"), # =r used for dummy return to satisfy compiler requirement
+        constraints=("=r,v,v"),  # =r used for dummy return to satisfy compiler requirement
         args=[addr, value],
-        dtype=tl.int32, # return not used
+        dtype=tl.int32,  # return not used
         is_pure=False,
         pack=1,
     )
+
 
 # TODO rename or add nt
 @triton.jit
@@ -1769,19 +1770,20 @@ def nontemporal_load(addr):
     val = tl.inline_asm_elementwise(
         asm="""flat_load_dwordx2 $0 $1 sc0 sc1; s_waitcnt vmcnt(0)""",
         constraints=("=v,v"),
-        args=[ addr],
+        args=[addr],
         dtype=tl.uint64,
         is_pure=False,
         pack=1,
     )
     return val
 
+
 @triton.jit
 def nontemporal_atomic_add(addr, value):
     old = tl.inline_asm_elementwise(
         asm="""flat_atomic_add_x2 $0 $1 sc0 sc1; s_waitcnt vmcnt(0)""",
         constraints=("=v,v,v"),
-        args=[addr,value],
+        args=[addr, value],
         dtype=tl.uint64,
         is_pure=False,
         pack=1,
@@ -1802,7 +1804,6 @@ def nontemporal_atomic_add(addr, value):
 #         pack=1,
 #     )
 #     return True # TODO if old == cmp else False
-
 
 
 @triton.jit
@@ -1908,7 +1909,7 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
     # offset 0: op + sub_op
     tl.store(slot_ptr_u32 + 0, 1)
     # offset 1: count
-    tl.store(slot_ptr_u32 + 1, size_bytes - 1) 
+    tl.store(slot_ptr_u32 + 1, size_bytes - 1)
     # offset 2: parameters
     tl.store(slot_ptr_u32 + 2, 0)
     # offset 3: src address 31:0
@@ -1923,9 +1924,9 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
     # Submit command
     while tl.load(committed_write_ptr) != base:
         pass
-            
+
     # tl.store(write_ptr, base + command_in_bytes)
-    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem='release', scope='gpu')
+    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem="release", scope="gpu")
 
     tl.debug_barrier()
 
@@ -1993,10 +1994,9 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
             base = tl.full((), cur_index, dtype=tl.uint64)
             run_loop = False
 
-
     # Place command packet
     queue_ptr_u32 = queue_ptr.to(tl.pointer_type(tl.uint32))
-    slot_ptr_u32  = queue_ptr_u32 + (base // 4)
+    slot_ptr_u32 = queue_ptr_u32 + (base // 4)
     # print("queue_ptr: ", queue_ptr, " slot_ptr ", slot_ptr_u32, " base ", base)
 
     # Convert to scalar value
@@ -2004,7 +2004,7 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
 
     # offset 0: op + sub_op
     # tl.store(slot_ptr_u32 + 0, ((0x2F & 0x7F) << 25 | (0xA & 0xFF)) # op: 10, operation: 47 atomicAdd64
-    tl.store(slot_ptr_u32 + 0, ((0xF & 0x7F) << 25) | (0xA & 0xFF)) # op: 10, operation: 15 atomicAdd32
+    tl.store(slot_ptr_u32 + 0, ((0xF & 0x7F) << 25) | (0xA & 0xFF))  # op: 10, operation: 15 atomicAdd32
     # offset 1: dst address 31:0
     tl.store(slot_ptr_u32 + 1, dst_ptr_val.to(tl.uint32))
     # offset 2: dst address 63:32
@@ -2023,13 +2023,13 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
         pass
 
     # tl.store(write_ptr, base + command_in_bytes)
-    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem='release', scope='gpu')
+    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem="release", scope="gpu")
 
     tl.debug_barrier()
 
     # Ring doorbell
     # tl.store(doorbell_ptr, base_val + command_in_bytes)
-    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem='release', scope='sys')
+    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem="release", scope="sys")
     tl.debug_barrier()
     tl.store(committed_write_ptr, base + command_in_bytes)
 
