@@ -1258,8 +1258,7 @@ class Iris:
         device_ctx[5] = handle.committed_wptr
         # context[6] = handle.
 
-
-        return device_ctx # anvil.get_handle_as_tensor(queue) # torch.from_numpy(array) #.to(device='cuda')
+        return device_ctx  # anvil.get_handle_as_tensor(queue) # torch.from_numpy(array) #.to(device='cuda')
 
     def __throw_if_invalid_output_tensor(self, tensor: torch.Tensor, num_elements: int, dtype: torch.dtype):
         if not self.__tensor_on_device(tensor):
@@ -1765,6 +1764,7 @@ def nontemporal_store(addr, value):
     )
     return tl.zeros_like(value)
 
+
 @triton.jit
 def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
     """
@@ -1793,8 +1793,8 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
         >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases)
     """
 
-    handle = ce_handle #iris.get_copy_engine_handle(to_rank)
-    queue_ptr = tl.load(handle + 0) #.to(tl.pointer_type(tl.uint64))
+    handle = ce_handle  # iris.get_copy_engine_handle(to_rank)
+    queue_ptr = tl.load(handle + 0)  # .to(tl.pointer_type(tl.uint64))
     read_ptr = tl.load(handle + 1).to(tl.pointer_type(tl.uint64))
     write_ptr = tl.load(handle + 2).to(tl.pointer_type(tl.uint64))
     doorbell_ptr = tl.load(handle + 3).to(tl.pointer_type(tl.uint64))
@@ -1854,15 +1854,13 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
         # Check if full
         # TODO
         # expected = cur_index
-        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem='acquire', scope='gpu') == cur_index:
+        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem="acquire", scope="gpu") == cur_index:
             base = tl.full((), cur_index, dtype=tl.uint64)
             run_loop = False
 
-
     # Place command packet
     queue_ptr_u32 = queue_ptr.to(tl.pointer_type(tl.uint32))
-    slot_ptr_u32  = queue_ptr_u32 + (base // 4)
-
+    slot_ptr_u32 = queue_ptr_u32 + (base // 4)
 
     # Convert to scalar value
     # from_ptr_as_u64 = tl.uint64(from_ptr) #tl.cast(from_ptr[0], tl.uint64)
@@ -1870,7 +1868,7 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
     # offset 0: op + sub_op
     tl.store(slot_ptr_u32 + 0, 1)
     # offset 1: reserved
-    tl.store(slot_ptr_u32 + 1, 0) 
+    tl.store(slot_ptr_u32 + 1, 0)
     # offset 2: count
     tl.store(slot_ptr_u32 + 2, size_bytes - 1)
     # offset 3: src address 31:0
@@ -1882,20 +1880,20 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
     # offset 6: dst address 63:32
     tl.store(slot_ptr_u32 + 6, (dst_ptr_val >> 32).to(tl.uint32))
 
-
     # Submit command
     while tl.load(committed_write_ptr) != base:
         pass
-            
+
     tl.store(write_ptr, base + command_in_bytes)
 
     tl.debug_barrier()
 
     # Ring doorbell
     # tl.store(doorbell_ptr, base + command_in_bytes)
-    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem='release', scope='sys')
+    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem="release", scope="sys")
     tl.debug_barrier()
     tl.store(committed_write_ptr, base + command_in_bytes)
+
 
 @triton.jit
 def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
@@ -1925,8 +1923,8 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
         >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases)
     """
 
-    handle = ce_handle #iris.get_copy_engine_handle(to_rank)
-    queue_ptr = tl.load(handle + 0) #.to(tl.pointer_type(tl.uint64))
+    handle = ce_handle  # iris.get_copy_engine_handle(to_rank)
+    queue_ptr = tl.load(handle + 0)  # .to(tl.pointer_type(tl.uint64))
     read_ptr = tl.load(handle + 1).to(tl.pointer_type(tl.uint64))
     write_ptr = tl.load(handle + 2).to(tl.pointer_type(tl.uint64))
     doorbell_ptr = tl.load(handle + 3).to(tl.pointer_type(tl.uint64))
@@ -1950,30 +1948,28 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
         # Check if full
         # TODO
         # expected = cur_index
-        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem='acquire', scope='gpu') == cur_index:
+        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem="acquire", scope="gpu") == cur_index:
             base = tl.full((), cur_index, dtype=tl.uint64)
             run_loop = False
-
 
     base_val = base.to(tl.uint64)
     # Place command packet
     queue_ptr_u32 = queue_ptr.to(tl.pointer_type(tl.uint32))
-    slot_ptr_u32  = queue_ptr_u32 + (base_val // 4)
+    slot_ptr_u32 = queue_ptr_u32 + (base_val // 4)
     # print("queue_ptr: ", queue_ptr, " slot_ptr ", slot_ptr_u32, " base ", base)
-
 
     # Convert to scalar value
     # from_ptr_as_u64 = tl.uint64(from_ptr) #tl.cast(from_ptr[0], tl.uint64)
 
     # offset 0: op + sub_op
     # tl.store(slot_ptr_u32 + 0, 0x2F0A) # op: 10, subop: 47 atomicAdd64
-    tl.store(slot_ptr_u32 + 0, 0x0F0A) # op: 10, subop: 15 atomicAdd32
+    tl.store(slot_ptr_u32 + 0, 0x0F0A)  # op: 10, subop: 15 atomicAdd32
     # offset 1: dst address 31:0
     tl.store(slot_ptr_u32 + 1, dst_ptr_val.to(tl.uint32))
     # offset 2: dst address 63:32
     tl.store(slot_ptr_u32 + 2, (dst_ptr_val >> 32).to(tl.uint32))
     # offset 3: src data 31:0
-    tl.store(slot_ptr_u32 + 3, 1) # increment by 1
+    tl.store(slot_ptr_u32 + 3, 1)  # increment by 1
     # offset 4: src data 63:32
     tl.store(slot_ptr_u32 + 4, 0)
     # offset 5 - 7 unused
@@ -1981,11 +1977,9 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
     tl.store(slot_ptr_u32 + 6, 0)
     tl.store(slot_ptr_u32 + 7, 0)
 
-
     # Submit command
     while tl.load(committed_write_ptr) != base_val:
         pass
-            
 
     tl.store(write_ptr, base + command_in_bytes)
 
@@ -1997,7 +1991,6 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
     nontemporal_store(doorbell_ptr, base + command_in_bytes)
     tl.debug_barrier()
     tl.store(committed_write_ptr, base_val + command_in_bytes)
-
 
 
 @triton.jit

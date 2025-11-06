@@ -75,7 +75,7 @@ def consumer_kernel(
     # Spin-wait until writer sets flag[pid] = 1
     # zero_u64 = tl.zeros((1,), tl.uint64)
     # one_u64 = tl.full((1,), 1, tl.uint64)
-    done = 0 #zero_u64
+    done = 0  # zero_u64
     # while done == 0:
     #     done = iris.atomic_cas(
     #         flag + pid, 1, 0, consumer_rank, consumer_rank, heap_bases_ptr, sem="acquire", scope="sys"
@@ -212,7 +212,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     success = True
     numErrors = 0
     if cur_rank == consumer_rank:
-        expected = source_buffer # * 2
+        expected = source_buffer  # * 2
         diff_mask = ~torch.isclose(destination_buffer, expected, atol=1)
         breaking_indices = torch.nonzero(diff_mask, as_tuple=False)
 
@@ -250,13 +250,13 @@ def main():
     # TODO local_rank
     torch.cuda.set_device(rank)
 
-
     # Synchronize all processes
     comm.barrier()
 
     init_url = "tcp://127.0.0.1:29500"
 
     _worker(rank, num_ranks, init_url, args)
+
 
 if __name__ == "__main__":
     main()

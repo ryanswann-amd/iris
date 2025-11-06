@@ -11,6 +11,7 @@ from setuptools.command.build_ext import build_ext
 
 class CMakeExtension(Extension):
     """Extension that uses CMake to build"""
+
     def __init__(self, name, sourcedir=""):
         super().__init__(name, sources=[])
         self.sourcedir = os.path.abspath(sourcedir)
@@ -56,16 +57,10 @@ class CMakeBuild(build_ext):
         build_temp.mkdir(parents=True, exist_ok=True)
 
         # Run CMake
-        subprocess.check_call(
-            ["cmake", ext.sourcedir] + cmake_args,
-            cwd=build_temp
-        )
+        subprocess.check_call(["cmake", ext.sourcedir] + cmake_args, cwd=build_temp)
 
         # Build
-        subprocess.check_call(
-            ["cmake", "--build", "."] + build_args,
-            cwd=build_temp
-        )
+        subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=build_temp)
 
 
 ext_modules = []
@@ -74,10 +69,7 @@ ext_modules = []
 build_copy_engine_offload = True
 if build_copy_engine_offload:
     print("Building Copy Engine offload library")
-    copy_engine_ext = CMakeExtension(
-        "iris.experimental.anvil",
-        sourcedir="ext/shader_sdma"
-    )
+    copy_engine_ext = CMakeExtension("iris.experimental.anvil", sourcedir="ext/shader_sdma")
     ext_modules.append(copy_engine_ext)
 
 
