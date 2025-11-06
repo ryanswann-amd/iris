@@ -11,8 +11,6 @@ import triton.language as tl
 import random
 import os
 import sys
-import time
-import ctypes
 
 from mpi4py import MPI
 
@@ -41,20 +39,10 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    # iris.put_ce(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask)
+    iris.put_ce(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask)
 
     # Set flag to signal completion
-    iris.signal_ce(flag + pid, producer_rank, producer_rank, heap_bases_ptr, copy_engine_handle_ptr)
-    # iris.atomic_cas_ce()
-    # zero_u64 = tl.zeros((1,), tl.uint64)
-    # one_u64 = tl.full((1,), 1, tl.uint64)
-    # iris.atomic_cas(flag + pid, 0, 1, producer_rank, consumer_rank, heap_bases_ptr, sem="release", scope="sys")
-
-    # done = 0 #zero_u64
-    # while done == 0:
-    #     done = iris.atomic_cas(
-    #         flag + pid, 1, 0, producer_rank, producer_rank, heap_bases_ptr, sem="acquire", scope="sys"
-    #     )
+    iris.signal_ce(flag + pid, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr)
 
 
 @triton.jit
@@ -76,24 +64,24 @@ def consumer_kernel(
     # zero_u64 = tl.zeros((1,), tl.uint64)
     # one_u64 = tl.full((1,), 1, tl.uint64)
     done = 0 #zero_u64
-    # while done == 0:
-    #     done = iris.atomic_cas(
-    #         flag + pid, 1, 0, consumer_rank, consumer_rank, heap_bases_ptr, sem="acquire", scope="sys"
-    #     )
+    while done == 0:
+        done = iris.atomic_cas(
+            flag + pid, 1, 0, consumer_rank, consumer_rank, heap_bases_ptr, sem="acquire", scope="sys"
+        )
 
     # Read from the target buffer (written by producer)
-    # values = tl.load(buffer + offsets, mask=mask)
+    values = tl.load(buffer + offsets, mask=mask)
 
     # Do something with values...
     # (Here you might write to output, do computation, etc.)
-    # values = values * 2
+    values = values * 2
 
     # Store chunk to target buffer
-    # tl.store(
-    #     buffer + offsets,
-    #     values,
-    #     mask=mask,
-    # )
+    tl.store(
+        buffer + offsets,
+        values,
+        mask=mask,
+    )
 
     # Optionally reset the flag for next iteration
     tl.store(flag + pid, 0)
@@ -134,7 +122,6 @@ def parse_args():
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
 
     parser.add_argument("-p", "--heap_size", type=int, default=1 << 33, help="Iris heap size")
-    parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
 
     return vars(parser.parse_args())
 
@@ -173,16 +160,10 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     n_elements = source_buffer.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     num_blocks = triton.cdiv(n_elements, args["block_size"])
-    shmem.info(f"n_elements {n_elements} grid {grid} num_blocks {num_blocks}")
-    shmem.info(f"src buffer {id(source_buffer):#x} dst buffer {id(destination_buffer):#x}")
-    shmem.info(f"data ptr src buffer {source_buffer.data_ptr():#x} dst buffer {destination_buffer.data_ptr():#x}")
 
     # Allocate flags on the symmetric heap
     flags = shmem.zeros((num_blocks,), device="cuda", dtype=torch.int32)
 
-    # copy_engine_handle = iris.get_copy_engine_handle(consumer_rank)
-
-    # src_ptr = ctypes.c_void_p(source_buffer.data_ptr()),
     if cur_rank == producer_rank:
         shmem.info(f"Rank {cur_rank} is sending data to rank {consumer_rank}.")
         kk = producer_kernel[grid](
@@ -197,22 +178,17 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             shmem.get_copy_engine_handle(consumer_rank),
         )
     else:
-        # time.sleep(1)
         shmem.info(f"Rank {cur_rank} is receiving data from rank {producer_rank}.")
         kk = consumer_kernel[grid](
             destination_buffer, flags, n_elements, consumer_rank, args["block_size"], shmem.get_heap_bases()
         )
-    # time.sleep(1)
-
     shmem.barrier()
-    # torch.cuda.synchronize()
     shmem.info(f"Rank {cur_rank} has finished sending/receiving data.")
     shmem.info("Validating output...")
 
     success = True
-    numErrors = 0
     if cur_rank == consumer_rank:
-        expected = source_buffer # * 2
+        expected = source_buffer * 2
         diff_mask = ~torch.isclose(destination_buffer, expected, atol=1)
         breaking_indices = torch.nonzero(diff_mask, as_tuple=False)
 
@@ -223,16 +199,14 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 idx = tuple(idx.tolist())
                 computed_val = destination_buffer[idx]
                 expected_val = expected[idx]
-                if numErrors < 10:
-                    shmem.info(f"Mismatch at index {idx}: C={computed_val}, expected={expected_val}")
+                shmem.info(f"Mismatch at index {idx}: C={computed_val}, expected={expected_val}")
                 success = False
-                numErrors += 1
-                # break
+                break
 
         if success:
             shmem.info("Validation successful.")
         else:
-            shmem.info(f"Validation failed with {numErrors} errors / {destination_buffer.numel()}")
+            shmem.info(f"Validation failed with {len(breaking_indices)} errors / {destination_buffer.numel()}")
 
     shmem.barrier()
 
@@ -246,7 +220,6 @@ def main():
     comm = MPI.COMM_WORLD  # Communicator for all processes
     rank = comm.Get_rank()  # Get the rank of the current process
     num_ranks = comm.Get_size()  # Total number of processes
-
     # TODO local_rank
     torch.cuda.set_device(rank)
 
@@ -257,6 +230,7 @@ def main():
     init_url = "tcp://127.0.0.1:29500"
 
     _worker(rank, num_ranks, init_url, args)
+
 
 if __name__ == "__main__":
     main()

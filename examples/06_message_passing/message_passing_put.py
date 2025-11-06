@@ -3,8 +3,6 @@
 
 import argparse
 
-from mpi4py import MPI
-
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -13,6 +11,8 @@ import triton.language as tl
 import random
 import os
 import sys
+
+from mpi4py import MPI
 
 import iris
 
@@ -119,7 +119,6 @@ def parse_args():
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
 
     parser.add_argument("-p", "--heap_size", type=int, default=1 << 33, help="Iris heap size")
-    # parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
 
     return vars(parser.parse_args())
 
@@ -142,12 +141,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     world_size = shmem.get_num_ranks()
 
     # Allocate source and destination buffers on the symmetric heap
-    source_buffer = shmem.zeros(args["buffer_size"], device="cuda", dtype=dtype)
+    destination_buffer = shmem.zeros(args["buffer_size"], device="cuda", dtype=dtype)
     if dtype.is_floating_point:
-        destination_buffer = shmem.randn(args["buffer_size"], device="cuda", dtype=dtype)
+        source_buffer = shmem.randn(args["buffer_size"], device="cuda", dtype=dtype)
     else:
         ii = torch.iinfo(dtype)
-        destination_buffer = shmem.randint(ii.min, ii.max, (args["buffer_size"],), device="cuda", dtype=dtype)
+        source_buffer = shmem.randint(ii.min, ii.max, (args["buffer_size"],), device="cuda", dtype=dtype)
 
     if world_size != 2:
         raise ValueError("This example requires exactly two processes.")
@@ -217,6 +216,9 @@ def main():
     comm = MPI.COMM_WORLD  # Communicator for all processes
     rank = comm.Get_rank()  # Get the rank of the current process
     num_ranks = comm.Get_size()  # Total number of processes
+    # TODO local_rank
+    torch.cuda.set_device(rank)
+
 
     # Synchronize all processes
     comm.barrier()
