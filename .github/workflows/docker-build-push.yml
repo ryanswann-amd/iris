@@ -40,7 +40,7 @@ jobs:
       - name: Set Triton SHA
         id: triton
         run: |
-          TRITON_COMMIT="${{ inputs.triton_commit }}"
+          TRITON_COMMIT="${{ inputs.triton_commit || 'aafec417bded34db6308f5b3d6023daefae43905' }}"
           TRITON_SHORT="${TRITON_COMMIT:0:7}"
           echo "short_sha=${TRITON_SHORT}" >> $GITHUB_OUTPUT
           echo "full_sha=${TRITON_COMMIT}" >> $GITHUB_OUTPUT
