@@ -41,6 +41,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 20
+    if: "!contains(github.event.head_commit.message, '[docker only]')"
 
     steps:
       - name: Checkout repository
@@ -95,6 +96,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3008x]
     timeout-minutes: 15
+    if: "!contains(github.event.head_commit.message, '[docker only]')"
 
     steps:
       - name: Checkout repository
