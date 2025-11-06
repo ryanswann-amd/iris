@@ -17,11 +17,12 @@ env:
   IMAGE_NAME: iris-dev
 
 jobs:
-  build-and-push:
+  build-test:
     runs-on: [self-hosted, mi3008x]
     permissions:
       contents: read
       packages: write
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -36,7 +37,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set Triton short SHA
+      - name: Set Triton SHA
         id: triton
         run: |
           TRITON_COMMIT="${{ inputs.triton_commit }}"
@@ -44,59 +45,24 @@ jobs:
           echo "short_sha=${TRITON_SHORT}" >> $GITHUB_OUTPUT
           echo "full_sha=${TRITON_COMMIT}" >> $GITHUB_OUTPUT
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.IRIS_DOCKERHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        id: build
-        uses: docker/build-push-action@v5
-        with:
-          context: ./docker
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ steps.triton.outputs.short_sha }}
-          build-args: |
-            TRITON_COMMIT=${{ steps.triton.outputs.full_sha }}
-          cache-from: type=gha,scope=${{ matrix.base-name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.base-name }}
-    
-    outputs:
-      triton_short_sha: ${{ steps.triton.outputs.short_sha }}
-
-  validation-test:
-    name: Validation Test
-    needs: build-and-push
-    runs-on: [self-hosted, mi3008x]
-    timeout-minutes: 30
-    
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - base-name: "rocm7.0.2_ubuntu24.04_py3.12_pytorch_release_2.8.0"
-          - base-name: "rocm7.1_ubuntu24.04_py3.12_pytorch_release_2.8.0"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Pull Docker image
+      - name: Build Docker image
         run: |
-          docker pull ${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ needs.build-and-push.outputs.triton_short_sha }}
+          IMAGE_TAG="${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ steps.triton.outputs.short_sha }}"
+          echo "Building ${IMAGE_TAG}..."
+          docker build \
+            -f ${{ matrix.dockerfile }} \
+            -t ${IMAGE_TAG} \
+            --build-arg TRITON_COMMIT=${{ steps.triton.outputs.full_sha }} \
+            ./docker
+          echo "✅ Build complete!"
 
-      - name: Run validation test
+      - name: Run validation tests
         run: |
           set -e
           
-          IMAGE_TAG="${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ needs.build-and-push.outputs.triton_short_sha }}"
+          IMAGE_TAG="${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ steps.triton.outputs.short_sha }}"
           
-          echo "::group::Running validation test in container"
+          echo "::group::Running validation tests"
           docker run --rm --network host \
             --device=/dev/kfd --device=/dev/dri \
             --ipc=host --shm-size 16G \
@@ -107,10 +73,29 @@ jobs:
             ${IMAGE_TAG} bash -c "
               set -e
               pip install -e .
+              
+              echo '=== Running external validation test ==='
               wget -O test_iris_distributed.py https://gist.githubusercontent.com/mawad-amd/6375dc078e39e256828f379e03310ec7/raw/a527c3192bee4615292769e340b1c73676f6945a/test_iris_distributed.py
               python test_iris_distributed.py
+              
+              echo '=== Running external gluon validation test ==='
+              wget -O test_iris_gluon_distributed.py https://gist.githubusercontent.com/mawad-amd/2666dde8ebe2755eb0c4f2108709fcd5/raw/aa567ef3185c37a80d25bc9724ae9589548261b4/test_iris_gluon_distributed.py
+              python test_iris_gluon_distributed.py
             "
           echo "::endgroup::"
           
-          echo "✅ Validation test passed for ${{ matrix.base-name }}!"
+          echo "✅ All validation tests passed for ${{ matrix.base-name }}!"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.IRIS_DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          IMAGE_TAG="${{ env.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ matrix.base-name }}-triton-${{ steps.triton.outputs.short_sha }}"
+          echo "Pushing ${IMAGE_TAG} to Docker Hub..."
+          docker push ${IMAGE_TAG}
+          echo "✅ Successfully pushed ${{ matrix.base-name }}!"
 

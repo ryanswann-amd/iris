@@ -29,9 +29,10 @@ RUN pip3 install --upgrade pip && \
     pip3 install wheel jupyter
 
 # Clone and install Triton
+ARG TRITON_COMMIT=aafec417bded34db6308f5b3d6023daefae43905
 WORKDIR $TRITON_PATH
 RUN git clone https://github.com/triton-lang/triton.git $TRITON_PATH
-RUN git checkout aafec417bded34db6308f5b3d6023daefae43905
+RUN git checkout ${TRITON_COMMIT}
 RUN pip3 install -e .
 ENV PYTHONPATH=$TRITON_PATH
 
