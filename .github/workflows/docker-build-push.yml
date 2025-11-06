@@ -30,6 +30,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - dockerfile: ./docker/Dockerfile.rocm6.4
+            base-name: "rocm6.4.4_ubuntu24.04_py3.12_pytorch_release_2.7.1"
           - dockerfile: ./docker/Dockerfile.rocm7.0
             base-name: "rocm7.0.2_ubuntu24.04_py3.12_pytorch_release_2.8.0"
           - dockerfile: ./docker/Dockerfile.rocm7.1
