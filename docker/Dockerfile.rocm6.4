@@ -38,6 +38,3 @@ ENV PYTHONPATH=$TRITON_PATH
 
 WORKDIR /workspace
 
-# Make Python site-packages writable by all users for development
-RUN chmod -R a+w /opt/venv/lib/python3.12/site-packages/
-
