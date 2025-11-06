@@ -1,6 +1,9 @@
 name: Build and Push Docker Image
 
 on:
+  push:
+    branches:
+      - muhaawad/docker-images
   workflow_dispatch:
     inputs:
       triton_commit:
