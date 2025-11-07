@@ -39,7 +39,7 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    iris.put_ce(
+    iris.put(
         source_buffer + offsets,
         target_buffer + offsets,
         producer_rank,
