@@ -39,7 +39,7 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    iris.put_ce(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask)
+    iris.put(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask, USE_COPY_ENGINE=True)
 
     # Set flag to signal completion
     iris.signal_ce(flag + pid, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr)

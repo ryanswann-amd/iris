@@ -59,7 +59,6 @@ from .iris import (
     atomic_and,
     atomic_min,
     atomic_max,
-    put_ce,
     signal_ce,
 )
 
@@ -100,7 +99,6 @@ __all__ = [
     "atomic_and",
     "atomic_min",
     "atomic_max",
-    "put_ce",
     "signal_ce",
     "do_bench",
     "hip",
