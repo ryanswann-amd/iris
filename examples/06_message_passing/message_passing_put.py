@@ -27,6 +27,8 @@ def producer_kernel(
     consumer_rank: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     heap_bases_ptr: tl.tensor,  # tl.tensor: pointer to heap bases pointers
+    copy_engine_handle_ptr,
+    USE_COPY_ENGINE: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
@@ -38,10 +40,11 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    iris.put(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, mask=mask)
+    iris.put(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask, USE_COPY_ENGINE=USE_COPY_ENGINE)
 
     # Set flag to signal completion
-    iris.atomic_cas(flag + pid, 0, 1, producer_rank, consumer_rank, heap_bases_ptr, sem="release", scope="sys")
+    # iris.atomic_cas(flag + pid, 0, 1, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, sem="release", scope="sys")
+    iris.atomic_add(flag + pid, 1, producer_rank, consumer_rank, heap_bases_ptr, sem='release', scope='sys', copy_engine_ctx=copy_engine_handle_ptr, USE_COPY_ENGINE=USE_COPY_ENGINE)
 
 
 @triton.jit
@@ -117,8 +120,9 @@ def parse_args():
     )
     parser.add_argument("-s", "--buffer_size", type=int, default=4096, help="Buffer Size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
-
     parser.add_argument("-p", "--heap_size", type=int, default=1 << 33, help="Iris heap size")
+    parser.add_argument("-c", "--use_copy_engine", action="store_true", help="Use copy engine for device-to-device copies")
+
 
     return vars(parser.parse_args())
 
@@ -161,6 +165,9 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     # Allocate flags on the symmetric heap
     flags = shmem.zeros((num_blocks,), device="cuda", dtype=torch.int32)
 
+    # Get copy engine context
+    copy_engine_ctx = shmem.get_copy_engine_handle(consumer_rank) if args["use_copy_engine"] and cur_rank == producer_rank else None
+
     if cur_rank == producer_rank:
         shmem.info(f"Rank {cur_rank} is sending data to rank {consumer_rank}.")
         kk = producer_kernel[grid](
@@ -172,6 +179,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             consumer_rank,
             args["block_size"],
             shmem.get_heap_bases(),
+            copy_engine_ctx,
+            USE_COPY_ENGINE=args["use_copy_engine"]
         )
     else:
         shmem.info(f"Rank {cur_rank} is receiving data from rank {producer_rank}.")
@@ -202,7 +211,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         if success:
             shmem.info("Validation successful.")
         else:
-            shmem.info("Validation failed.")
+            shmem.info(f"Validation failed with {len(breaking_indices)} errors / {destination_buffer.numel()}")
 
     shmem.barrier()
 
@@ -218,7 +227,6 @@ def main():
     num_ranks = comm.Get_size()  # Total number of processes
     # TODO local_rank
     torch.cuda.set_device(rank)
-
 
     # Synchronize all processes
     comm.barrier()

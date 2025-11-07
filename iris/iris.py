@@ -43,9 +43,7 @@ from iris.hip import (
 )
 import sys
 
-# sys.path.append("/home/dasidler/iris/iris/experimental")
-# import my_module as anvil
-import iris.experimental.my_module as anvil
+import anvil
 
 import numpy as np
 import math
@@ -1719,7 +1717,7 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
 
 
 @triton.jit
-def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
+def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=None, USE_COPY_ENGINE : tl.constexpr=False):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
     This function performs a memory write operation by loading data from the current
@@ -1747,9 +1745,65 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
     """
     translated_to_ptr = __translate(to_ptr, from_rank, to_rank, heap_bases)
 
-    data = tl.load(from_ptr, mask=mask)
+    if not USE_COPY_ENGINE:
+        data = tl.load(from_ptr, mask=mask)
 
-    tl.store(translated_to_ptr, data, mask=mask)
+        tl.store(translated_to_ptr, data, mask=mask)
+    else:
+        ctx = copy_engine_ctx
+        queue_ptr_u32 = tl.load(ctx + 0).to(tl.pointer_type(tl.uint32))
+        read_ptr = tl.load(ctx + 1).to(tl.pointer_type(tl.uint64))
+        write_ptr = tl.load(ctx + 2).to(tl.pointer_type(tl.uint64))
+        doorbell_ptr = tl.load(ctx + 3).to(tl.pointer_type(tl.uint64))
+        cached_write_ptr = tl.load(ctx + 4).to(tl.pointer_type(tl.uint64))
+        committed_write_ptr = tl.load(ctx + 5).to(tl.pointer_type(tl.uint64))
+
+        dst_ptr_val = tl.min(translated_to_ptr.to(tl.uint64), axis=0)
+
+        # Extract source address (min of pointer block where data is stored)
+        src_ptr_u64 = from_ptr.to(tl.uint64)
+        src_ptr_val = tl.min(src_ptr_u64, axis=0)
+        max_src_ptr = tl.max(src_ptr_u64, axis=0)
+
+        # Infer element size from pointer type
+        # src_ptr is a block of pointers with a specific element type (e.g., pointer<float32>)
+        # The pointer dtype tells us the element type, which has a known size
+        # Map Triton dtypes to their byte sizes
+        ptr_dtype = from_ptr.dtype.element_ty  # Get the element type that the pointer points to
+
+        # Get element size in bytes from the dtype
+        # tl.float16 -> 2, tl.float32 -> 4, tl.float64 -> 8, etc.
+        if ptr_dtype == tl.float16 or ptr_dtype == tl.bfloat16:
+            element_size_bytes = 2
+        elif ptr_dtype == tl.float32 or ptr_dtype == tl.int32 or ptr_dtype == tl.uint32:
+            element_size_bytes = 4
+        elif ptr_dtype == tl.float64 or ptr_dtype == tl.int64 or ptr_dtype == tl.uint64:
+            element_size_bytes = 8
+        elif ptr_dtype == tl.int8 or ptr_dtype == tl.uint8:
+            element_size_bytes = 1
+        elif ptr_dtype == tl.int16 or ptr_dtype == tl.uint16:
+            element_size_bytes = 2
+        else:
+            # Default to 4 bytes for unknown types
+            element_size_bytes = 4
+
+        # Calculate total size in bytes
+        # Count number of valid elements based on mask
+        mask_int = mask.to(tl.int32)
+        num_elements = tl.sum(mask_int, axis=0)
+        size_bytes = (num_elements * element_size_bytes).to(tl.uint32)
+
+        command_in_bytes = 28
+        # Acquire space
+        base = anvil.acquire(cached_write_ptr, command_in_bytes)
+
+        # Place command
+        slot_ptr_u32 = queue_ptr_u32 + (base // 4)
+        anvil.place_copy_packet(slot_ptr_u32, size_bytes, src_ptr_val, dst_ptr_val)
+
+        # Submit command
+        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
+
 
 
 @triton.jit
@@ -1877,63 +1931,17 @@ def put_ce(from_ptr, to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=Non
     num_elements = tl.sum(mask_int, axis=0)
     size_bytes = (num_elements * element_size_bytes).to(tl.uint32)
 
-    # data = tl.load(from_ptr, mask=mask)
-    # tl.store(translated_to_ptr, data, mask=mask)
-
     command_in_bytes = 28
-    base = tl.zeros((), dtype=tl.uint64)
-    # copy_size_in_bytes = tl.sum(mask.to(tl.int8)).to(tl.uint32)
     # Acquire space
-    run_loop = True
-    while run_loop:
-        cur_index = tl.load(cached_write_ptr)
-        new_index = cur_index + command_in_bytes
-        # Check if wrap around
-        # TODO
+    base = anvil.acquire(cached_write_ptr, command_in_bytes)
 
-        # Check if full
-        # TODO
-        # expected = cur_index
-        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem="acquire", scope="gpu") == cur_index:
-            base = tl.full((), cur_index, dtype=tl.uint64)
-            run_loop = False
-
-    # Place command packet
+    # Place command
     queue_ptr_u32 = queue_ptr.to(tl.pointer_type(tl.uint32))
     slot_ptr_u32 = queue_ptr_u32 + (base // 4)
-
-    # Convert to scalar value
-    # from_ptr_as_u64 = tl.uint64(from_ptr) #tl.cast(from_ptr[0], tl.uint64)
-
-    # offset 0: op + sub_op
-    tl.store(slot_ptr_u32 + 0, 1)
-    # offset 1: count
-    tl.store(slot_ptr_u32 + 1, size_bytes - 1) 
-    # offset 2: parameters
-    tl.store(slot_ptr_u32 + 2, 0)
-    # offset 3: src address 31:0
-    tl.store(slot_ptr_u32 + 3, src_ptr_val.to(tl.uint32))
-    # offset 4: src address 63:32
-    tl.store(slot_ptr_u32 + 4, (src_ptr_val >> 32).to(tl.uint32))
-    # offset 5: dst address 31:0
-    tl.store(slot_ptr_u32 + 5, dst_ptr_val.to(tl.uint32))
-    # offset 6: dst address 63:32
-    tl.store(slot_ptr_u32 + 6, (dst_ptr_val >> 32).to(tl.uint32))
+    anvil.place_copy_packet(slot_ptr_u32, size_bytes, src_ptr_val, dst_ptr_val)
 
     # Submit command
-    while tl.load(committed_write_ptr) != base:
-        pass
-            
-    # tl.store(write_ptr, base + command_in_bytes)
-    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem='release', scope='gpu')
-
-    tl.debug_barrier()
-
-    # Ring doorbell
-    # tl.store(doorbell_ptr, base + command_in_bytes)
-    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem="release", scope="sys")
-    tl.debug_barrier()
-    tl.store(committed_write_ptr, base + command_in_bytes)
+    anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
 
 
 @triton.jit
@@ -1976,66 +1984,20 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
     dst_ptr_val = translated_to_ptr.to(tl.uint64)
 
     command_in_bytes = 32
-    base = tl.zeros((), dtype=tl.uint64)
-    # copy_size_in_bytes = tl.sum(mask.to(tl.int8)).to(tl.uint32)
     # Acquire space
-    run_loop = True
-    while run_loop:
-        cur_index = tl.load(cached_write_ptr)
-        new_index = cur_index + command_in_bytes
-        # Check if wrap around
-        # TODO
-
-        # Check if full
-        # TODO
-        # expected = cur_index
-        if tl.atomic_cas(cached_write_ptr, cur_index, new_index, sem="acquire", scope="gpu") == cur_index:
-            base = tl.full((), cur_index, dtype=tl.uint64)
-            run_loop = False
-
+    base = anvil.acquire(cached_write_ptr, command_in_bytes)
 
     # Place command packet
     queue_ptr_u32 = queue_ptr.to(tl.pointer_type(tl.uint32))
     slot_ptr_u32  = queue_ptr_u32 + (base // 4)
-    # print("queue_ptr: ", queue_ptr, " slot_ptr ", slot_ptr_u32, " base ", base)
-
-    # Convert to scalar value
-    # from_ptr_as_u64 = tl.uint64(from_ptr) #tl.cast(from_ptr[0], tl.uint64)
-
-    # offset 0: op + sub_op
-    # tl.store(slot_ptr_u32 + 0, ((0x2F & 0x7F) << 25 | (0xA & 0xFF)) # op: 10, operation: 47 atomicAdd64
-    tl.store(slot_ptr_u32 + 0, ((0xF & 0x7F) << 25) | (0xA & 0xFF)) # op: 10, operation: 15 atomicAdd32
-    # offset 1: dst address 31:0
-    tl.store(slot_ptr_u32 + 1, dst_ptr_val.to(tl.uint32))
-    # offset 2: dst address 63:32
-    tl.store(slot_ptr_u32 + 2, (dst_ptr_val >> 32).to(tl.uint32))
-    # offset 3: src data 31:0
-    tl.store(slot_ptr_u32 + 3, 1)  # increment by 1
-    # offset 4: src data 63:32
-    tl.store(slot_ptr_u32 + 4, 0)
-    # offset 5 - 7 unused
-    tl.store(slot_ptr_u32 + 5, 0)
-    tl.store(slot_ptr_u32 + 6, 0)
-    tl.store(slot_ptr_u32 + 7, 0)
+    anvil.place_atomic_packet(slot_ptr_u32, dst_ptr_val)
 
     # Submit command
-    while tl.load(committed_write_ptr) != base:
-        pass
-
-    # tl.store(write_ptr, base + command_in_bytes)
-    tl.atomic_xchg(write_ptr, base + command_in_bytes, sem='release', scope='gpu')
-
-    tl.debug_barrier()
-
-    # Ring doorbell
-    # tl.store(doorbell_ptr, base_val + command_in_bytes)
-    tl.atomic_xchg(doorbell_ptr, base + command_in_bytes, sem='release', scope='sys')
-    tl.debug_barrier()
-    tl.store(committed_write_ptr, base + command_in_bytes)
+    anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
 
 
 @triton.jit
-def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None, scope=None):
+def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None, scope=None, copy_engine_ctx=None, USE_COPY_ENGINE: tl.constexpr=False):
     """
     Performs an atomic add at the specified rank's memory location.
 
@@ -2067,7 +2029,31 @@ def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
         >>>     old_val = iris.atomic_add(ptr, increment, cur_rank, remote_rank, heap_bases)
     """
     translated_ptr = __translate(pointer, from_rank, to_rank, heap_bases)
-    return tl.atomic_add(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+    if not USE_COPY_ENGINE:
+        return tl.atomic_add(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+    else:
+        handle = copy_engine_ctx
+        queue_ptr_u32 = tl.load(handle + 0).to(tl.pointer_type(tl.uint32))
+        read_ptr = tl.load(handle + 1).to(tl.pointer_type(tl.uint64))
+        write_ptr = tl.load(handle + 2).to(tl.pointer_type(tl.uint64))
+        doorbell_ptr = tl.load(handle + 3).to(tl.pointer_type(tl.uint64))
+        cached_write_ptr = tl.load(handle + 4).to(tl.pointer_type(tl.uint64))
+        committed_write_ptr = tl.load(handle + 5).to(tl.pointer_type(tl.uint64))
+
+        dst_ptr_val = translated_ptr.to(tl.uint64)
+
+        command_in_bytes = 32
+        # Acquire space
+        base = anvil.acquire(cached_write_ptr, command_in_bytes)
+
+        # Place command packet
+        slot_ptr_u32  = queue_ptr_u32 + (base // 4)
+        anvil.place_atomic_packet(slot_ptr_u32, dst_ptr_val)
+
+        # Submit command
+        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
+
+
 
 
 @triton.jit
