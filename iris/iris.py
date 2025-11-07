@@ -1810,12 +1810,13 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=
 def nontemporal_store(addr, value):
     tl.inline_asm_elementwise(
         asm="""flat_store_dwordx2 $1 $2 sc0 nt; s_waitcnt vmcnt(0)""",
-        constraints=("=r,v,v"), # =r used for dummy return to satisfy compiler requirement
+        constraints=("=r,v,v"),  # =r used for dummy return to satisfy compiler requirement
         args=[addr, value],
-        dtype=tl.int32, # return not used
+        dtype=tl.int32,  # return not used
         is_pure=False,
         pack=1,
     )
+
 
 # TODO rename or add nt
 @triton.jit
@@ -1823,19 +1824,20 @@ def nontemporal_load(addr):
     val = tl.inline_asm_elementwise(
         asm="""flat_load_dwordx2 $0 $1 sc0 sc1; s_waitcnt vmcnt(0)""",
         constraints=("=v,v"),
-        args=[ addr],
+        args=[addr],
         dtype=tl.uint64,
         is_pure=False,
         pack=1,
     )
     return val
 
+
 @triton.jit
 def nontemporal_atomic_add(addr, value):
     old = tl.inline_asm_elementwise(
         asm="""flat_atomic_add_x2 $0 $1 sc0 sc1; s_waitcnt vmcnt(0)""",
         constraints=("=v,v,v"),
-        args=[addr,value],
+        args=[addr, value],
         dtype=tl.uint64,
         is_pure=False,
         pack=1,
@@ -1856,7 +1858,6 @@ def nontemporal_atomic_add(addr, value):
 #         pack=1,
 #     )
 #     return True # TODO if old == cmp else False
-
 
 
 @triton.jit
