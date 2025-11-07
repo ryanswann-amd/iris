@@ -1717,7 +1717,9 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
 
 
 @triton.jit
-def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=None, USE_COPY_ENGINE : tl.constexpr=False):
+def put(
+    from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=None, USE_COPY_ENGINE: tl.constexpr = False
+):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
     This function performs a memory write operation by loading data from the current
@@ -1795,7 +1797,9 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=
 
         command_in_bytes = 28
         # Acquire space
-        base = anvil.acquire(queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes)
+        base = anvil.acquire(
+            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
+        )
 
         # Place command
         slot_ptr_u32 = queue_ptr_u32 + (base // 4)
@@ -1803,7 +1807,6 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx, mask=
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
-
 
 
 @triton.jit
@@ -1901,10 +1904,12 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
 
     command_in_bytes = 32
     # Acquire space
-    base = anvil.acquire(queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes)
+    base = anvil.acquire(
+        queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
+    )
 
     # Place command packet
-    slot_ptr_u32  = queue_ptr_u32 + (base // 4)
+    slot_ptr_u32 = queue_ptr_u32 + (base // 4)
     anvil.place_atomic_packet(slot_ptr_u32, dst_ptr_val)
 
     # Submit command
@@ -1912,7 +1917,18 @@ def signal_ce(to_ptr, from_rank, to_rank, heap_bases, ce_handle, mask=None):
 
 
 @triton.jit
-def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None, scope=None, copy_engine_ctx=None, USE_COPY_ENGINE: tl.constexpr=False):
+def atomic_add(
+    pointer,
+    val,
+    from_rank,
+    to_rank,
+    heap_bases,
+    mask=None,
+    sem=None,
+    scope=None,
+    copy_engine_ctx=None,
+    USE_COPY_ENGINE: tl.constexpr = False,
+):
     """
     Performs an atomic add at the specified rank's memory location.
 
@@ -1959,16 +1975,16 @@ def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
 
         command_in_bytes = 32
         # Acquire space
-        base = anvil.acquire(queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes)
+        base = anvil.acquire(
+            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
+        )
 
         # Place command packet
-        slot_ptr_u32  = queue_ptr_u32 + (base // 4)
+        slot_ptr_u32 = queue_ptr_u32 + (base // 4)
         anvil.place_atomic_packet(slot_ptr_u32, dst_ptr_val)
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
-
-
 
 
 @triton.jit

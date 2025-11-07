@@ -47,7 +47,7 @@ def producer_kernel(
         heap_bases_ptr,
         copy_engine_handle_ptr,
         mask=mask,
-        USE_COPY_ENGINE=True
+        USE_COPY_ENGINE=True,
     )
 
     # Set flag to signal completion
