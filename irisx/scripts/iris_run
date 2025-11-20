@@ -1,0 +1,16 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+# Must get at least two arguments
+if [ $# -lt 2 ]; then
+  echo "Usage: $0 <num_gpus> <binary_and_args>"
+  exit 1
+fi
+
+# Get the number of GPUs
+num_gpus=$1
+shift
+binary_and_args="$@"
+
+mpirun -np $num_gpus $binary_and_args

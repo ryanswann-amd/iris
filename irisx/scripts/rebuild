@@ -1,0 +1,16 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+script_dir=$(dirname "$0")
+
+echo "Rebuilding Irisx"
+echo "Script directory: $script_dir"
+echo "Current directory: $(pwd)"
+
+pushd "$script_dir/.." > /dev/null
+
+cmake -B build -DIRIS_BUILD_EXAMPLES=ON -DIRIS_BUILD_BENCHMARKS=ON
+cmake --build build --parallel 8
+
+popd > /dev/null

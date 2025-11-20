@@ -1,0 +1,157 @@
+# Build directories
+build/
+_build/
+out/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+*.x
+
+# HIP specific
+*.hipfb
+*.hipo
+*.hipa
+
+# CUDA specific (if any)
+*.cubin
+*.ptx
+*.fatbin
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.orig
+
+# Documentation build
+docs/_build/
+docs/build/
+
+# Python (if any scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# MPI specific
+*.mpi
+
+# Profiling and performance files
+*.prof
+*.trace
+*.nvvp
+*.qdrep
+*.qdstrm
+
+# Memory dump files
+*.core
+*.dump
+
+# Package files
+*.tar.gz
+*.zip
+*.rar
+
+# Backup files
+*.backup
+*.old
+
+# Local configuration files
+config.local
+settings.local
+.env.local
+
+# Test output
+test_results/
+coverage/
+*.gcov
+*.gcda
+*.gcno
+
+# Benchmark results
+benchmark_results/
+*.csv
+*.json
+
+# Documentation generated files
+*.html
+*.pdf
+*.tex
+*.aux
+*.log
+*.toc
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Network and temporary files
+*.tmp
+*.temp
+*.lock
+*.pid
