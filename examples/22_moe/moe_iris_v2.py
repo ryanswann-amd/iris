@@ -14,10 +14,7 @@ import triton.language as tl
 import iris
 
 # Keep using Triton's routing functions for now
-from triton_kernels.distributed import (
-    make_expt_dict_uniform, make_expt_assignment,
-    symm_mem_pool
-)
+from triton_kernels.distributed import make_expt_dict_uniform, make_expt_assignment, symm_mem_pool
 from triton_kernels.reduce import reduce
 from triton_kernels.topk import topk
 from triton_kernels.matmul import matmul
@@ -30,18 +27,23 @@ def _convert_launch_metadata():
 
 @triton.jit(launch_metadata=_convert_launch_metadata)
 def _convert_dp_to_ep_iris(
-    dst_ptr, 
+    dst_ptr,
     dst_stride_m,
-    src_ptr, src_stride_m, src_shape_n,
-    expt_filter_ptr, expt_filter_stride_m,
-    expt_indx_ptr, expt_indx_stride_m,
-    dst_row_indx_ptr, dst_row_indx_stride_m,
+    src_ptr,
+    src_stride_m,
+    src_shape_n,
+    expt_filter_ptr,
+    expt_filter_stride_m,
+    expt_indx_ptr,
+    expt_indx_stride_m,
+    dst_row_indx_ptr,
+    dst_row_indx_stride_m,
     n_tokens_local,
     heap_bases,
     SRC_RANK: tl.constexpr,
     N_EXPT_ACT: tl.constexpr,
     N_RANKS: tl.constexpr,
-    BLOCK: tl.constexpr
+    BLOCK: tl.constexpr,
 ):
     """
     Iris version - Step 1: EXACT Triton pattern with local stores
@@ -72,7 +74,7 @@ def _convert_dp_to_ep_iris(
 
         # Write to each rank
         for r in tl.static_range(N_RANKS):
-            rank_mask = (expt_ranks == r)
+            rank_mask = expt_ranks == r
             dst_ptrs = dst_ptr + dst_offsets + start_n
             full_mask = rank_mask[:, None] & mask_n[None, :]
             iris.store(dst_ptrs, src[None, :], SRC_RANK, r, heap_bases, mask=full_mask)
@@ -105,11 +107,17 @@ def convert_dp_to_ep_iris(src, expt_assignment, expt_indx, gate_indx, shmem, dst
     BLOCK = 512
     grid = (n_tokens_local,)
     _convert_dp_to_ep_iris[grid](
-        dst_buffer, dst_buffer.stride(0),
-        src, src.stride(0), src.shape[1],
-        expt_bitmask, expt_bitmask.stride(0),
-        expt_indx, expt_indx.stride(0),
-        gate_indx, gate_indx.stride(0),
+        dst_buffer,
+        dst_buffer.stride(0),
+        src,
+        src.stride(0),
+        src.shape[1],
+        expt_bitmask,
+        expt_bitmask.stride(0),
+        expt_indx,
+        expt_indx.stride(0),
+        gate_indx,
+        gate_indx.stride(0),
         n_tokens_local,
         heap_bases,
         SRC_RANK=rank,
@@ -125,16 +133,20 @@ def convert_dp_to_ep_iris(src, expt_assignment, expt_indx, gate_indx, shmem, dst
 
 @triton.jit(launch_metadata=_convert_launch_metadata)
 def _convert_ep_to_dp_iris(
-    dst_ptr, dst_stride_m,
-    src_ptr, src_stride_m, src_shape_n,
-    expt_filter_ptr, expt_filter_stride_m,
+    dst_ptr,
+    dst_stride_m,
+    src_ptr,
+    src_stride_m,
+    src_shape_n,
+    expt_filter_ptr,
+    expt_filter_stride_m,
     expt_indx_ptr,
     dst_row_indx_ptr,
     n_tokens_local,
     heap_bases,  # Iris heap bases pointer
     BLOCK: tl.constexpr,
     SRC_RANK: tl.constexpr,
-    N_RANKS: tl.constexpr
+    N_RANKS: tl.constexpr,
 ):
     """
     Iris version - Step 1: EXACT Triton pattern with local stores
@@ -191,9 +203,13 @@ def convert_ep_to_dp_iris(src, expt_assignment, expt_indx, topk_indx, shmem, dst
     BLOCK = 512
     grid = (n_tokens_global,)
     _convert_ep_to_dp_iris[grid](
-        dst_buffer, dst_buffer.stride(0),
-        src, src.stride(0), src.shape[1],
-        expt_bitmask, expt_bitmask.stride(0),
+        dst_buffer,
+        dst_buffer.stride(0),
+        src,
+        src.stride(0),
+        src.shape[1],
+        expt_bitmask,
+        expt_bitmask.stride(0),
         expt_indx,
         topk_indx,
         n_tokens_local,
@@ -208,10 +224,7 @@ def convert_ep_to_dp_iris(src, expt_assignment, expt_indx, topk_indx, shmem, dst
     return dst_buffer
 
 
-def mixture_of_expt_iris(
-    x_dp_local, l_dp_local, w_ep_local, b_ep_local,
-    expt_assignment, n_expts_act, shmem
-):
+def mixture_of_expt_iris(x_dp_local, l_dp_local, w_ep_local, b_ep_local, expt_assignment, n_expts_act, shmem):
     """
     Complete Iris MoE implementation
     Uses Iris for communication, Triton's matmul for compute
@@ -235,7 +248,7 @@ def mixture_of_expt_iris(
     dp_to_ep_buf = shmem.zeros((n_tokens_global * n_expts_act, d_model), dtype=x_dp_local.dtype)
     ep_to_dp_buf = shmem.zeros((n_tokens_local, d_model), dtype=x_dp_local.dtype)
 
-    # Convert DP → EP 
+    # Convert DP → EP
     y_ep_local = convert_dp_to_ep_iris(x_dp_local, expt_assignment, active_indx, dispatch_indx, shmem, dp_to_ep_buf)
     y_ep_local_metadata = remap_ragged_tensor_metadata(x_global_metadata, expt_map)
 
@@ -245,28 +258,21 @@ def mixture_of_expt_iris(
     # Convert EP → DP
     y_dp_local = convert_ep_to_dp_iris(y_ep_local, expt_assignment, active_indx, combine_indx, shmem, ep_to_dp_buf)
 
-    # Weighted average 
+    # Weighted average
     y_dp_local = y_dp_local.view(-1, n_expts_act, y_dp_local.shape[-1])
     z_dp_local, _ = reduce(y_dp_local, dim=1)
 
     return z_dp_local
 
 
-def moe_iris_v2(
-    x_dp_local, l_dp_local, w_ep_local, b_ep_local,
-    expt_assignment, n_expts_act, shmem
-):
+def moe_iris_v2(x_dp_local, l_dp_local, w_ep_local, b_ep_local, expt_assignment, n_expts_act, shmem):
     """
     Iris MoE V2 - Ported from Triton reference
     """
-    return mixture_of_expt_iris(
-        x_dp_local, l_dp_local, w_ep_local, b_ep_local,
-        expt_assignment, n_expts_act, shmem
-    )
+    return mixture_of_expt_iris(x_dp_local, l_dp_local, w_ep_local, b_ep_local, expt_assignment, n_expts_act, shmem)
 
 
 # ==============================================================================
 # Export for testing
 # ==============================================================================
-__all__ = ['moe_iris_v2', 'convert_dp_to_ep_iris', 'convert_ep_to_dp_iris']
-
+__all__ = ["moe_iris_v2", "convert_dp_to_ep_iris", "convert_ep_to_dp_iris"]

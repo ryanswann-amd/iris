@@ -69,6 +69,7 @@ def test_worker(rank, world_size):
 
     # Initialize Iris
     import iris
+
     shmem = iris.iris()
 
     # Initialize Triton symmetric memory
@@ -95,6 +96,7 @@ def test_worker(rank, world_size):
         if rank == 0:
             print(f"✗ Error: {e}")
             import traceback
+
             traceback.print_exc()
         raise
 
@@ -130,6 +132,7 @@ def benchmark_worker(rank, world_size):
 
     # Initialize Iris
     import iris
+
     shmem = iris.iris()
 
     symm_mem_pool.initialize_matmul(
@@ -164,15 +167,15 @@ def benchmark_worker(rank, world_size):
     elapsed_ms = (end - start) * 1000 / n_runs
 
     if rank == 0:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print("Iris V2 MoE Benchmark Results")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"Tokens: {n_tokens}, d_model: {d_model}, experts: {n_expts_tot}, top_k: {n_expts_act}")
         print(f"GPUs: {world_size}")
         print(f"Time: {elapsed_ms:.2f} ms")
-        print(f"Target (Triton): 0.85 ms")
-        print(f"Speedup vs target: {0.85/elapsed_ms:.2f}x")
-        print(f"{'='*80}\n")
+        print("Target (Triton): 0.85 ms")
+        print(f"Speedup vs target: {0.85 / elapsed_ms:.2f}x")
+        print(f"{'=' * 80}\n")
 
 
 def run_test(world_size=8):
@@ -181,17 +184,16 @@ def run_test(world_size=8):
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", str(master_port))
 
-    print("="*80)
+    print("=" * 80)
     print("Phase 1: Testing Iris V2...")
-    print("="*80)
+    print("=" * 80)
     mp.spawn(_distributed_worker, args=(test_worker, world_size, {}), nprocs=world_size, join=True)
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("Phase 2: Benchmarking Iris V2...")
-    print("="*80)
+    print("=" * 80)
     mp.spawn(_distributed_worker, args=(benchmark_worker, world_size, {}), nprocs=world_size, join=True)
 
 
 if __name__ == "__main__":
     run_test(world_size=8)
-
