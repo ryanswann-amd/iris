@@ -3,8 +3,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 """
-Iris MoE - Ported from Triton's exact reference
-Step-by-step port of triton_kernels/distributed.py to Iris primitives
+Iris MoE V2 - Ported from Triton's exact reference
 """
 
 import torch
@@ -45,10 +44,6 @@ def _convert_dp_to_ep_iris(
     N_RANKS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    """
-    Iris version - Step 1: EXACT Triton pattern with local stores
-    Will add iris.store in next iteration
-    """
     pid_m = tl.program_id(0)
     off_m_global = pid_m + n_tokens_local * SRC_RANK
     off_m_local = pid_m
@@ -148,9 +143,6 @@ def _convert_ep_to_dp_iris(
     SRC_RANK: tl.constexpr,
     N_RANKS: tl.constexpr,
 ):
-    """
-    Iris version - Step 1: EXACT Triton pattern with local stores
-    """
     pid_m = tl.program_id(0)
 
     # Determine destination rank and index
