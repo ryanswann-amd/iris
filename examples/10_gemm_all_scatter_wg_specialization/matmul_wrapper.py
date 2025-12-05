@@ -47,6 +47,7 @@ class matmul(torch.autograd.Function):
         c_global: torch.Tensor,
         bias: torch.Tensor,
         locks: torch.Tensor,
+        flags: torch.Tensor,
         rank: int,
         world_size: int,
         gemm_sms: int,
@@ -58,6 +59,8 @@ class matmul(torch.autograd.Function):
         heap_bases_ptr: torch.Tensor = None,
         arch: str = "gfx942",
         COLLECT_TIMESTAMPS: bool = False,
+        USE_COPY_ENGINE: bool = False,
+        copy_engine_ctx: torch.Tensor = None,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
     ):
@@ -82,6 +85,9 @@ class matmul(torch.autograd.Function):
         even_k = K % BLK_K == 0
         use_bias = False
 
+        print("C: ", c.stride(0), " ", c.stride(1), " global ", c_global.stride(0), " ", c_global.stride(1))
+        print("BLK_M ", BLK_M, " BLK_N ", BLK_N, " BLK_K ", BLK_K, " even k ", even_k, " total_tiles ", total_tiles)
+
         # compute grid (work to do per SM on the first wave)
         stride_bias = bias.stride(0) if use_bias else 0
         kk = gemm_kernel[(num_sms,)](
@@ -91,6 +97,7 @@ class matmul(torch.autograd.Function):
             c_global,
             bias,
             locks,
+            flags,
             M,
             N,
             K,
@@ -121,6 +128,8 @@ class matmul(torch.autograd.Function):
             cur_rank=rank,
             world_size=world_size,
             COLLECT_TIMESTAMPS=COLLECT_TIMESTAMPS,
+            USE_COPY_ENGINE=USE_COPY_ENGINE,
+            copy_engine_ctx=copy_engine_ctx,
             mm_begin_timestamp_ptr=mm_begin_timestamp,
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
@@ -140,6 +149,7 @@ class matmul(torch.autograd.Function):
         c_global: torch.Tensor,
         bias: torch.Tensor,
         locks: torch.Tensor,
+        flags: torch.Tensor,
         rank: int,
         world_size: int,
         gemm_sms: int,
@@ -151,6 +161,8 @@ class matmul(torch.autograd.Function):
         heap_bases_ptr: torch.Tensor = None,
         arch: str = "gfx942",
         COLLECT_TIMESTAMPS: bool = False,
+        USE_COPY_ENGINE: bool = False,
+        copy_engine_ctx: torch.Tensor = None,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
     ):
@@ -161,6 +173,7 @@ class matmul(torch.autograd.Function):
             c_global=c_global,
             bias=bias,
             locks=locks,
+            flags=flags,
             rank=rank,
             world_size=world_size,
             gemm_sms=gemm_sms,
@@ -172,6 +185,8 @@ class matmul(torch.autograd.Function):
             heap_bases_ptr=heap_bases_ptr,
             arch=arch,
             COLLECT_TIMESTAMPS=COLLECT_TIMESTAMPS,
+            USE_COPY_ENGINE=USE_COPY_ENGINE,
+            copy_engine_ctx=copy_engine_ctx,
             mm_begin_timestamp=mm_begin_timestamp,
             mm_end_timestamp=mm_end_timestamp,
         )

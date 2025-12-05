@@ -19,6 +19,7 @@ def persistent_gemm_all_scatter_wg_specialization(
     c_global,
     bias_ptr,
     locks,
+    flags,
     M,
     N,
     K,
@@ -44,6 +45,8 @@ def persistent_gemm_all_scatter_wg_specialization(
     cur_rank: tl.constexpr,
     world_size: tl.constexpr,
     COLLECT_TIMESTAMPS: tl.constexpr = False,
+    USE_COPY_ENGINE: tl.constexpr = False,
+    copy_engine_ctx: tl.tensor = None,
     mm_begin_timestamp_ptr: tl.tensor = None,
     mm_end_timestamp_ptr: tl.tensor = None,
 ):
@@ -69,6 +72,9 @@ def persistent_gemm_all_scatter_wg_specialization(
     # and another that performs the communication. Uses persistent-
     # kernel.
     if pid < GEMM_SMS:
+        # tl.device_print("GEMM_SMS: ", GEMM_SMS)
+        # tl.device_print("GEMM pid: ", pid)
+
         for tile_id in range(pid, total_tiles, GEMM_SMS):
             if COLLECT_TIMESTAMPS:
                 timestamp = read_realtime()
@@ -148,6 +154,8 @@ def persistent_gemm_all_scatter_wg_specialization(
     else:  # pid >= GEMM_SMS
         COMM_SMS = NUM_SMS - GEMM_SMS
         pid = pid - GEMM_SMS
+        # tl.device_print("COMM_SMS: ", COMM_SMS)
+        # tl.device_print("COMM pid: ", pid)
         for tile_id in range(pid, total_tiles, COMM_SMS):
             num_pid_in_group = GROUP_SIZE_M * num_pid_n
             group_id = tile_id // num_pid_in_group
@@ -176,5 +184,34 @@ def persistent_gemm_all_scatter_wg_specialization(
                         cur_rank,
                         remote_rank,
                         heap_bases,
+                        copy_engine_ctx,
+                        stride_cm,
+                        stride_cn,
+                        stride_cm_global,
+                        stride_cn_global,
+                        BLOCK_SIZE_M,
+                        BLOCK_SIZE_N,
                         mask=sub_mask,
+                        USE_COPY_ENGINE=USE_COPY_ENGINE
                     )
+        tl.debug_barrier()
+        # Signal other ranks
+        for remote_rank in range(world_size):
+            if remote_rank != cur_rank:
+                iris.atomic_add(
+                    flags + (pid * world_size) + cur_rank,
+                    1,
+                    cur_rank,
+                    remote_rank,
+                    heap_bases,
+                    sem="release",
+                    scope="sys",
+                    copy_engine_ctx=copy_engine_ctx,
+                    USE_COPY_ENGINE=USE_COPY_ENGINE,
+                )
+        # Wait for other ranks to signal us
+        for remote_rank in range(world_size):
+            if remote_rank != cur_rank:
+                while tl.load(flags + (pid * world_size) + remote_rank, cache_modifier=".cv", volatile=True) != 1:
+                    pass
+
