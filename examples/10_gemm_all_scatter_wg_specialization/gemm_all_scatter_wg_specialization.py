@@ -10,6 +10,11 @@ import os
 
 import iris
 
+@triton.jit
+def wait_cnt():
+    tl.inline_asm_elementwise(
+        "s_waitcnt vmcnt(0)", "=r", [], dtype=tl.int32, is_pure=False, pack=1
+    )
 
 @triton.jit()
 def persistent_gemm_all_scatter_wg_specialization(
@@ -27,8 +32,8 @@ def persistent_gemm_all_scatter_wg_specialization(
     stride_ak,
     stride_bk,
     stride_bn,
-    stride_cm,
-    stride_cn,
+    stride_cm, # unused
+    stride_cn, # unused
     stride_cm_global,
     stride_cn_global,
     stride_bias,
@@ -148,6 +153,7 @@ def persistent_gemm_all_scatter_wg_specialization(
                 tl.atomic_max(mm_end_timestamp_ptr + tile_id, timestamp)
 
             tl.store(c_global + global_offset, c, mask=sub_mask, cache_modifier=".wt")
+            wait_cnt()
             tl.debug_barrier()
             tl.store(locks + tile_id, 1, cache_modifier=".wt")
 
@@ -185,8 +191,8 @@ def persistent_gemm_all_scatter_wg_specialization(
                         remote_rank,
                         heap_bases,
                         copy_engine_ctx,
-                        stride_cm,
-                        stride_cn,
+                        stride_cm_global,
+                        stride_cn_global,
                         stride_cm_global,
                         stride_cn_global,
                         BLOCK_SIZE_M,

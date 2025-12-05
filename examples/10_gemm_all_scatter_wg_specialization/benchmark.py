@@ -133,15 +133,16 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         json_writer.add_field(key, value)
 
     global_C = shmem.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
-    # why on heap?
-    local_C = torch.zeros((args["m"], args["n"]), device="cuda", dtype=A.dtype)
+    # why on heap? so it is uncached??
+    # TODO unused
+    local_C = shmem.zeros((args["m"], args["n"]), device="cuda", dtype=A.dtype)
 
     total_blocks_M = triton.cdiv(args["m"], args["BLK_M"])
     total_blocks_N = triton.cdiv(args["n"], args["BLK_N"])
     total_tiles = total_blocks_M * total_blocks_N
 
     # TODO why is this on the heap?
-    locks = torch.zeros((total_tiles,), device="cuda", dtype=torch.int8)  # why int8??
+    locks = shmem.zeros((total_tiles,), device="cuda", dtype=torch.int8)  # why int8??
     comm_sms = args["num_sms"] - args["gemm_sms"]
     flags = shmem.zeros((comm_sms, world_size), device="cuda", dtype=torch.uint32)
 

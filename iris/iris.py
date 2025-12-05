@@ -1837,7 +1837,7 @@ def put(
         command_in_bytes = 28
         # TODO wrap-around seems broken
         # Overwrite here
-        num_strides = 8
+        # num_strides = 8
         required_bytes = command_in_bytes * num_strides
         # queue_offsets = (command_in_bytes // 4) * tl.arange(0, num_strides)
         # if tl.program_id(axis=0) == 23 and to_rank == 0:
