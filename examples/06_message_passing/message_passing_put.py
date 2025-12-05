@@ -40,11 +40,30 @@ def producer_kernel(
     mask = offsets < buffer_size
 
     # Put chunk into remote buffer
-    iris.put(source_buffer + offsets, target_buffer + offsets, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, mask=mask, USE_COPY_ENGINE=USE_COPY_ENGINE)
+    iris.put(
+        source_buffer + offsets,
+        target_buffer + offsets,
+        producer_rank,
+        consumer_rank,
+        heap_bases_ptr,
+        copy_engine_handle_ptr,
+        mask=mask,
+        USE_COPY_ENGINE=USE_COPY_ENGINE,
+    )
 
     # Set flag to signal completion
-    # iris.atomic_cas(flag + pid, 0, 1, producer_rank, consumer_rank, heap_bases_ptr, sem="release", scope="sys")
-    iris.atomic_add(flag + pid, 1, producer_rank, consumer_rank, heap_bases_ptr, sem='release', scope='sys', copy_engine_ctx=copy_engine_handle_ptr, USE_COPY_ENGINE=USE_COPY_ENGINE)
+    # iris.atomic_cas(flag + pid, 0, 1, producer_rank, consumer_rank, heap_bases_ptr, copy_engine_handle_ptr, sem="release", scope="sys")
+    iris.atomic_add(
+        flag + pid,
+        1,
+        producer_rank,
+        consumer_rank,
+        heap_bases_ptr,
+        sem="release",
+        scope="sys",
+        copy_engine_ctx=copy_engine_handle_ptr,
+        USE_COPY_ENGINE=USE_COPY_ENGINE,
+    )
 
 
 @triton.jit
@@ -121,8 +140,9 @@ def parse_args():
     parser.add_argument("-s", "--buffer_size", type=int, default=4096, help="Buffer Size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
     parser.add_argument("-p", "--heap_size", type=int, default=1 << 33, help="Iris heap size")
-    parser.add_argument("-c", "--use_copy_engine", action="store_true", help="Use copy engine for device-to-device copies")
-
+    parser.add_argument(
+        "-c", "--use_copy_engine", action="store_true", help="Use copy engine for device-to-device copies"
+    )
 
     return vars(parser.parse_args())
 
@@ -181,7 +201,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             args["block_size"],
             shmem.get_heap_bases(),
             copy_engine_ctx,
-            USE_COPY_ENGINE=args["use_copy_engine"]
+            USE_COPY_ENGINE=args["use_copy_engine"],
         )
     else:
         shmem.info(f"Rank {cur_rank} is receiving data from rank {producer_rank}.")

@@ -192,7 +192,7 @@ def persistent_gemm_all_scatter_wg_specialization(
                         BLOCK_SIZE_M,
                         BLOCK_SIZE_N,
                         mask=sub_mask,
-                        USE_COPY_ENGINE=USE_COPY_ENGINE
+                        USE_COPY_ENGINE=USE_COPY_ENGINE,
                     )
         tl.debug_barrier()
         # Signal other ranks
@@ -214,4 +214,3 @@ def persistent_gemm_all_scatter_wg_specialization(
             if remote_rank != cur_rank:
                 while tl.load(flags + (pid * world_size) + remote_rank, cache_modifier=".cv", volatile=True) != 1:
                     pass
-

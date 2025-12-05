@@ -90,7 +90,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     world_size = shmem.get_num_ranks()
 
     # Set default SM values if not provided
-    cu_count =  torch.cuda.get_device_properties(rank).multi_processor_count
+    cu_count = torch.cuda.get_device_properties(rank).multi_processor_count
     if args["num_sms"] is None:
         args["num_sms"] = cu_count
     if args["gemm_sms"] is None:
@@ -141,12 +141,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     total_tiles = total_blocks_M * total_blocks_N
 
     # TODO why is this on the heap?
-    locks = torch.zeros((total_tiles,), device="cuda", dtype=torch.int8) #why int8??
+    locks = torch.zeros((total_tiles,), device="cuda", dtype=torch.int8)  # why int8??
     comm_sms = args["num_sms"] - args["gemm_sms"]
     flags = shmem.zeros((comm_sms, world_size), device="cuda", dtype=torch.uint32)
 
     # Get copy engine context
-    copy_engine_ctx = shmem.get_copy_engine_ctx() # if args["use_copy_engine"] else None
+    copy_engine_ctx = shmem.get_copy_engine_ctx()  # if args["use_copy_engine"] else None
     # (
     #     shmem.get_copy_engine_handle() if args["use_copy_engine"] and cur_rank == producer_rank else None
     # )

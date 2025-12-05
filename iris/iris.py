@@ -1713,16 +1713,22 @@ def get(from_ptr, to_ptr, from_rank, to_rank, heap_bases, mask=None):
 
 
 @triton.jit
-def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases,
-        copy_engine_ctx: tl.tensor, 
-        stride_tm,
-        stride_tn,
-        stride_fm,
-        stride_fn,
-        BLOCK_SIZE_M: tl.constexpr,
-        BLOCK_SIZE_N: tl.constexpr,
-        mask=None,
-        USE_COPY_ENGINE: tl.constexpr=False):
+def put(
+    from_ptr,
+    to_ptr,
+    from_rank,
+    to_rank,
+    heap_bases,
+    copy_engine_ctx: tl.tensor,
+    stride_tm,
+    stride_tn,
+    stride_fm,
+    stride_fn,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    mask=None,
+    USE_COPY_ENGINE: tl.constexpr = False,
+):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
     This function performs a memory write operation by loading data from the current
@@ -1771,7 +1777,6 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases,
         src_ptr_val0 = tl.min(src_ptr_u64)
         # max_src_ptr = tl.max(src_ptr_u64, axis=0)
 
-
         # Infer element size from pointer type
         # src_ptr is a block of pointers with a specific element type (e.g., pointer<float32>)
         # The pointer dtype tells us the element type, which has a known size
@@ -1809,26 +1814,25 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases,
         # if from_rank == 1 and to_rank == 0:
         # if to_rank == 1:
         # if tl.max(size_bytes) == 0:
-            # tl.device_print("from_ptr ", from_ptr.block_shape)
-            # tl.device_print("stride_tm ", stride_tm)
-            # tl.device_print("stride_tn ", stride_tn)
-            # tl.device_print("stride_fm ", stride_fm)
-            # tl.device_print("stride_fn ", stride_fn)
-            # tl.device_print("src_stride ", src_stride)
-            # tl.device_print("dst_stride ", dst_stride)
+        # tl.device_print("from_ptr ", from_ptr.block_shape)
+        # tl.device_print("stride_tm ", stride_tm)
+        # tl.device_print("stride_tn ", stride_tn)
+        # tl.device_print("stride_fm ", stride_fm)
+        # tl.device_print("stride_fn ", stride_fn)
+        # tl.device_print("src_stride ", src_stride)
+        # tl.device_print("dst_stride ", dst_stride)
 
-            # tl.device_print("queue_ptr_u32 ", queue_ptr_u32)
-            # tl.device_print("dst_ptr_val (all) ", translated_to_ptr.to(tl.uint64))
-            # tl.device_print("dst_ptr_val ", dst_ptr_val)
-            # tl.device_print("dst_ptr_val (single) ", dst_ptr_val0)
-            # tl.device_print("src_ptr_u64", src_ptr_u64)
-            # tl.device_print("src_ptr_val ", src_ptr_val)
-            # tl.device_print("src_ptr_val (single) ", src_ptr_val0)
-            # tl.device_print("mask(axis=0): ", tl.sum(mask_int, axis=0))
-            # tl.device_print("mask: ", tl.sum(mask_int))
-            # tl.device_print("num strides: ", num_strides)
-            # tl.device_print("size_bytes per stride", size_bytes)
-
+        # tl.device_print("queue_ptr_u32 ", queue_ptr_u32)
+        # tl.device_print("dst_ptr_val (all) ", translated_to_ptr.to(tl.uint64))
+        # tl.device_print("dst_ptr_val ", dst_ptr_val)
+        # tl.device_print("dst_ptr_val (single) ", dst_ptr_val0)
+        # tl.device_print("src_ptr_u64", src_ptr_u64)
+        # tl.device_print("src_ptr_val ", src_ptr_val)
+        # tl.device_print("src_ptr_val (single) ", src_ptr_val0)
+        # tl.device_print("mask(axis=0): ", tl.sum(mask_int, axis=0))
+        # tl.device_print("mask: ", tl.sum(mask_int))
+        # tl.device_print("num strides: ", num_strides)
+        # tl.device_print("size_bytes per stride", size_bytes)
 
         command_in_bytes = 28
         # TODO wrap-around seems broken
@@ -1841,18 +1845,25 @@ def put(from_ptr, to_ptr, from_rank, to_rank, heap_bases,
             # if tl.program_id(axis=0) == 230:
             #     tl.device_print("required_bytes", required_bytes)
             # Acquire space
-            base = anvil.acquire(queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes)
+            base = anvil.acquire(
+                queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
+            )
 
             # Place command
             for stride in range(0, num_strides):
                 # slot_ptr_u32 = queue_ptr_u32 + (base // 4) + (stride * 7)
                 offset_bytes = base + (stride * command_in_bytes)
-                anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0 + (src_stride * stride), dst_ptr_val0 + (dst_stride * stride))
+                anvil.place_copy_packet(
+                    queue_ptr_u32,
+                    offset_bytes,
+                    size_bytes,
+                    src_ptr_val0 + (src_stride * stride),
+                    dst_ptr_val0 + (dst_stride * stride),
+                )
                 # anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
 
             # Submit command
             anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
-
 
 
 @triton.jit
@@ -1961,7 +1972,18 @@ def nontemporal_atomic_add(addr, value):
 
 
 @triton.jit
-def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None, scope=None, copy_engine_ctx=None, USE_COPY_ENGINE: tl.constexpr=False):
+def atomic_add(
+    pointer,
+    val,
+    from_rank,
+    to_rank,
+    heap_bases,
+    mask=None,
+    sem=None,
+    scope=None,
+    copy_engine_ctx=None,
+    USE_COPY_ENGINE: tl.constexpr = False,
+):
     """
     Performs an atomic add at the specified rank's memory location.
 
@@ -2008,7 +2030,9 @@ def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
 
         command_in_bytes = 32
         # Acquire space
-        base = anvil.acquire(queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes)
+        base = anvil.acquire(
+            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
+        )
 
         # Place command packet
         # slot_ptr_u32  = queue_ptr_u32 + (base // 4)
@@ -2016,8 +2040,6 @@ def atomic_add(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
-
-
 
 
 @triton.jit
