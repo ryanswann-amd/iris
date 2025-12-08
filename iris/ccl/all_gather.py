@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+
+"""
+All-gather collective communication primitive for Iris.
+Gathers tensors from all ranks and concatenates them along the last dimension.
+"""
+
+import triton
+import triton.language as tl
+import torch
+import iris
+from .config import Config
+
+
+@triton.jit()
+def chiplet_transform_chunked(pid, num_workgroups: tl.constexpr, num_xcds: tl.constexpr, chunk_size: tl.constexpr):
+    if pid > (num_workgroups // (num_xcds * chunk_size)) * (num_xcds * chunk_size):
+        return pid
+
+    local_pid = pid // num_xcds
+    chunk_idx = local_pid // chunk_size
+    pos_in_chunk = local_pid % chunk_size
+
+    xcd = pid % num_xcds
+    new_pid = chunk_idx * num_xcds * chunk_size + xcd * chunk_size + pos_in_chunk
+    return new_pid
+
+
+@triton.jit()
+def persistent_all_gather(
+    input_ptr,
+    output_ptr,
+    M,
+    N,
+    stride_in_m,
+    stride_in_n,
+    stride_out_m,
+    stride_out_n,
+    heap_bases: tl.tensor,
+    cur_rank: tl.constexpr,
+    world_size: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+    COMM_SMS: tl.constexpr,
+    NUM_XCDS: tl.constexpr,
+    CHUNK_SIZE: tl.constexpr,
+):
+    """
+    Persistent all-gather kernel.
+
+    Each rank sends its input tensor to all ranks, and all ranks receive
+    and concatenate all input tensors along dimension 0 (rows), matching
+    torch.distributed.all_gather_into_tensor behavior.
+
+    Args:
+        input_ptr: Pointer to input tensor (local rank's data to send) of shape (M, N)
+        output_ptr: Pointer to output tensor (will receive from all ranks) of shape (world_size * M, N)
+        M: Number of rows per rank (output will be world_size * M rows)
+        N: Number of columns
+        stride_in_m, stride_in_n: Strides for input tensor
+        stride_out_m, stride_out_n: Strides for output tensor
+        heap_bases: Heap base pointers for all ranks
+        cur_rank: Current rank
+        world_size: Total number of ranks
+        BLOCK_SIZE_M, BLOCK_SIZE_N: Block sizes for tiling
+        GROUP_SIZE_M: Group size for M dimension tiling
+        COMM_SMS: Number of SMs for communication
+        NUM_XCDS: Number of XCDs
+        CHUNK_SIZE: Chunk size for chiplet transform
+    """
+    pid = tl.program_id(0)
+
+    if NUM_XCDS != 1:
+        pid = chiplet_transform_chunked(pid, COMM_SMS, NUM_XCDS, CHUNK_SIZE)
+
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    total_tiles = num_pid_m * num_pid_n
+
+    for tile_id in range(pid, total_tiles, COMM_SMS):
+        num_pid_in_group = GROUP_SIZE_M * num_pid_n
+        group_id = tile_id // num_pid_in_group
+        first_pid_m = group_id * GROUP_SIZE_M
+        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
+        pid_n = (tile_id % num_pid_in_group) // group_size_m
+
+        tl.assume(pid_m >= 0)
+        tl.assume(pid_n >= 0)
+
+        # Compute row and column indices for input tensor
+        rm_base = pid_m * BLOCK_SIZE_M
+        rn_base = pid_n * BLOCK_SIZE_N
+        rm_input = rm_base + tl.arange(0, BLOCK_SIZE_M)
+        rn = rn_base + tl.arange(0, BLOCK_SIZE_N)
+        rm_input = tl.max_contiguous(tl.multiple_of(rm_input, BLOCK_SIZE_M), BLOCK_SIZE_M)
+        rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+        input_mask = (rm_input[:, None] < M) & (rn[None, :] < N)
+
+        # Pre-compute base offsets for input
+        input_base_m = rm_input[:, None] * stride_in_m
+        input_base_n = rn[None, :] * stride_in_n
+
+        # Process all ranks
+        # For each rank, copy its input chunk to the corresponding output location
+        # on all ranks (including the source rank itself)
+        # Output concatenates along dimension 0: output[source_rank * M : (source_rank + 1) * M, :]
+        for source_rank in range(world_size):
+            # Compute output row indices: offset by source_rank * M
+            rm_output = rm_input + source_rank * M
+            # Output mask: check bounds for output tensor (world_size * M rows, N cols)
+            output_mask = (rm_output[:, None] < (world_size * M)) & (rn[None, :] < N)
+            
+            # Input offset: read from source_rank's input tensor
+            input_offset = input_base_m + input_base_n
+            input_ptr_source = input_ptr + input_offset
+            input_ptr_source = tl.multiple_of(input_ptr_source, (BLOCK_SIZE_M, BLOCK_SIZE_N))
+
+            # Output offset: write to output at rows [source_rank * M : (source_rank + 1) * M]
+            # This is the same location on all ranks
+            output_base_m = rm_output[:, None] * stride_out_m
+            output_base_n = rn[None, :] * stride_out_n
+            output_offset = output_base_m + output_base_n
+            output_ptr_target = output_ptr + output_offset
+            output_ptr_target = tl.multiple_of(output_ptr_target, (BLOCK_SIZE_M, BLOCK_SIZE_N))
+
+            # Combine masks: must be valid in both input and output
+            combined_mask = input_mask & output_mask
+
+            if source_rank == cur_rank:
+                # Local copy: use direct load/store
+                data = tl.load(input_ptr_source, mask=combined_mask)
+                tl.store(output_ptr_target, data, mask=combined_mask, cache_modifier=".wt")
+            else:
+                # Remote copy: use iris.load to read from source_rank, then store locally
+                # Note: iris.put reads from local memory, so we can't use it for remote reads
+                data = iris.load(
+                    input_ptr_source,
+                    cur_rank,
+                    source_rank,
+                    heap_bases,
+                    mask=combined_mask,
+                )
+                tl.store(output_ptr_target, data, mask=combined_mask, cache_modifier=".wt")
+
+
+def all_gather(output_tensor, input_tensor, shmem, config=None, async_op=False):
+    """
+    Internal all-gather collective operation implementation.
+
+    This function is called internally by shmem.ccl.all_gather().
+    Users should use the Iris instance method instead:
+        >>> shmem.ccl.all_gather(output_tensor, input_tensor)
+
+    Each rank sends its input tensor to all ranks, and all ranks receive
+    and concatenate all input tensors along dimension 0 (rows), matching
+    torch.distributed.all_gather_into_tensor behavior.
+
+    Args:
+        output_tensor: Output tensor of shape (world_size * M, N) - will contain concatenated inputs
+        input_tensor: Input tensor of shape (M, N) - local rank's data to send
+        shmem: Iris shmem context
+        config: Config instance with kernel parameters (default: None).
+                If None, uses default Config values.
+        async_op: If False, performs a barrier at the end. If True, returns immediately.
+                  Default: False.
+    """
+    # Use provided config or create default one
+    if config is None:
+        config = Config()
+
+    rank = shmem.get_rank()
+    world_size = shmem.get_num_ranks()
+
+    M, N = input_tensor.shape[:2]
+    expected_output_shape = (world_size * M, N)
+    
+    if output_tensor.shape[:2] != expected_output_shape:
+        raise ValueError(
+            f"Output tensor shape {output_tensor.shape[:2]} does not match expected shape {expected_output_shape}. "
+            f"Expected (world_size * M, N) = ({world_size * M}, {N})"
+        )
+
+    stride_in_m, stride_in_n = input_tensor.stride(0), input_tensor.stride(1)
+    stride_out_m, stride_out_n = output_tensor.stride(0), output_tensor.stride(1)
+
+    heap_bases = shmem.get_heap_bases()
+
+    persistent_all_gather[(config.comm_sms,)](
+        input_tensor,
+        output_tensor,
+        M,
+        N,
+        stride_in_m,
+        stride_in_n,
+        stride_out_m,
+        stride_out_n,
+        heap_bases,
+        rank,
+        world_size,
+        config.block_size_m,
+        config.block_size_n,
+        config.swizzle_size,
+        config.comm_sms,
+        config.num_xcds,
+        config.chunk_size,
+    )
+
+    if not async_op:
+        shmem.barrier()
+

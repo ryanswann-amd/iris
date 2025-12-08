@@ -3,9 +3,9 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 """
-Benchmark for iris-ccl all-to-all collective operation.
+Benchmark for iris-ccl all-gather collective operation.
 
-This benchmark showcases the all-to-all collective and reports achieved bandwidth.
+This benchmark showcases the all-gather collective and reports achieved bandwidth.
 """
 
 import torch
@@ -33,11 +33,11 @@ random.seed(123)
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Benchmark all-to-all collective operation.",
+        description="Benchmark all-gather collective operation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-m", type=int, default=16384, help="Number of rows in tensors")
-    parser.add_argument("-n", type=int, default=16384, help="Number of columns in tensors")
+    parser.add_argument("-m", type=int, default=16384, help="Number of rows in input tensors")
+    parser.add_argument("-n", type=int, default=16384, help="Number of columns in input tensors")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("-v", "--validate", action="store_true", help="Enable validation mode")
     parser.add_argument("-b", "--benchmark", action="store_true", help="Enable benchmarking mode")
@@ -55,7 +55,8 @@ def parse_args():
         help="Output file",
     )
     parser.add_argument("--heap_size", type=int, default=1 << 34, help="Iris heap size")
-    parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for all-to-all kernel")
+    parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for all-gather kernel")
+    parser.add_argument("--benchmark_rccl", action="store_true", help="Also benchmark PyTorch RCCL (all_gather_into_tensor) for comparison")
     parser.add_argument("--block_size_m", type=int, default=None, help="Block size for M dimension tiling")
     parser.add_argument("--block_size_n", type=int, default=None, help="Block size for N dimension tiling")
     parser.add_argument("--swizzle_size", type=int, default=None, help="Number of tiles to swizzle together")
@@ -131,31 +132,27 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     json_writer.add_field("num_xcds", config.num_xcds)
     json_writer.add_field("use_gluon", config.use_gluon)
 
-    # Create input and output tensor lists for all-to-all
-    # Each rank sends a different tensor to each rank
-    # Create concatenated input tensor: shape (M, N * world_size)
-    # Each chunk of N columns corresponds to data sent to that rank
+    # Create input and output tensors for all-gather
+    # Input: each rank has (M, N) tensor
+    # Output: (world_size * M, N) - concatenated along dimension 0
     # Note: Must use shmem.zeros() to allocate on Iris symmetric heap for iris.put() compatibility
-    input_concat = shmem.zeros((M, N * world_size), dtype=datatype)
-    output_concat = shmem.zeros((M, N * world_size), dtype=datatype)
-    expected_concat = shmem.zeros((M, N * world_size), dtype=datatype)
+    input_tensor = shmem.zeros((M, N), dtype=datatype)
+    output_tensor = shmem.zeros((world_size * M, N), dtype=datatype)
+    expected_tensor = shmem.zeros((world_size * M, N), dtype=datatype)
 
-    # Determine which ranks to communicate with
-    comm_ranks = list(range(world_size))
+    # Fill input with deterministic values
+    val = float(rank + 1)
+    input_tensor.fill_(val)
 
-    for target_rank in comm_ranks:
-        # Input: rank sends data at position (target_rank * N)
-        val = float(rank * 1000 + target_rank)
-        input_concat[:, target_rank * N : (target_rank + 1) * N] = val
-
-        # Expected: receive from target_rank at position (target_rank * N)
-        expected_val = float(target_rank * 1000 + rank)
-        expected_concat[:, target_rank * N : (target_rank + 1) * N] = expected_val
+    # Expected output: each rank's input appears at output[rank * M : (rank + 1) * M, :]
+    for r in range(world_size):
+        expected_val = float(r + 1)
+        expected_tensor[r * M : (r + 1) * M, :] = expected_val
 
     comm_stream = torch.cuda.Stream()
 
     kernel_timing = {
-        "all_to_all": {
+        "all_gather": {
             "start_event": torch.cuda.Event(enable_timing=True),
             "end_event": torch.cuda.Event(enable_timing=True),
             "ms": 0,
@@ -167,20 +164,20 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         nonlocal kernel_timing
         shmem.barrier()
 
-        torch.cuda.nvtx.range_push("All-to-All")
+        torch.cuda.nvtx.range_push("All-Gather")
         with torch.cuda.stream(comm_stream):
-            kernel_timing["all_to_all"]["start_event"].record()
-            shmem.ccl.all_to_all(output_concat, input_concat, config=config, async_op=False)
-            kernel_timing["all_to_all"]["end_event"].record()
-            kernel_timing["all_to_all"]["experiments"] += 1
+            kernel_timing["all_gather"]["start_event"].record()
+            shmem.ccl.all_gather(output_tensor, input_tensor, config=config, async_op=False)
+            kernel_timing["all_gather"]["end_event"].record()
+            kernel_timing["all_gather"]["experiments"] += 1
         torch.cuda.nvtx.range_pop()
 
         # Synchronize before querying event timing
         shmem.barrier()
 
         # Update timing
-        ms = kernel_timing["all_to_all"]["start_event"].elapsed_time(kernel_timing["all_to_all"]["end_event"])
-        kernel_timing["all_to_all"]["ms"] += ms
+        ms = kernel_timing["all_gather"]["start_event"].elapsed_time(kernel_timing["all_gather"]["end_event"])
+        kernel_timing["all_gather"]["ms"] += ms
 
     # Synchronize across all GPUs
     shmem.barrier()
@@ -189,13 +186,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         shmem.info("Validating...")
 
         # Reset output before validation
-        output_concat.zero_()
+        output_tensor.zero_()
         shmem.barrier()
 
         # Reinitialize input data
-        for target_rank in comm_ranks:
-            val = float(rank * 1000 + target_rank)
-            input_concat[:, target_rank * N : (target_rank + 1) * N] = val
+        val = float(rank + 1)
+        input_tensor.fill_(val)
         shmem.barrier()
 
         run_experiment()
@@ -203,15 +199,15 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         shmem.barrier()
 
         atol = 1e-3 if datatype == torch.float16 else 1e-5
-        success = torch.allclose(output_concat, expected_concat, atol=atol)
+        success = torch.allclose(output_tensor, expected_tensor, atol=atol)
         if not success:
-            max_diff = torch.abs(output_concat - expected_concat).max().item()
+            max_diff = torch.abs(output_tensor - expected_tensor).max().item()
             shmem.error(f"Rank {rank}: Validation failed, max diff: {max_diff}")
 
         if success:
-            shmem.info("All-to-all validation passed!")
+            shmem.info("All-gather validation passed!")
         else:
-            shmem.error("All-to-all validation failed!")
+            shmem.error("All-gather validation failed!")
 
         json_writer.add_field("success", success)
 
@@ -223,24 +219,25 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         run_experiment()
         shmem.barrier()
 
-        for k in ["all_to_all"]:
+        for k in ["all_gather"]:
             kernel_timing[k]["ms"] = 0
             kernel_timing[k]["experiments"] = 0
 
         # Reset output before benchmarking
-        output_concat.zero_()
+        output_tensor.zero_()
         shmem.barrier()
 
         # Reinitialize input data
-        for target_rank in comm_ranks:
-            val = float(rank * 1000 + target_rank)
-            input_concat[:, target_rank * N : (target_rank + 1) * N] = val
+        val = float(rank + 1)
+        input_tensor.fill_(val)
         shmem.barrier()
 
         shmem.info("Benchmarking...")
 
         # Calculate bandwidth
-        # In all-to-all, each rank sends and receives world_size tensors
+        # In all-gather, each rank sends its (M, N) tensor to all ranks
+        # Total bytes sent = (world_size - 1) * M * N * element_size (excluding local copy)
+        # Total bytes received = (world_size - 1) * M * N * element_size
         # Total bytes = (world_size - 1) * M * N * element_size
         element_size = torch.tensor([], dtype=datatype).element_size()
         total_bytes = (world_size - 1) * M * N * element_size
@@ -248,11 +245,11 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
         triton_ms = iris.do_bench(run_experiment, shmem.barrier)
         bandwidth_gbps = total_bytes_gb / (
-            (kernel_timing["all_to_all"]["ms"] / kernel_timing["all_to_all"]["experiments"]) * 1e-3
+            (kernel_timing["all_gather"]["ms"] / kernel_timing["all_gather"]["experiments"]) * 1e-3
         )
 
         shmem.info(
-            f"All-to-all (M={M}, N={N}, world_size={world_size}, dtype={args['datatype']}): "
+            f"All-gather (M={M}, N={N}, world_size={world_size}, dtype={args['datatype']}): "
             f"{triton_ms:.3f} ms, {bandwidth_gbps:.3f} GB/s"
         )
 
@@ -261,11 +258,67 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         json_writer.add_field("total_bytes", total_bytes)
         json_writer.add_field("total_bytes_gb", total_bytes_gb)
         json_writer.add_field(
-            "all_to_all_ms", kernel_timing["all_to_all"]["ms"] / kernel_timing["all_to_all"]["experiments"]
+            "all_gather_ms", kernel_timing["all_gather"]["ms"] / kernel_timing["all_gather"]["experiments"]
         )
-        json_writer.add_field("all_to_all_experiments", kernel_timing["all_to_all"]["experiments"])
+        json_writer.add_field("all_gather_experiments", kernel_timing["all_gather"]["experiments"])
 
         # Wait for all to finish benchmarking
+        shmem.barrier()
+
+    # Benchmark RCCL (PyTorch all_gather_into_tensor) for comparison
+    if args.get("benchmark_rccl", False):
+        shmem.info("Benchmarking PyTorch RCCL (all_gather_into_tensor)...")
+
+        # Create PyTorch tensors (not on Iris heap)
+        pytorch_input = torch.zeros(M, N, dtype=datatype, device=f"cuda:{rank}")
+        pytorch_input.fill_(float(rank + 1))
+        pytorch_output = torch.zeros(world_size * M, N, dtype=datatype, device=f"cuda:{rank}")
+
+        # Warmup
+        for _ in range(10):
+            dist.all_gather_into_tensor(pytorch_output, pytorch_input)
+        torch.cuda.synchronize()
+        dist.barrier()
+
+        # Benchmark
+        pytorch_output.zero_()
+        pytorch_input.fill_(float(rank + 1))
+        dist.barrier()
+
+        rccl_start = torch.cuda.Event(enable_timing=True)
+        rccl_end = torch.cuda.Event(enable_timing=True)
+
+        num_iterations = 126  # Match Iris benchmark iterations
+        dist.barrier()
+        rccl_start.record()
+        for _ in range(num_iterations):
+            dist.all_gather_into_tensor(pytorch_output, pytorch_input)
+        rccl_end.record()
+        torch.cuda.synchronize()
+        dist.barrier()
+
+        rccl_ms = rccl_start.elapsed_time(rccl_end) / num_iterations
+        element_size = torch.tensor([], dtype=datatype).element_size()
+        total_bytes = (world_size - 1) * M * N * element_size
+        total_bytes_gb = total_bytes / (1024**3)
+        rccl_bandwidth_gbps = total_bytes_gb / (rccl_ms * 1e-3)
+
+        shmem.info(
+            f"RCCL all_gather_into_tensor (M={M}, N={N}, world_size={world_size}, dtype={args['datatype']}): "
+            f"{rccl_ms:.3f} ms, {rccl_bandwidth_gbps:.3f} GB/s"
+        )
+
+        if args["benchmark"]:
+            # Calculate performance ratio
+            iris_bandwidth = bandwidth_gbps
+            rccl_ratio = (iris_bandwidth / rccl_bandwidth_gbps) * 100 if rccl_bandwidth_gbps > 0 else 0
+            shmem.info(f"Performance ratio (Iris/RCCL): {rccl_ratio:.1f}%")
+
+            json_writer.add_field("rccl_bandwidth_gbps", rccl_bandwidth_gbps)
+            json_writer.add_field("rccl_ms", rccl_ms)
+            json_writer.add_field("rccl_ratio_percent", rccl_ratio)
+
+        # Wait for all to finish RCCL benchmarking
         shmem.barrier()
 
     if rank == 0:
@@ -291,3 +344,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
