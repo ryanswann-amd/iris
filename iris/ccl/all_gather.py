@@ -171,6 +171,14 @@ def all_gather(output_tensor, input_tensor, shmem, config=None, async_op=False):
     if config is None:
         config = Config()
 
+    # Check for unsupported options
+    if config.use_gluon:
+        raise ValueError(
+            "all_gather does not support use_gluon=True. "
+            "Gluon implementation is not available for all_gather. "
+            "Use default config (use_gluon=False)."
+        )
+
     rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
 

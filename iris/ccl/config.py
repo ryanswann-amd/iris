@@ -38,6 +38,8 @@ class Config:
         all_reduce_num_rings: Number of concurrent rings to form in ring-based all-reduce (default: 1)
         all_reduce_ring_slice_n: Column slice size for ring reduce-scatter/all-gather
                                  (default: auto-set to block_size_n // world_size at runtime)
+        reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot")
+                                Only "two_shot" is supported
 
     Example:
         >>> import iris
@@ -68,6 +70,7 @@ class Config:
     all_reduce_distribution: int = 0
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
+    reduce_scatter_variant: str = "two_shot"
 
     def __post_init__(self):
         """Validate and auto-detect num_xcds if not set."""
@@ -109,3 +112,9 @@ class Config:
             )
         if self.all_reduce_ring_slice_n & (self.all_reduce_ring_slice_n - 1):
             raise ValueError(f"all_reduce_ring_slice_n must be a power of two, got {self.all_reduce_ring_slice_n}")
+        
+        # Validate reduce_scatter_variant
+        if self.reduce_scatter_variant != "two_shot":
+            raise ValueError(
+                f"reduce_scatter_variant must be 'two_shot', got '{self.reduce_scatter_variant}'"
+            )

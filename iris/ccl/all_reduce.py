@@ -669,6 +669,14 @@ def all_reduce(
     if config is None:
         config = Config()
 
+    # Check for unsupported options
+    if config.use_gluon:
+        raise ValueError(
+            "all_reduce does not support use_gluon=True. "
+            "Gluon implementation is not available for all_reduce. "
+            "Use default config (use_gluon=False)."
+        )
+
     rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
     M, N = input_tensor.shape[:2]
