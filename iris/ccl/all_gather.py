@@ -112,7 +112,7 @@ def persistent_all_gather(
             rm_output = rm_input + source_rank * M
             # Output mask: check bounds for output tensor (world_size * M rows, N cols)
             output_mask = (rm_output[:, None] < (world_size * M)) & (rn[None, :] < N)
-            
+
             # Input offset: read from source_rank's input tensor
             input_offset = input_base_m + input_base_n
             input_ptr_source = input_ptr + input_offset
@@ -176,7 +176,7 @@ def all_gather(output_tensor, input_tensor, shmem, config=None, async_op=False):
 
     M, N = input_tensor.shape[:2]
     expected_output_shape = (world_size * M, N)
-    
+
     if output_tensor.shape[:2] != expected_output_shape:
         raise ValueError(
             f"Output tensor shape {output_tensor.shape[:2]} does not match expected shape {expected_output_shape}. "
@@ -210,4 +210,3 @@ def all_gather(output_tensor, input_tensor, shmem, config=None, async_op=False):
 
     if not async_op:
         shmem.barrier()
-

@@ -86,4 +86,3 @@ def test_all_gather(dtype, M, N):
         import gc
 
         gc.collect()
-

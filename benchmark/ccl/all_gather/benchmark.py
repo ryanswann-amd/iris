@@ -56,7 +56,11 @@ def parse_args():
     )
     parser.add_argument("--heap_size", type=int, default=1 << 34, help="Iris heap size")
     parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for all-gather kernel")
-    parser.add_argument("--benchmark_rccl", action="store_true", help="Also benchmark PyTorch RCCL (all_gather_into_tensor) for comparison")
+    parser.add_argument(
+        "--benchmark_rccl",
+        action="store_true",
+        help="Also benchmark PyTorch RCCL (all_gather_into_tensor) for comparison",
+    )
     parser.add_argument("--block_size_m", type=int, default=None, help="Block size for M dimension tiling")
     parser.add_argument("--block_size_n", type=int, default=None, help="Block size for N dimension tiling")
     parser.add_argument("--swizzle_size", type=int, default=None, help="Number of tiles to swizzle together")
@@ -344,4 +348,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

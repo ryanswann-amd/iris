@@ -162,58 +162,58 @@ def persistent_all_to_all(
         # Each target_rank may have different input data, so we must load separately
         for target_rank in range(world_size):
             if target_rank != cur_rank:
-                    # Traffic shaping: Process tile in 64x64 sub-blocks
-                    # Loop over all sub-blocks to ensure complete coverage
-                    for sub_block_id in range(total_sub_blocks):
-                        # Calculate sub-block position within the tile
-                        sub_block_m = (sub_block_id // num_sub_blocks_n) * SUB_BLOCK_M
-                        sub_block_n = (sub_block_id % num_sub_blocks_n) * SUB_BLOCK_N
+                # Traffic shaping: Process tile in 64x64 sub-blocks
+                # Loop over all sub-blocks to ensure complete coverage
+                for sub_block_id in range(total_sub_blocks):
+                    # Calculate sub-block position within the tile
+                    sub_block_m = (sub_block_id // num_sub_blocks_n) * SUB_BLOCK_M
+                    sub_block_n = (sub_block_id % num_sub_blocks_n) * SUB_BLOCK_N
 
-                        # Compute row and column indices for this 64x64 sub-block
-                        # Start from tile base and add sub-block offset, then create arrays
-                        sub_rm_base = tile_base_m + sub_block_m
-                        sub_rn_base = tile_base_n + sub_block_n
-                        sub_rm = sub_rm_base + tl.arange(0, SUB_BLOCK_M)
-                        sub_rn = sub_rn_base + tl.arange(0, SUB_BLOCK_N)
+                    # Compute row and column indices for this 64x64 sub-block
+                    # Start from tile base and add sub-block offset, then create arrays
+                    sub_rm_base = tile_base_m + sub_block_m
+                    sub_rn_base = tile_base_n + sub_block_n
+                    sub_rm = sub_rm_base + tl.arange(0, SUB_BLOCK_M)
+                    sub_rn = sub_rn_base + tl.arange(0, SUB_BLOCK_N)
 
-                        # Create mask for this sub-block
-                        sub_mask = (
-                            (sub_rm[:, None] < M)
-                            & (sub_rn[None, :] < N)
-                            & (sub_rm[:, None] < (tile_base_m + BLOCK_SIZE_M))
-                            & (sub_rn[None, :] < (tile_base_n + BLOCK_SIZE_N))
-                        )
+                    # Create mask for this sub-block
+                    sub_mask = (
+                        (sub_rm[:, None] < M)
+                        & (sub_rn[None, :] < N)
+                        & (sub_rm[:, None] < (tile_base_m + BLOCK_SIZE_M))
+                        & (sub_rn[None, :] < (tile_base_n + BLOCK_SIZE_N))
+                    )
 
-                        # Compute offsets for this sub-block
-                        sub_input_base_m = sub_rm[:, None] * stride_in_m
-                        sub_input_base_n = sub_rn[None, :] * stride_in_n
-                        sub_output_base_m = sub_rm[:, None] * stride_out_m
-                        sub_output_base_n = sub_rn[None, :] * stride_out_n
+                    # Compute offsets for this sub-block
+                    sub_input_base_m = sub_rm[:, None] * stride_in_m
+                    sub_input_base_n = sub_rn[None, :] * stride_in_n
+                    sub_output_base_m = sub_rm[:, None] * stride_out_m
+                    sub_output_base_n = sub_rn[None, :] * stride_out_n
 
-                        # Compute input pointer for this target_rank's chunk (sub-block)
-                        sub_input_offset = sub_input_base_m + (sub_input_base_n + target_rank * N * stride_in_n)
-                        sub_input_ptr_send = input_ptr + sub_input_offset
-                        sub_input_ptr_send = tl.multiple_of(sub_input_ptr_send, (SUB_BLOCK_M, SUB_BLOCK_N))
+                    # Compute input pointer for this target_rank's chunk (sub-block)
+                    sub_input_offset = sub_input_base_m + (sub_input_base_n + target_rank * N * stride_in_n)
+                    sub_input_ptr_send = input_ptr + sub_input_offset
+                    sub_input_ptr_send = tl.multiple_of(sub_input_ptr_send, (SUB_BLOCK_M, SUB_BLOCK_N))
 
-                        # Compute output pointer (sub-block)
-                        sub_output_offset = sub_output_base_m + (sub_output_base_n + cur_rank * N * stride_out_n)
-                        sub_output_ptr_remote = output_ptr + sub_output_offset
-                        sub_output_ptr_remote = tl.multiple_of(sub_output_ptr_remote, (SUB_BLOCK_M, SUB_BLOCK_N))
+                    # Compute output pointer (sub-block)
+                    sub_output_offset = sub_output_base_m + (sub_output_base_n + cur_rank * N * stride_out_n)
+                    sub_output_ptr_remote = output_ptr + sub_output_offset
+                    sub_output_ptr_remote = tl.multiple_of(sub_output_ptr_remote, (SUB_BLOCK_M, SUB_BLOCK_N))
 
-                        # Load data chunk for this target rank (64x64 sub-block)
-                        sub_data = tl.load(sub_input_ptr_send, mask=sub_mask)
+                    # Load data chunk for this target rank (64x64 sub-block)
+                    sub_data = tl.load(sub_input_ptr_send, mask=sub_mask)
 
-                        # Scatter to target rank's output
-                        # Processing in 64x64 sub-blocks creates better memory access patterns
-                        # that allow hardware to distribute traffic across XGMI links
-                        iris.store(
-                            sub_output_ptr_remote,
-                            sub_data,
-                            cur_rank,
-                            target_rank,
-                            heap_bases,
-                            mask=sub_mask,
-                        )
+                    # Scatter to target rank's output
+                    # Processing in 64x64 sub-blocks creates better memory access patterns
+                    # that allow hardware to distribute traffic across XGMI links
+                    iris.store(
+                        sub_output_ptr_remote,
+                        sub_data,
+                        cur_rank,
+                        target_rank,
+                        heap_bases,
+                        mask=sub_mask,
+                    )
 
 
 # Gluon implementation with traffic shaping based on micro-benchmark algorithm
