@@ -90,60 +90,63 @@ def persistent_all_gather(
         tl.assume(pid_m >= 0)
         tl.assume(pid_n >= 0)
 
-        # Compute row and column indices for input tensor
+        # Compute local row and column indices for input tensor
         rm_base = pid_m * BLOCK_SIZE_M
         rn_base = pid_n * BLOCK_SIZE_N
         rm_input = rm_base + tl.arange(0, BLOCK_SIZE_M)
         rn = rn_base + tl.arange(0, BLOCK_SIZE_N)
         rm_input = tl.max_contiguous(tl.multiple_of(rm_input, BLOCK_SIZE_M), BLOCK_SIZE_M)
         rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+        
+        # Mask for local input bounds
         input_mask = (rm_input[:, None] < M) & (rn[None, :] < N)
 
-        # Pre-compute base offsets for input
+        # Compute input offset and load local shard data once
+        # Each rank loads its own input data and then broadcasts it to all ranks
         input_base_m = rm_input[:, None] * stride_in_m
         input_base_n = rn[None, :] * stride_in_n
+        input_offset = input_base_m + input_base_n
+        input_ptr_source = input_ptr + input_offset
+        input_ptr_source = tl.multiple_of(input_ptr_source, (BLOCK_SIZE_M, BLOCK_SIZE_N))
+        
+        # Load local input data once for this tile
+        data = tl.load(input_ptr_source, mask=input_mask, other=0.0)
 
-        # Process all ranks
-        # For each rank, copy its input chunk to the corresponding output location
-        # on all ranks (including the source rank itself)
-        # Output concatenates along dimension 0: output[source_rank * M : (source_rank + 1) * M, :]
-        for source_rank in range(world_size):
-            # Compute output row indices: offset by source_rank * M
-            rm_output = rm_input + source_rank * M
+        # Send local shard data to all destination ranks
+        # Each rank's input goes to output[cur_rank * M : (cur_rank + 1) * M, :] on all ranks
+        for rank in range(world_size):
+            # Compute global output row indices: offset by cur_rank * M
+            # This rank's data should be placed at output[cur_rank * M : (cur_rank + 1) * M, :]
+            rm_output = rm_input + cur_rank * M
+            
             # Output mask: check bounds for output tensor (world_size * M rows, N cols)
             output_mask = (rm_output[:, None] < (world_size * M)) & (rn[None, :] < N)
+            
+            # Combine masks: must be valid in both input and output
+            combined_mask = input_mask & output_mask
 
-            # Input offset: read from source_rank's input tensor
-            input_offset = input_base_m + input_base_n
-            input_ptr_source = input_ptr + input_offset
-            input_ptr_source = tl.multiple_of(input_ptr_source, (BLOCK_SIZE_M, BLOCK_SIZE_N))
-
-            # Output offset: write to output at rows [source_rank * M : (source_rank + 1) * M]
-            # This is the same location on all ranks
+            # Compute output offset: write to output at rows [cur_rank * M : (cur_rank + 1) * M]
+            # This is the same location on all destination ranks
             output_base_m = rm_output[:, None] * stride_out_m
             output_base_n = rn[None, :] * stride_out_n
             output_offset = output_base_m + output_base_n
             output_ptr_target = output_ptr + output_offset
             output_ptr_target = tl.multiple_of(output_ptr_target, (BLOCK_SIZE_M, BLOCK_SIZE_N))
 
-            # Combine masks: must be valid in both input and output
-            combined_mask = input_mask & output_mask
-
-            if source_rank == cur_rank:
-                # Local copy: use direct load/store
-                data = tl.load(input_ptr_source, mask=combined_mask)
+            if rank == cur_rank:
+                # Local destination: use direct store
                 tl.store(output_ptr_target, data, mask=combined_mask, cache_modifier=".wt")
             else:
-                # Remote copy: use iris.load to read from source_rank, then store locally
-                # Note: iris.put reads from local memory, so we can't use it for remote reads
-                data = iris.load(
+                # Remote destination: use iris.put to send from local source to remote destination
+                # from_ptr: local input source, to_ptr: remote output destination
+                iris.put(
                     input_ptr_source,
+                    output_ptr_target,
                     cur_rank,
-                    source_rank,
+                    rank,
                     heap_bases,
                     mask=combined_mask,
                 )
-                tl.store(output_ptr_target, data, mask=combined_mask, cache_modifier=".wt")
 
 
 def all_gather(output_tensor, input_tensor, shmem, config=None, async_op=False):
