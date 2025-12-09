@@ -48,9 +48,14 @@ def parse_args():
     )
     parser.add_argument("--heap_size", type=int, default=1 << 34, help="Iris heap size")
     parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for all-reduce kernel")
-    parser.add_argument("--block_size_m", type=int, default=128, help="Block size for M dimension tiling")
-    parser.add_argument("--block_size_n", type=int, default=128, help="Block size for N dimension tiling")
-    parser.add_argument("--swizzle_size", type=int, default=1, help="Number of tiles to swizzle together")
+    parser.add_argument(
+        "--benchmark_rccl",
+        action="store_true",
+        help="Also benchmark PyTorch RCCL (all_reduce) for comparison",
+    )
+    parser.add_argument("--block_size_m", type=int, default=64, help="Block size for M dimension tiling")
+    parser.add_argument("--block_size_n", type=int, default=64, help="Block size for N dimension tiling")
+    parser.add_argument("--swizzle_size", type=int, default=4, help="Number of tiles to swizzle together")
     parser.add_argument("--num_xcds", type=int, default=None, help="Number of XCDs (auto-detected if not set)")
     parser.add_argument("-r", "--num_ranks", type=int, default=8, help="Number of ranks/processes")
     parser.add_argument(
@@ -298,6 +303,62 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         json_writer.add_field("all_reduce_experiments", kernel_timing["all_reduce"]["experiments"])
 
         # Wait for all to finish benchmarking
+        shmem.barrier()
+
+    # Benchmark RCCL (PyTorch all_reduce) for comparison
+    if args.get("benchmark_rccl", False):
+        shmem.info("Benchmarking PyTorch RCCL (all_reduce)...")
+
+        # Create PyTorch tensors (not on Iris heap)
+        pytorch_tensor = torch.zeros(M, N, dtype=datatype, device=f"cuda:{rank}")
+        pytorch_tensor.fill_(float(rank + 1))
+
+        # Warmup
+        for _ in range(10):
+            dist.all_reduce(pytorch_tensor, op=dist.ReduceOp.SUM)
+        torch.cuda.synchronize()
+        dist.barrier()
+
+        # Benchmark
+        pytorch_tensor.fill_(float(rank + 1))
+        dist.barrier()
+
+        rccl_start = torch.cuda.Event(enable_timing=True)
+        rccl_end = torch.cuda.Event(enable_timing=True)
+
+        num_iterations = 126  # Match Iris benchmark iterations
+        dist.barrier()
+        rccl_start.record()
+        for _ in range(num_iterations):
+            dist.all_reduce(pytorch_tensor, op=dist.ReduceOp.SUM)
+        rccl_end.record()
+        torch.cuda.synchronize()
+        dist.barrier()
+
+        rccl_ms = rccl_start.elapsed_time(rccl_end) / num_iterations
+        element_size = torch.tensor([], dtype=datatype).element_size()
+        # RCCL all-reduce: same bandwidth calculation as Iris
+        # All-reduce moves 2 * (world_size - 1) / world_size * data_size bytes
+        total_bytes = M * N * element_size * (2 * (world_size - 1)) / world_size
+        total_bytes_gb = total_bytes / (1024**3)
+        rccl_bandwidth_gbps = total_bytes_gb / (rccl_ms * 1e-3)
+
+        shmem.info(
+            f"RCCL all_reduce (M={M}, N={N}, world_size={world_size}, dtype={args['datatype']}): "
+            f"{rccl_ms:.3f} ms, {rccl_bandwidth_gbps:.3f} GB/s"
+        )
+
+        if args["benchmark"]:
+            # Calculate performance ratio
+            iris_bandwidth = bandwidth_gbps
+            rccl_ratio = (iris_bandwidth / rccl_bandwidth_gbps) * 100 if rccl_bandwidth_gbps > 0 else 0
+            shmem.info(f"Performance ratio (Iris/RCCL): {rccl_ratio:.1f}%")
+
+            json_writer.add_field("rccl_bandwidth_gbps", rccl_bandwidth_gbps)
+            json_writer.add_field("rccl_ms", rccl_ms)
+            json_writer.add_field("rccl_ratio_percent", rccl_ratio)
+
+        # Wait for all to finish RCCL benchmarking
         shmem.barrier()
 
     if rank == 0:
