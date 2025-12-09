@@ -47,16 +47,16 @@ def parse_args():
         help="Output file",
     )
     parser.add_argument("--heap_size", type=int, default=1 << 34, help="Iris heap size")
-    parser.add_argument("--comm_sms", type=int, default=32, help="Number of SMs for all-reduce kernel")
-    parser.add_argument("--block_size_m", type=int, default=None, help="Block size for M dimension tiling")
-    parser.add_argument("--block_size_n", type=int, default=None, help="Block size for N dimension tiling")
-    parser.add_argument("--swizzle_size", type=int, default=None, help="Number of tiles to swizzle together")
+    parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for all-reduce kernel")
+    parser.add_argument("--block_size_m", type=int, default=128, help="Block size for M dimension tiling")
+    parser.add_argument("--block_size_n", type=int, default=128, help="Block size for N dimension tiling")
+    parser.add_argument("--swizzle_size", type=int, default=1, help="Number of tiles to swizzle together")
     parser.add_argument("--num_xcds", type=int, default=None, help="Number of XCDs (auto-detected if not set)")
     parser.add_argument("-r", "--num_ranks", type=int, default=8, help="Number of ranks/processes")
     parser.add_argument(
         "--variant",
         type=str,
-        default="atomic",
+        default="two_shot",
         choices=["atomic", "ring", "two_shot", "one_shot", "spinlock"],
         help="All-reduce variant to use",
     )
