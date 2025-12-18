@@ -58,7 +58,7 @@ def persistent_gemm(
     tl.assume(stride_cm > 0)
     tl.assume(stride_cn > 0)
 
-    acc_dtype = tl.float32 if local_C.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(local_C.type.element_ty)
 
     for tile_id in range(pid, total_tiles, NUM_SMS):
         if COLLECT_TIMESTAMPS:
@@ -169,7 +169,7 @@ def persistent_all_reduce(
 
     next_rank = (cur_rank + 1) % world_size
     prev_rank = (cur_rank + world_size - 1) % world_size
-    acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(C.type.element_ty)
 
     # Persistent across *groups* now (not individual tiles):
     for g in range(pid, num_groups, COMM_SMS):

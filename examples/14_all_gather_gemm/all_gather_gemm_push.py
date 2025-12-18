@@ -118,7 +118,7 @@ def gemm_push_kernel(
     tl.assume(stride_sf_m > 0)
     tl.assume(stride_sf_k > 0)
 
-    acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(C.type.element_ty)
 
     for tile_id in range(pid, total_tiles, NUM_SMS):
         num_pid_in_group = GROUP_SIZE_M * num_pid_n

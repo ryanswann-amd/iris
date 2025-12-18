@@ -30,6 +30,48 @@ import triton.language as tl
 import torch
 
 
+def get_accumulator_dtype(output_dtype):
+    """
+    Determine the appropriate accumulator dtype for matrix multiplication operations.
+
+    This function promotes the output dtype to a wider precision type suitable for
+    accumulation to avoid precision loss and overflow during computation.
+
+    Args:
+        output_dtype: The Triton language dtype of the output tensor (e.g., from tensor.type.element_ty)
+
+    Returns:
+        The promoted Triton language dtype to use for accumulation
+
+    Promotion rules:
+        - int8, int16, int32 -> int32 (to prevent overflow)
+        - float16 (fp16), bfloat16 (bf16) -> float32 (to prevent precision loss)
+        - float32 -> float32
+        - float64 -> float64
+
+    Example:
+        >>> @triton.jit
+        >>> def kernel(C, ...):
+        >>>     acc_dtype = iris.get_accumulator_dtype(C.type.element_ty)
+        >>>     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=acc_dtype)
+    """
+    # Integer types -> accumulate in int32
+    if output_dtype in (tl.int8, tl.int16, tl.int32):
+        return tl.int32
+    # Half precision floats -> accumulate in float32
+    elif output_dtype in (tl.float16, tl.bfloat16):
+        return tl.float32
+    # float32 stays float32
+    elif output_dtype == tl.float32:
+        return tl.float32
+    # float64 stays float64
+    elif output_dtype == tl.float64:
+        return tl.float64
+    # Default fallback to float32 for any other types
+    else:
+        return tl.float32
+
+
 def get_empty_cache_for_benchmark():
     cache_size = 256 * 1024 * 1024
     return torch.empty(int(cache_size // 4), dtype=torch.int, device="cuda")

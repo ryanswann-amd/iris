@@ -61,7 +61,7 @@ def persistent_gemm(
     tl.assume(stride_cm > 0)
     tl.assume(stride_cn > 0)
 
-    acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(C.type.element_ty)
 
     for tile_id in range(pid, total_tiles, GEMM_SMS):
         if COLLECT_TIMESTAMPS:
@@ -169,7 +169,7 @@ def persistent_all_reduce(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
-    acc_dtype = tl.float32 if global_result.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(global_result.type.element_ty)
 
     # Determine which tiles this rank is responsible for reducing
     if DISTRIBUTION == 0:

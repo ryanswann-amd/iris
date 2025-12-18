@@ -63,6 +63,7 @@ from .iris import (
 
 from .util import (
     do_bench,
+    get_accumulator_dtype,
 )
 
 from . import hip
@@ -99,6 +100,7 @@ __all__ = [
     "atomic_min",
     "atomic_max",
     "do_bench",
+    "get_accumulator_dtype",
     "hip",
     "experimental",  # Experimental features including iris_gluon
     "set_logger_level",

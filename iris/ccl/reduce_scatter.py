@@ -63,7 +63,7 @@ def persistent_reduce_scatter_two_shot(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
-    acc_dtype = tl.float32 if output_ptr.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(output_ptr.type.element_ty)
 
     tiles_per_rank = tl.cdiv(total_tiles, world_size)
     if DISTRIBUTION == 0:

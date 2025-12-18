@@ -62,7 +62,7 @@ def persistent_gemm_all_scatter_wg_specialization(
     tl.assume(stride_cm > 0)
     tl.assume(stride_cn > 0)
 
-    acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(C.type.element_ty)
 
     # Workgroup specialization:
     # Split the kernel into two paths, one that performs the GEMM

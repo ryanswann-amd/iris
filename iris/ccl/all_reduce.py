@@ -278,7 +278,7 @@ def persistent_all_reduce_spinlock(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
-    acc_dtype = tl.float32 if output_ptr.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(output_ptr.type.element_ty)
 
     for tile_id in range(pid, total_tiles, COMM_SMS):
         lock_ptr = locks_ptr + tile_id
@@ -359,7 +359,7 @@ def persistent_all_reduce_one_shot(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
-    acc_dtype = tl.float32 if output_ptr.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(output_ptr.type.element_ty)
 
     for tile_id in range(pid, total_tiles, COMM_SMS):
         num_pid_in_group = GROUP_SIZE_M * num_pid_n
@@ -453,7 +453,7 @@ def persistent_all_reduce_ring(
     # Ring topology
     next_rank = (cur_rank + 1) % world_size
 
-    acc_dtype = tl.float32 if output_ptr.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(output_ptr.type.element_ty)
     elem_ty = input_ptr.type.element_ty
 
     # Partition CTAs across rings to form NUM_RINGS concurrent rings.
@@ -574,7 +574,7 @@ def persistent_all_reduce_two_shot(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
 
-    acc_dtype = tl.float32 if output_ptr.type.element_ty != tl.int8 else tl.int32
+    acc_dtype = iris.get_accumulator_dtype(output_ptr.type.element_ty)
 
     tiles_per_rank = tl.cdiv(total_tiles, world_size)
     if DISTRIBUTION == 0:
