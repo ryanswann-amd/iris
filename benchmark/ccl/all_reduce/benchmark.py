@@ -84,6 +84,9 @@ def parse_args():
         default=None,
         help="Column slice size for ring variant (power of two, must divide block_size_n)",
     )
+    parser.add_argument(
+        "--init_url", type=str, default="tcp://127.0.0.1:29527", help="Initialization URL for distributed setup"
+    )
 
     return vars(parser.parse_args())
 
@@ -100,10 +103,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     )
 
     shmem = iris.iris(args["heap_size"])
-
     rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
-
     # Datatype mapping
     datatype = torch.float32
     if args["datatype"] == "fp16":
@@ -374,7 +375,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 def main():
     args = parse_args()
     num_ranks = args["num_ranks"]
-    init_url = "tcp://127.0.0.1:29503"
+    init_url = args["init_url"]
 
     mp.spawn(
         fn=_worker,
