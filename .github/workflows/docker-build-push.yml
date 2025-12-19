@@ -9,7 +9,7 @@ on:
       triton_commit:
         description: 'Triton commit SHA to use'
         required: false
-        default: 'aafec417bded34db6308f5b3d6023daefae43905'
+        default: '715f6b1d442601436bf8d462db6ff8e17aec8cfb'
         type: string
 
 # This workflow always runs, even with [skip ci] or [ci skip] in commit message
