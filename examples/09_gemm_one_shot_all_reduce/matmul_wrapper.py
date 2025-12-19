@@ -11,22 +11,14 @@ import os
 # from streamk_kernel_atomic import streamk_gemm
 from gemm_one_shot_all_reduce import persistent_gemm_all_reduce
 
-from examples.common.utils import is_triton_interpret_set
+from examples.common.matmul_helpers import MatmulDebugMixin
 import iris
 
 gemm_kernel = persistent_gemm_all_reduce
 
-
-class matmul(torch.autograd.Function):
-    _debug = True
+class matmul(MatmulDebugMixin, torch.autograd.Function):
 
     _num_xcds = iris.hip.get_num_xcc()
-
-    @staticmethod
-    def set_debug(debug: bool):
-        matmul._debug = debug
-        matmul.streamk_registers = 0
-        matmul.streamk_spills = 0
 
     @staticmethod
     def _call(
@@ -150,12 +142,7 @@ class matmul(torch.autograd.Function):
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
 
-        if matmul._debug and not is_triton_interpret_set():
-            matmul.streamk_registers = kk.n_regs
-            matmul.streamk_spills = kk.n_spills
-            print(f"{kk.n_regs} registers used, {kk.n_spills} spills")
-            # print(kk.asm['ttgir'])
-            # print(kk.asm['amdgcn'])
+        matmul._track_debug_info(kk)
 
         return c
 

@@ -6,36 +6,14 @@ import triton
 
 # from streamk_kernel import streamk_gemm
 from gemm_all_scatter_producer_consumer import persistent_gemm
-from examples.common.utils import is_triton_interpret_set
+from examples.common.matmul_helpers import MatmulDebugMixin
 import iris
 
 gemm_kernel = persistent_gemm
 
-
-class matmul(torch.autograd.Function):
-    _debug = False
-    _registers = None
-    _spills = None
+class matmul(MatmulDebugMixin, torch.autograd.Function):
 
     _num_xcds = iris.hip.get_num_xcc()
-
-    @staticmethod
-    def set_debug(debug: bool):
-        matmul._debug = debug
-
-    @staticmethod
-    def get_matmul_registers():
-        if matmul._debug:
-            return matmul._registers
-        else:
-            raise RuntimeError("Debug mode is not enabled. Call set_debug(True) first.")
-
-    @staticmethod
-    def get_matmul_spills():
-        if matmul._debug:
-            return matmul._spills
-        else:
-            raise RuntimeError("Debug mode is not enabled. Call set_debug(True) first.")
 
     @staticmethod
     def _call(
@@ -118,9 +96,7 @@ class matmul(torch.autograd.Function):
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
 
-        if matmul._debug and not is_triton_interpret_set():
-            matmul._registers = kk.n_regs
-            matmul._spills = kk.n_spills
+        matmul._track_debug_info(kk)
 
         return c
 

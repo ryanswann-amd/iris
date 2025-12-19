@@ -11,20 +11,12 @@ import os
 # from streamk_kernel_atomic import streamk_gemm
 from gemm_all_reduce_atomics import persistent_gemm_all_reduce
 
-from examples.common.utils import is_triton_interpret_set
+from examples.common.matmul_helpers import MatmulDebugMixin
 import iris
 
 gemm_kernel = persistent_gemm_all_reduce
 
-
-class matmul(torch.autograd.Function):
-    _debug = True
-
-    @staticmethod
-    def set_debug(debug: bool):
-        matmul._debug = debug
-        matmul.streamk_registers = 0
-        matmul.streamk_spills = 0
+class matmul(MatmulDebugMixin, torch.autograd.Function):
 
     @staticmethod
     def _call(
@@ -109,9 +101,7 @@ class matmul(torch.autograd.Function):
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
 
-        if matmul._debug and not is_triton_interpret_set():
-            matmul.streamk_registers = kk.n_regs
-            matmul.streamk_spills = kk.n_spills
+        matmul._track_debug_info(kk)
 
         return c
 
