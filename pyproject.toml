@@ -35,6 +35,9 @@ dev = [
     "mypy",
 ]
 
+[project.scripts]
+irisrun = "iris.irisrun:main"
+
 [tool.setuptools]
 package-dir = { "" = "." }
 

@@ -3,6 +3,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 import argparse
+import os
 
 import torch
 import torch.distributed as dist
@@ -235,13 +236,32 @@ def print_bandwidth_matrix(matrix, label="Unidirectional LOAD bandwidth GiB/s [R
 def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     """Worker function for PyTorch distributed execution."""
     backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(
-        backend=backend,
-        init_method=init_url,
-        world_size=world_size,
-        rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
-    )
+
+    # Check if running via irisrun (environment variables will be set)
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        # Running via irisrun - use environment variables
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+        init_method = f"tcp://{master_addr}:{master_port}"
+
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_method,
+            world_size=world_size,
+            rank=rank,
+            device_id=torch.device(f"cuda:{rank}"),
+        )
+    else:
+        # Running standalone - use provided parameters
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_url,
+            world_size=world_size,
+            rank=local_rank,
+            device_id=torch.device(f"cuda:{local_rank}"),
+        )
 
     # Main benchmark logic
     shmem = iris.iris(args["heap_size"])
@@ -283,13 +303,19 @@ def main():
 
     num_ranks = args["num_ranks"]
 
-    init_url = "tcp://127.0.0.1:29500"
-    mp.spawn(
-        fn=_worker,
-        args=(num_ranks, init_url, args),
-        nprocs=num_ranks,
-        join=True,
-    )
+    # Check if running via irisrun
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        # Running via irisrun - called once per process, run directly
+        _worker(None, None, None, args)
+    else:
+        # Running standalone - spawn multiple processes
+        init_url = "tcp://127.0.0.1:29500"
+        mp.spawn(
+            fn=_worker,
+            args=(num_ranks, init_url, args),
+            nprocs=num_ranks,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
