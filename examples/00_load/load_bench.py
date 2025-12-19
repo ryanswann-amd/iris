@@ -240,8 +240,9 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     # Check if running via irisrun (environment variables will be set)
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         # Running via irisrun - use environment variables
+        # In this mode, local_rank/world_size/init_url parameters are ignored
         rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
+        world_size_env = int(os.environ["WORLD_SIZE"])
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
         master_port = os.environ.get("MASTER_PORT", "29500")
         init_method = f"tcp://{master_addr}:{master_port}"
@@ -249,7 +250,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         dist.init_process_group(
             backend=backend,
             init_method=init_method,
-            world_size=world_size,
+            world_size=world_size_env,
             rank=rank,
             device_id=torch.device(f"cuda:{rank}"),
         )
