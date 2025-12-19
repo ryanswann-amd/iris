@@ -24,8 +24,8 @@ import sys
 def _find_free_port():
     """Find an available TCP port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("", 0))
         return s.getsockname()[1]
 
 
@@ -52,7 +52,7 @@ def _distributed_worker(local_rank, world_size, master_addr, master_port, script
 
     # Execute the script in the current namespace
     try:
-        with open(script_path) as f:
+        with open(script_path, encoding="utf-8") as f:
             code = compile(f.read(), script_path, "exec")
             exec(code, {"__name__": "__main__", "__file__": script_path})
     except SystemExit as e:
