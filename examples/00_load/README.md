@@ -9,9 +9,30 @@ Load benchmark using Iris.
 
 ## Usage
 
+### Using irisrun (Recommended)
+
+The recommended way to run this example is using `irisrun`, which automatically manages port allocation:
+
+```terminal
+irisrun --nproc_per_node=8 examples/00_load/load_bench.py
+```
+
+With verbose output:
+
+```terminal
+irisrun --nproc_per_node=8 examples/00_load/load_bench.py --verbose
+```
+
+### Standalone execution
+
+You can also run the example directly (uses hardcoded port 29500):
+
 ```terminal
 python examples/00_load/load_bench.py --num_ranks 8
 ```
+
+## Output
+
 On an MI300X, this example will run on 8 GPUs. It prints:
 ```terminal
 Unidirectional LOAD bandwidth GiB/s [Remote read]
