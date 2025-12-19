@@ -36,13 +36,13 @@ dev = [
 ]
 
 [project.scripts]
-irisrun = "iris.irisrun:main"
+irisrun = "irisrun_cli.main:main"
 
 [tool.setuptools]
 package-dir = { "" = "." }
 
 [tool.setuptools.packages.find]
-include = ["iris*"]
+include = ["iris*", "irisrun_cli*"]
 
 # ---- setuptools-scm versioning ----
 [tool.setuptools_scm]

@@ -19,8 +19,6 @@ import argparse
 import os
 import socket
 import sys
-import torch.distributed as dist
-import torch.multiprocessing as mp
 
 
 def _find_free_port():
@@ -41,10 +39,13 @@ def _distributed_worker(local_rank, world_size, master_addr, master_port, script
     os.environ["MASTER_PORT"] = str(master_port)
 
     # Set CUDA device for this process
-    import torch
+    try:
+        import torch
 
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+    except ImportError:
+        pass  # torch may not be installed yet, that's ok
 
     # Restore sys.argv to make it appear as if the script was called directly
     sys.argv = [script_path] + script_args
@@ -114,12 +115,18 @@ Examples:
     print(f"[irisrun] Script args: {args.script_args}")
 
     try:
+        # Import torch.multiprocessing here, after args are parsed
+        import torch.multiprocessing as mp
+
         mp.spawn(
             _distributed_worker,
             args=(args.nproc_per_node, master_addr, master_port, args.script, args.script_args),
             nprocs=args.nproc_per_node,
             join=True,
         )
+    except ImportError as e:
+        print(f"[irisrun] Error: PyTorch is required to run irisrun: {e}", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\n[irisrun] Interrupted by user")
         sys.exit(130)
