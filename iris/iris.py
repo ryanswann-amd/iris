@@ -1873,7 +1873,7 @@ def copy(
     to_base_byte = tl.cast(to_base, tl.pointer_type(tl.int8))
 
     translated_src = tl.cast(from_base_byte + src_offset, src_ptr.dtype)
-    translated_dst = tl.cast(to_base_byte + dst_offset, src_ptr.dtype)
+    translated_dst = tl.cast(to_base_byte + dst_offset, dst_ptr.dtype)
 
     data = tl.load(translated_src, mask=mask, cache_modifier=load_cache_modifier)
     tl.store(translated_dst, data, mask=mask, cache_modifier=store_cache_modifier)
