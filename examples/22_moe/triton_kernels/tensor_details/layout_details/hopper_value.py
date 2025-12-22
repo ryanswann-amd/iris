@@ -98,7 +98,11 @@ class HopperMXValueLayout(Layout):
             mx_axis += len(shape)
         self.mx_axis = mx_axis
         self.mma_version = mma_version
-        *self.leading_shape, self.K, self.N, = shape
+        (
+            *self.leading_shape,
+            self.K,
+            self.N,
+        ) = shape
 
     def _maybe_mT(self, data):
         if self.mx_axis == len(self.leading_shape):
@@ -210,7 +214,7 @@ class HopperMXValueLayout(Layout):
         data = data.permute(*perm)
         data = data.reshape(*batch, M * 4, K // 4)
         data = self._maybe_mT(data)
-        return data[..., :self.K, :self.N]
+        return data[..., : self.K, : self.N]
 
     def swizzle_block_shape(self, block_shape):
         N, K = block_shape[-2:]
@@ -341,7 +345,7 @@ def mxfp4_to_bf16_triton(x, scale, mx_axis: tl.constexpr):
             tl.static_assert(x.shape[axis] == scale.shape[axis])
     # Broadcast scale
     scale = scale.expand_dims(mx_axis + 1)
-    scale = scale.broadcast_to(scale.shape[:mx_axis + 1] + [MXFP_BLOCK_SIZE] + scale.shape[mx_axis + 2:])
+    scale = scale.broadcast_to(scale.shape[: mx_axis + 1] + [MXFP_BLOCK_SIZE] + scale.shape[mx_axis + 2 :])
     scale = scale.reshape(x.shape)
 
     # Combine scale and x

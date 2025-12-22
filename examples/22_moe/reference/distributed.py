@@ -8,14 +8,21 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 
 # Add parent directory to path for local triton_kernels
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from triton_kernels.reduce import reduce
 from triton_kernels.topk import topk
 from triton_kernels.matmul import matmul
 from triton_kernels.target_info import get_cdna_version, is_hip, is_cuda, cuda_capability_geq
 from triton_kernels.tensor import RaggedTensorMetadata, make_ragged_tensor_metadata, remap_ragged_tensor_metadata
-from triton_kernels.distributed import make_expt_dict_uniform, make_expt_assignment, convert_dp_to_ep, convert_ep_to_dp, ExptAssignment, symm_mem_pool
+from triton_kernels.distributed import (
+    make_expt_dict_uniform,
+    make_expt_assignment,
+    convert_dp_to_ep,
+    convert_ep_to_dp,
+    ExptAssignment,
+    symm_mem_pool,
+)
 
 from bench_utils import prepare_mlp_numerics, resolve_x_dtype
 
@@ -214,7 +221,7 @@ def gather_full(rank, world_size, param, TP, EP, concat_dim_inside, concat_dim_o
         gathered = [torch.zeros_like(param) for _ in range(world_size)]
     dist.gather(param, gathered, dst=0)
     if rank == 0:
-        rows = [torch.cat(gathered[e * TP:(e + 1) * TP], dim=concat_dim_inside) for e in range(EP)]
+        rows = [torch.cat(gathered[e * TP : (e + 1) * TP], dim=concat_dim_inside) for e in range(EP)]
         return torch.cat(rows, dim=concat_dim_outside)
     return None
 
@@ -231,7 +238,7 @@ def distributed_run(rank, world_size, batch, dim1, dim2, n_expts_tot, n_expts_ac
     wg = torch.randn((dim1, n_expts_tot), device=dev)
     dist.broadcast(wg, src=0)
 
-    bg = torch.randn((n_expts_tot, ), device=dev)
+    bg = torch.randn((n_expts_tot,), device=dev)
     dist.broadcast(bg, src=0)
 
     b2 = torch.randn((n_expts_tot // EP, dim1), device=dev)
@@ -295,8 +302,9 @@ def distributed_run(rank, world_size, batch, dim1, dim2, n_expts_tot, n_expts_ac
         xg = x.to(wg.dtype if n_expts_tot > 1 else x.dtype)
         if n_expts_tot > 1:  # sparse
             logits = matmul(xg, wg, bg, precision_config=pcg)
-            x, rdata, gi, si, metadata = routing(x, logits, n_expts_act, EP=EP, TP=TP, expt_assignment=expt_assignment,
-                                                 mode="ep_sharding")
+            x, rdata, gi, si, metadata = routing(
+                x, logits, n_expts_act, EP=EP, TP=TP, expt_assignment=expt_assignment, mode="ep_sharding"
+            )
         else:  # dense
             x = all_gather(x, dim=0)
             rdata = gi = si = metadata = None
@@ -309,8 +317,9 @@ def distributed_run(rank, world_size, batch, dim1, dim2, n_expts_tot, n_expts_ac
     distributed_result = distributed(xd)
     if rank == 0:
         single_result = single(x0)
-        torch.testing.assert_close(distributed_result.to(torch.float16), single_result.to(torch.float16), rtol=1e-2,
-                                   atol=1.0, equal_nan=True)
+        torch.testing.assert_close(
+            distributed_result.to(torch.float16), single_result.to(torch.float16), rtol=1e-2, atol=1.0, equal_nan=True
+        )
 
     dist.barrier()
     symm_mem_pool.release()
@@ -325,26 +334,33 @@ has_native_mx4 = torch.cuda.get_device_capability(0)[0] >= 10 or get_cdna_versio
     # dense cases
     [
         # small batch size
-        (128, 1024, 1024, 1, 1, "bf16", "bf16", 1, 1), (128, 1024, 1024, 1, 1, "fp8", "fp8", 1, 1),
+        (128, 1024, 1024, 1, 1, "bf16", "bf16", 1, 1),
+        (128, 1024, 1024, 1, 1, "fp8", "fp8", 1, 1),
         # large batch size
-        (1024, 1024, 1024, 1, 1, "bf16", "bf16", 1, 1), (1024, 1024, 1024, 1, 1, "fp8", "fp8", 1, 1)
+        (1024, 1024, 1024, 1, 1, "bf16", "bf16", 1, 1),
+        (1024, 1024, 1024, 1, 1, "fp8", "fp8", 1, 1),
     ]
     # moe cases - test parallelism
     + [
         (128, 1024, 1024, 128, 2, "bf16", "bf16", 1, 1),
         (1024, 1024, 1024, 128, 2, "bf16", "bf16", 1, 1),
         (1024, 1024, 1024, 128, 2, "bf16", "bf16", 1, 2),
-    ] +
+    ]
+    +
     # moe cases - test precision
-    ([
-        (128, 1024, 1024, 128, 2, "fp8", "mx4", 1, 1),
-        (1024, 1024, 1024, 128, 2, "fp8", "mx4", 1, 1),
-        (1024, 1024, 1024, 128, 2, "fp8", "mx4", 1, 2),
-    ] if has_native_mx4 else [
-        (128, 1024, 1024, 128, 2, "bf16", "mx4", 1, 1),
-        (1024, 1024, 1024, 128, 2, "bf16", "mx4", 1, 1),
-        (1024, 1024, 1024, 128, 2, "bf16", "mx4", 1, 2),
-    ]),
+    (
+        [
+            (128, 1024, 1024, 128, 2, "fp8", "mx4", 1, 1),
+            (1024, 1024, 1024, 128, 2, "fp8", "mx4", 1, 1),
+            (1024, 1024, 1024, 128, 2, "fp8", "mx4", 1, 2),
+        ]
+        if has_native_mx4
+        else [
+            (128, 1024, 1024, 128, 2, "bf16", "mx4", 1, 1),
+            (1024, 1024, 1024, 128, 2, "bf16", "mx4", 1, 1),
+            (1024, 1024, 1024, 128, 2, "bf16", "mx4", 1, 2),
+        ]
+    ),
 )
 def test_mlp_mp(batch, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP, monkeypatch):
     parallelism = TP * EP

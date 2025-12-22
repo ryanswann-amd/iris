@@ -31,11 +31,11 @@ def get_cdna_version():
     hardware or unsupported architecture
     """
     target = tl.target_info.current_target()
-    if target.backend != 'hip':
+    if target.backend != "hip":
         return -1
-    if target.arch == 'gfx942':
+    if target.arch == "gfx942":
         return 3
-    if target.arch == 'gfx950':
+    if target.arch == "gfx950":
         return 4
     return -1
 
@@ -52,4 +52,3 @@ def has_native_mxfp():
 
 def num_sms():
     return torch.cuda.get_device_properties(0).multi_processor_count
-

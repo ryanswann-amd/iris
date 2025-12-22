@@ -53,8 +53,9 @@ def swizzle2d(pid, grid_m, grid_n, GROUP_M: tl.constexpr):
 
 
 @triton.jit
-def compute_pids(block_id, grid_m, grid_n, num_blocks, XCD_SWIZZLE: tl.constexpr, GROUP_M: tl.constexpr,
-                 SPLIT_K: tl.constexpr):
+def compute_pids(
+    block_id, grid_m, grid_n, num_blocks, XCD_SWIZZLE: tl.constexpr, GROUP_M: tl.constexpr, SPLIT_K: tl.constexpr
+):
     pid_zmnk = block_id
     if XCD_SWIZZLE != 1:
         pid_zmnk = xcd_swizzle(pid_zmnk, num_blocks, XCD_SWIZZLE)
@@ -92,9 +93,10 @@ def compute_offsets(
         # pid_z indicates slice ID: experts are laid sequentially along the K dimension
         # (i.e., we have columns for expert 0, and then expert 1, and then so on).
         # pid_k is meaningless (always zero).
-        tl.static_assert(X_SLICE_SIZE_DIVISIBILITY is not None or \
-                         W_SLICE_SIZE_DIVISIBILITY is not None,
-                         "At least one input must be padded!")
+        tl.static_assert(
+            X_SLICE_SIZE_DIVISIBILITY is not None or W_SLICE_SIZE_DIVISIBILITY is not None,
+            "At least one input must be padded!",
+        )
         tl.static_assert(SPLIT_K == 1, "Not supported yet")
         off_x_k = tl.load(XSliceOffs + pid_z)
         off_w_k = tl.load(WSliceOffs + pid_z)
@@ -134,7 +136,6 @@ def compute_offsets(
 
 
 def make_matmul_repr(base_name, order):
-
     def matmul_repr(specialization):
         signature = specialization.signature
         constants = specialization.constants
@@ -244,5 +245,6 @@ def matmul_launch_metadata(grid, kernel, args):
 
 @triton.jit
 def threadfence_system():
-    tl.inline_asm_elementwise("mov.u32 $0, 0x0; fence.sc.sys;", args=(), dtype=(tl.int32, ), is_pure=False, pack=1,
-                              constraints="=r")
+    tl.inline_asm_elementwise(
+        "mov.u32 $0, 0x0; fence.sc.sys;", args=(), dtype=(tl.int32,), is_pure=False, pack=1, constraints="=r"
+    )

@@ -13,14 +13,14 @@ import sys
 import os
 
 # Add parent directory to path for triton_kernels import
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from triton_kernels.distributed import (
-    make_expt_dict_uniform, 
-    make_expt_assignment, 
+    make_expt_dict_uniform,
+    make_expt_assignment,
     symm_mem_pool,
     convert_dp_to_ep,
-    convert_ep_to_dp
+    convert_ep_to_dp,
 )
 from triton_kernels.reduce import reduce
 from triton_kernels.topk import topk
@@ -71,4 +71,3 @@ def moe_triton_reference(x_dp_local, l_dp_local, w_ep_local, b_ep_local, expt_as
 
 
 __all__ = ["moe_triton_reference"]
-

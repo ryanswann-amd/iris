@@ -13,7 +13,7 @@ import time
 import sys
 
 # Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from triton_kernels.distributed import make_expt_dict_uniform, make_expt_assignment, symm_mem_pool
 from moe_triton_reference import moe_triton_reference
@@ -95,6 +95,7 @@ def test_worker(rank, world_size):
         if rank == 0:
             print(f"✗ Error: {e}")
             import traceback
+
             traceback.print_exc()
         raise
 
@@ -188,4 +189,3 @@ def run_test(world_size=8):
 
 if __name__ == "__main__":
     run_test(world_size=8)
-

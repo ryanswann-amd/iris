@@ -38,7 +38,7 @@ class CDNA4MXScaleLayout(Layout):
         data = data.view(-1, self.N_pad // NON_K_PRESHUFFLE_BLOCK_SIZE, self.K_SCALE_pad // 8, 4, 16, 2, 2, 1)
         data = data.permute(0, 1, 6, 4, 2, 5, 3, 7)
         data = data.reshape(*self.leading_shape, self.N_pad, self.K_SCALE_pad)
-        return data.transpose(-1, -2)[..., :self.K_SCALE, :self.N]
+        return data.transpose(-1, -2)[..., : self.K_SCALE, : self.N]
 
     def swizzle_block_shape(self, block_shape):
         SCALE_K = block_shape[-2]
@@ -47,8 +47,12 @@ class CDNA4MXScaleLayout(Layout):
 
 
 @triton.jit
-def unswizzle_mx_scale_cdna4(x, BLOCK_N: tl.constexpr, MX_SCALE_BLOCK_K: tl.constexpr,
-                             N_PRESHUFFLE_FACTOR: tl.constexpr = NON_K_PRESHUFFLE_BLOCK_SIZE):
+def unswizzle_mx_scale_cdna4(
+    x,
+    BLOCK_N: tl.constexpr,
+    MX_SCALE_BLOCK_K: tl.constexpr,
+    N_PRESHUFFLE_FACTOR: tl.constexpr = NON_K_PRESHUFFLE_BLOCK_SIZE,
+):
     x = x.reshape(BLOCK_N // N_PRESHUFFLE_FACTOR, MX_SCALE_BLOCK_K // 8, 4, 16, 2, 2, 1)
     x = x.permute(0, 5, 3, 1, 4, 2, 6)
     x = x.reshape(BLOCK_N, MX_SCALE_BLOCK_K)

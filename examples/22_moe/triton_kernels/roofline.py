@@ -21,6 +21,7 @@ def parse_profile(profile_path, useful_op_regex):
     construct a PerfRecord from a (proton) profile path and a regex for useful operations
     """
     from triton.profiler import viewer
+
     gf, _, _, _ = viewer.read(profile_path)
     # aggregate "useful" flops + bytes
     useful = gf.filter(f"MATCH ('*', c) WHERE c.'name' =~ '{useful_op_regex}' AND c IS LEAF").dataframe
@@ -44,9 +45,8 @@ def write_csv(xs, perfs, fpath):
             writer.writerow([x, p.flops, p.bytes, p.time_ns])
     return csv_path
 
-def compute_roofline(*args, \
-                  bench_fn, intensity_proxy_name, intensity_proxy_values, out_path, verbose, \
-                  **kwargs):
+
+def compute_roofline(*args, bench_fn, intensity_proxy_name, intensity_proxy_values, out_path, verbose, **kwargs):
     # validate input args
     if not isinstance(intensity_proxy_name, str):
         raise TypeError("intensity_proxy must be a string naming a parameter in target_fn")
@@ -67,7 +67,7 @@ def compute_roofline(*args, \
     perfs = []
     if verbose:
         print("=========================================")
-        print(f"{out_path   }...")
+        print(f"{out_path}...")
         print("=========================================")
     for val in intensity_proxy_values:
         perf = inject_proxy_and_call(val, args, kwargs)
@@ -187,8 +187,17 @@ def validate_perfs(perfs):
                 raise ValueError(f"x mismatch between series[0] and series[{i}]")
 
 
-def plot_roofline(series, flops_dtype, out_path, max_tbps="memset", max_tflops="cublas", title="", xlabel="",
-                  labels=None, points_of_interest=None):
+def plot_roofline(
+    series,
+    flops_dtype,
+    out_path,
+    max_tbps="memset",
+    max_tflops="cublas",
+    title="",
+    xlabel="",
+    labels=None,
+    points_of_interest=None,
+):
     from bisect import bisect_left
     from pathlib import Path
 
@@ -282,8 +291,15 @@ def plot_roofline(series, flops_dtype, out_path, max_tbps="memset", max_tflops="
             y_pt = interp(xs, series_perf[0], x_pt)
             y_rf = interp(xs, y_roof, x_pt)
             ax.plot([x_pt], [y_pt], marker="o", ms=4, mfc="white", mec="black", zorder=3)
-            ax.annotate(f"{label}\n{int(y_pt)} TFLOP/s ({int(y_pt/y_rf*100)}%)", xy=(x_pt, y_pt), xytext=(5, -25),
-                        textcoords="offset points", fontsize=7, ha="left", va="bottom")
+            ax.annotate(
+                f"{label}\n{int(y_pt)} TFLOP/s ({int(y_pt / y_rf * 100)}%)",
+                xy=(x_pt, y_pt),
+                xytext=(5, -25),
+                textcoords="offset points",
+                fontsize=7,
+                ha="left",
+                va="bottom",
+            )
 
     ax.legend(frameon=False, loc="lower right")
     ax.grid(True, which="both", ls=":", lw=0.5)
@@ -293,16 +309,32 @@ def plot_roofline(series, flops_dtype, out_path, max_tbps="memset", max_tflops="
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Plot roofline(s) from perf CSV series")
-    parser.add_argument("--series", type=str, nargs="+", required=True,
-                        help="list of .csv files; columns must be `x`, `flops`, `bytes`, `time_ns`")
-    parser.add_argument("--dtype", type=str, required=True, choices=["fp16", "bf16", "fp8"],
-                        help="data type used for compute-bound roof")
+    parser.add_argument(
+        "--series",
+        type=str,
+        nargs="+",
+        required=True,
+        help="list of .csv files; columns must be `x`, `flops`, `bytes`, `time_ns`",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        required=True,
+        choices=["fp16", "bf16", "fp8"],
+        help="data type used for compute-bound roof",
+    )
     parser.add_argument("--out_path", type=str, required=True, help="path to write the output image")
     parser.add_argument("--title", type=str, default="", help="plot title")
     parser.add_argument("--xlabel", type=str, default="", help="x-axis label")
-    parser.add_argument("--labels", type=str, nargs="+", default=None,
-                        help="optional list of names for each series, in order; must match number of --series")
+    parser.add_argument(
+        "--labels",
+        type=str,
+        nargs="+",
+        default=None,
+        help="optional list of names for each series, in order; must match number of --series",
+    )
     args = parser.parse_args()
     if args.labels is not None and len(args.labels) != len(args.series):
         parser.error("--labels must have the same number of entries as --series")

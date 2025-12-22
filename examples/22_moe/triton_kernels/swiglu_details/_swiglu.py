@@ -76,9 +76,29 @@ def _swiglu_fn(input, alpha, limit):
 
 
 @triton.jit(repr=swiglu_repr, launch_metadata=swiglu_launch_metadata)
-def _swiglu(Out, OutExpectedScale, OutActualScale, OutChecksumScale, A, AScale, alpha, M, N, stride_am, stride_an,
-            stride_outm, stride_outn, limit: tl.constexpr, NTokens, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
-            EVEN_N: tl.constexpr, M_BLOCKS, N_BLOCKS, flexpoint_saturate_inf: tl.constexpr):
+def _swiglu(
+    Out,
+    OutExpectedScale,
+    OutActualScale,
+    OutChecksumScale,
+    A,
+    AScale,
+    alpha,
+    M,
+    N,
+    stride_am,
+    stride_an,
+    stride_outm,
+    stride_outn,
+    limit: tl.constexpr,
+    NTokens,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    EVEN_N: tl.constexpr,
+    M_BLOCKS,
+    N_BLOCKS,
+    flexpoint_saturate_inf: tl.constexpr,
+):
     if NTokens is not None:
         M = tl.load(NTokens)
         M_BLOCKS = (M + BLOCK_M - 1) // BLOCK_M
@@ -89,8 +109,8 @@ def _swiglu(Out, OutExpectedScale, OutActualScale, OutChecksumScale, A, AScale, 
     out_expected_scale = load_scale(OutExpectedScale)
 
     for pid in tl.range(tl.program_id(0), M_BLOCKS * N_BLOCKS, tl.num_programs(0), num_stages=2):
-        pid_m = (pid // N_BLOCKS)
-        pid_n = (pid % N_BLOCKS)
+        pid_m = pid // N_BLOCKS
+        pid_n = pid % N_BLOCKS
         off_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
         off_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
         mask_m = off_m < M
@@ -102,13 +122,13 @@ def _swiglu(Out, OutExpectedScale, OutActualScale, OutChecksumScale, A, AScale, 
         packed_off_n = pid_n * 2 * BLOCK_N + tl.arange(0, 2 * BLOCK_N)
         packed_offs = off_m[:, None] * stride_am + packed_off_n[None, :] * stride_an
         if EVEN_N:
-            a_packed = tl.load(A + packed_offs, mask=mask_m[:, None], other=0.)
+            a_packed = tl.load(A + packed_offs, mask=mask_m[:, None], other=0.0)
         else:
             if pid_n * BLOCK_N + BLOCK_N <= N:
-                a_packed = tl.load(A + packed_offs, mask=mask_m[:, None], other=0.)
+                a_packed = tl.load(A + packed_offs, mask=mask_m[:, None], other=0.0)
             else:
                 packed_mask = mask_m[:, None] & packed_mask_n[None, :]
-                a_packed = tl.load(A + packed_offs, mask=packed_mask, other=0.)
+                a_packed = tl.load(A + packed_offs, mask=packed_mask, other=0.0)
         a_gelu, a_linear = tl.split(tl.reshape(a_packed, (BLOCK_M, BLOCK_N, 2)))
         out = compute_swiglu(a_gelu, a_linear, a_scale, alpha, limit)
         # update flexpoint stats and divide by scale
@@ -116,9 +136,15 @@ def _swiglu(Out, OutExpectedScale, OutActualScale, OutChecksumScale, A, AScale, 
         if OutActualScale is not None:
             absmax = thread_local_absmax(out, out.numel, tl.extra.cuda.num_threads())
             local_max = tl.maximum(local_max, absmax)
-        out = float_to_flex(out, out_expected_scale,
-                            None,  # ActualScale: local absmax is tracked and updated after the loop
-                            OutChecksumScale, None, Out, flexpoint_saturate_inf)
+        out = float_to_flex(
+            out,
+            out_expected_scale,
+            None,  # ActualScale: local absmax is tracked and updated after the loop
+            OutChecksumScale,
+            None,
+            Out,
+            flexpoint_saturate_inf,
+        )
         mask = mask_m[:, None] if EVEN_N else mask_m[:, None] & mask_n[None, :]
         tl.store(Out + off_m[:, None] * stride_outm + off_n[None, :] * stride_outn, out, mask)
 

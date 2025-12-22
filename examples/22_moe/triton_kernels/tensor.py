@@ -62,7 +62,8 @@ class Storage:
             block_shape[indx] = block_shape[indx] // 2
             if isinstance(self.layout, BlackwellMXValueLayout) and shape[-1] % 128 != 0:
                 raise ValueError(
-                    "inner shape need to be multiple of 128 for mxfp4 (CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B) TMAs.")
+                    "inner shape need to be multiple of 128 for mxfp4 (CU_TENSOR_MAP_DATA_TYPE_16U4_ALIGN16B) TMAs."
+                )
         block_shape = self.layout.swizzle_block_shape(block_shape)
         return TensorDescriptor(self.data, shape, strides, block_shape)
 
@@ -179,7 +180,6 @@ class Tensor:
 # ---------------------------------------------------------------------------- #
 @dataclass
 class Bitmatrix(Tensor):
-
     def __post_init__(self):
         assert self.dtype == BIT
         super().__post_init__()

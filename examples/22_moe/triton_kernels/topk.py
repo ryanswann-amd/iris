@@ -14,11 +14,12 @@ def make_empty(offset, shape, dtype, device, all_gather):
         rank_id = dist.get_rank()
         ret_bufs = symm_mem_pool.make_empty(shape=shape, dtype=dtype, region="topk", region_offset=offset)
         ret = ret_bufs[rank_id]
-        offset = symm_mem_pool.align_up(offset + ret.numel() * ret.element_size(),
-                                        symm_mem_pool.regions["topk"].alignment)
+        offset = symm_mem_pool.align_up(
+            offset + ret.numel() * ret.element_size(), symm_mem_pool.regions["topk"].alignment
+        )
         return ret_bufs, ret, offset
     ret = torch.empty(shape, dtype=dtype, device=device)
-    return (ret, ), ret, 0
+    return (ret,), ret, 0
 
 
 def topk_forward(x, k, apply_softmax=True, dim=1, y_indx=None, n_rows=None, all_gather=False):
@@ -43,21 +44,33 @@ def topk_forward(x, k, apply_softmax=True, dim=1, y_indx=None, n_rows=None, all_
     if y_indx is None:
         y_indx_bufs, y_indx, offset = make_empty(offset, (n_rows_out_max, k), torch.int16, dev, all_gather=all_gather)
     else:
-        y_indx_bufs = (y_indx, )
+        y_indx_bufs = (y_indx,)
     # create bitmatrix in transposed memory layout:
     n_cols_pad = cdiv(n_cols, BLOCK_N) * BLOCK_N
     n_cols_words = n_cols_pad // 32
-    bitmatrix_bufs, bitmatrix_data, offset = make_empty(offset, (n_cols_words, cdiv(n_rows_out_max, 32) * 32),
-                                                        torch.uint32, dev, all_gather=all_gather)
+    bitmatrix_bufs, bitmatrix_data, offset = make_empty(
+        offset, (n_cols_words, cdiv(n_rows_out_max, 32) * 32), torch.uint32, dev, all_gather=all_gather
+    )
     bitmatrix_data = torch.transpose(bitmatrix_data, 0, 1)[:n_rows_max]
     pids = cdiv(n_rows_max, BLOCK_M)
-    _topk_forward[(pids, )](
-        x, x.stride(0),  # inputs
-        y_vals_bufs, y_indx_bufs, y_vals.stride(0), use_provided_indx,  # output [topk]
-        bitmatrix_bufs, bitmatrix_data.stride(0), bitmatrix_data.stride(1),  # output [bitmatrix]
-        n_rows, n_cols,  # shapes
-        dist.get_rank() * n_rows_max if all_gather else 0, BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N,  # tunable parameter
-        APPLY_SOFTMAX=apply_softmax, N_EXPTS_PAD=n_cols_pad, N_EXPTS_ACT=k,  # constants
+    _topk_forward[(pids,)](
+        x,
+        x.stride(0),  # inputs
+        y_vals_bufs,
+        y_indx_bufs,
+        y_vals.stride(0),
+        use_provided_indx,  # output [topk]
+        bitmatrix_bufs,
+        bitmatrix_data.stride(0),
+        bitmatrix_data.stride(1),  # output [bitmatrix]
+        n_rows,
+        n_cols,  # shapes
+        dist.get_rank() * n_rows_max if all_gather else 0,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,  # tunable parameter
+        APPLY_SOFTMAX=apply_softmax,
+        N_EXPTS_PAD=n_cols_pad,
+        N_EXPTS_ACT=k,  # constants
     )
     if all_gather:
         symm_mem_pool.hdl.barrier(channel=0)
@@ -71,16 +84,26 @@ def topk_backward(x, y_indx, dy_vals, k, n_rows, apply_softmax):
     assert dy_vals.shape[-1] == k
     n_expts_pad = triton.next_power_of_2(x.shape[-1])
     dx = torch.empty_like(x)
-    _topk_backward[(dy_vals.shape[0], )](
-        y_indx, y_indx.stride(0), dy_vals, dy_vals.stride(0), x, x.stride(0),  # inputs
+    _topk_backward[(dy_vals.shape[0],)](
+        y_indx,
+        y_indx.stride(0),
+        dy_vals,
+        dy_vals.stride(0),
+        x,
+        x.stride(0),  # inputs
         dx,  # outputs
-        dx.stride(0), x.shape[0], n_rows, x.shape[-1], APPLY_SOFTMAX=apply_softmax, N_EXPTS_ACT=k,
-        N_EXPTS_PAD=n_expts_pad)
+        dx.stride(0),
+        x.shape[0],
+        n_rows,
+        x.shape[-1],
+        APPLY_SOFTMAX=apply_softmax,
+        N_EXPTS_ACT=k,
+        N_EXPTS_PAD=n_expts_pad,
+    )
     return dx
 
 
 class TopK(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, x, k, apply_softmax, dim, y_indx, n_rows, all_gather):
         y_vals, y_indx, bitmatrix = topk_forward(x, k, apply_softmax, dim, y_indx, n_rows, all_gather)
@@ -158,7 +181,7 @@ def topk_torch(
     # compute bitmatrix
     _, n_cols = x.shape
     bitmatrix_data = torch.zeros((cdiv(n_cols, 32), cdiv(x.shape[0], 32) * 32), dtype=torch.int32, device=device)
-    bitmatrix_data = torch.transpose(bitmatrix_data, 0, 1)[:x.shape[0]]
+    bitmatrix_data = torch.transpose(bitmatrix_data, 0, 1)[: x.shape[0]]
     # fill bitmatrix
     if apply_softmax:
         y_vals = torch.softmax(y_vals.float(), dim=-1).to(x.dtype)
@@ -168,7 +191,7 @@ def topk_torch(
     y_indx[n_rows:, :] = -1
     rows = torch.arange(x.shape[0], device=device).unsqueeze(1).expand(-1, y_indx.shape[1]).reshape(-1)
     cols = y_indx.reshape(-1)  # 64-bit safe for div/mod
-    word_idx = torch.div(cols, 32, rounding_mode='floor')
+    word_idx = torch.div(cols, 32, rounding_mode="floor")
     bit_idx = cols % 32
     masks = torch.ones_like(bit_idx) << bit_idx
     bitmatrix_data.index_put_((rows, word_idx), masks, accumulate=True)

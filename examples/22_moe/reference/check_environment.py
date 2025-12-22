@@ -16,6 +16,7 @@ print(f"\n✓ Python version: {sys.version}")
 # Check PyTorch
 try:
     import torch
+
     print(f"✓ PyTorch version: {torch.__version__}")
     print(f"  CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
@@ -30,21 +31,23 @@ except ImportError as e:
 # Check Triton
 try:
     import triton
+
     print(f"✓ Triton version: {triton.__version__}")
 except ImportError as e:
     print(f"✗ Triton not found: {e}")
     sys.exit(1)
 
 # Check triton_kernels
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 try:
     from triton_kernels import distributed, topk, matmul, reduce, tensor
-    print(f"✓ triton_kernels imported successfully")
-    print(f"  - distributed")
-    print(f"  - topk")
-    print(f"  - matmul")
-    print(f"  - reduce")
-    print(f"  - tensor")
+
+    print("✓ triton_kernels imported successfully")
+    print("  - distributed")
+    print("  - topk")
+    print("  - matmul")
+    print("  - reduce")
+    print("  - tensor")
 except ImportError as e:
     print(f"✗ triton_kernels import failed: {e}")
     sys.exit(1)
@@ -52,7 +55,8 @@ except ImportError as e:
 # Check NCCL
 try:
     import torch.distributed as dist
-    print(f"✓ torch.distributed available")
+
+    print("✓ torch.distributed available")
     print(f"  NCCL available: {dist.is_nccl_available()}")
 except Exception as e:
     print(f"✗ torch.distributed check failed: {e}")
@@ -63,4 +67,3 @@ print("=" * 80)
 print("\nYou can now run:")
 print("  python test_triton_reference.py")
 print("=" * 80)
-

@@ -41,19 +41,21 @@ class BlackwellMXScaleLayout(Layout):
     def swizzle_data(self, data):
         data = torch.nn.functional.pad(data, (0, self.N_pad - self.N, 0, self.K_pad - self.K))
         data = data.transpose(-1, -2).contiguous()
-        data = data.reshape(self.B, self.N_pad // self.ALIGN_N, self.ALIGN_N // 32, 32, self.K_pad // self.SWIZZLE_K,
-                            self.SWIZZLE_K)
+        data = data.reshape(
+            self.B, self.N_pad // self.ALIGN_N, self.ALIGN_N // 32, 32, self.K_pad // self.SWIZZLE_K, self.SWIZZLE_K
+        )
         data = data.transpose(2, 4).contiguous()
         data = data.view(1, self.B * self.N_pad // 128, self.K_pad // self.SWIZZLE_K, 2, 256)
         return data
 
     def unswizzle_data(self, data):
-        data = data.reshape(self.B, self.N_pad // self.ALIGN_N, self.K_pad // self.SWIZZLE_K, 32, self.ALIGN_N // 32,
-                            self.SWIZZLE_K)
+        data = data.reshape(
+            self.B, self.N_pad // self.ALIGN_N, self.K_pad // self.SWIZZLE_K, 32, self.ALIGN_N // 32, self.SWIZZLE_K
+        )
         data = data.transpose(2, 4)
         data = data.reshape(*self.leading_shape, self.N_pad, self.K_pad)
         data = data.transpose(-1, -2)
-        return data[..., :self.K, :self.N]
+        return data[..., : self.K, : self.N]
 
     def swizzle_block_shape(self, block_shape):
         K, N = block_shape
@@ -165,7 +167,7 @@ def pad_segments_triton(data, ragged_metadata, block_size_to_align, M_pad, K, K_
     max_grid = triton.cdiv(M_pad, BLOCK_M) * triton.cdiv(K_pad, BLOCK_N)
     num_sms = target_info.num_sms()
     grid = min(num_sms, max_grid)
-    pad_segments_kernel[(grid, )](
+    pad_segments_kernel[(grid,)](
         data,
         padded_data,
         slice_sizes,
@@ -261,7 +263,7 @@ def unpad_segments_triton(padded_data, ragged_metadata, block_size_to_align, M, 
     num_sms = target_info.num_sms()
     grid = min(num_sms, max_grid)
 
-    unpad_segments_kernel[(grid, )](
+    unpad_segments_kernel[(grid,)](
         padded_data,
         data,
         slice_sizes,
@@ -329,7 +331,8 @@ class BlackwellActMXScaleLayout(Layout):
     def swizzle_data(self, data):
         if self.mode == "batched":
             padded_data = torch.nn.functional.pad(
-                data, (0, self.K_pad - self.K, 0, self.M_pad - self.M))  # value of padding on left, right, top, bottom
+                data, (0, self.K_pad - self.K, 0, self.M_pad - self.M)
+            )  # value of padding on left, right, top, bottom
             padded_data = padded_data.reshape(self.B, self.M_pad // 128, 4, 32, self.K_pad // 4, 4)
             padded_data = padded_data.transpose(2, 4).contiguous()  # [1, M//128, K//4, 32, 4, 4]
             padded_data = padded_data.view(1, self.B * self.M_pad // 128, self.K_pad // 4, 2, 256)
@@ -356,7 +359,7 @@ class BlackwellActMXScaleLayout(Layout):
         data = data.reshape(self.B, self.M_pad, self.K_pad)
 
         if self.mode == "batched":
-            return data[..., :self.M, :self.K]
+            return data[..., : self.M, : self.K]
 
         # ragged path: map padded blocks back into the original ragged rows
         assert self.B == 1, "ragged scale layout only supports 2D input"
@@ -392,9 +395,11 @@ def unswizzle_mx_scale_bw(
 
 
 @triton.jit
-def unswizzle_act_mx_scale_bw(x, SIZE_OUTER: tl.constexpr = SWIZZLE_SIZE_OUTER,  # 128
-                              SIZE_INNER: tl.constexpr = SWIZZLE_SIZE_INNER,  # 4
-                              ):
+def unswizzle_act_mx_scale_bw(
+    x,
+    SIZE_OUTER: tl.constexpr = SWIZZLE_SIZE_OUTER,  # 128
+    SIZE_INNER: tl.constexpr = SWIZZLE_SIZE_INNER,  # 4
+):
     # input block shape is [1, BLOCK_M//128, BLOCK_K//32//4, 2, 256] and we want to unswizzle it to [BLOCK_M, BLOCK_K//32]
     shape_1: tl.constexpr = x.shape[1]
     shape_2: tl.constexpr = x.shape[2]

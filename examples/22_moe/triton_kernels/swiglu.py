@@ -23,7 +23,6 @@ swiglu_fn = _swiglu_fn
 
 
 class SwiGLU(torch.autograd.Function):
-
     @staticmethod
     def forward(ctx, a, alpha, precision_config, routing_data):
         N = a.shape[-1]
@@ -35,7 +34,7 @@ class SwiGLU(torch.autograd.Function):
         # optimization hyperparameters
         BLOCK_M, BLOCK_N = 32 // a.itemsize, 128
         num_warps = 4
-        kwargs = {'maxnreg': 64} if not target_info.is_hip() else {}
+        kwargs = {"maxnreg": 64} if not target_info.is_hip() else {}
         # launch semi-persistent kernel
         N_BLOCKS = triton.cdiv(N // 2, BLOCK_N)
         num_sms = target_info.num_sms()
@@ -43,13 +42,13 @@ class SwiGLU(torch.autograd.Function):
             waves_per_sm = 32 if target_info.is_hip() else 128
             num_pid = num_sms * (waves_per_sm // num_warps)
             M_BLOCKS = max(1, triton.cdiv(num_pid, N_BLOCKS))
-            grid = (min(M_BLOCKS * N_BLOCKS, 4 * num_sms), )
+            grid = (min(M_BLOCKS * N_BLOCKS, 4 * num_sms),)
         else:
             M_BLOCKS = triton.cdiv(M, BLOCK_M)
             if M_BLOCKS * N_BLOCKS >= 8 * num_sms:
-                grid = (8 * num_sms, )
+                grid = (8 * num_sms,)
             else:
-                grid = (min(M_BLOCKS * N_BLOCKS, 4 * num_sms), )
+                grid = (min(M_BLOCKS * N_BLOCKS, 4 * num_sms),)
         n_tokens = None
         if routing_data is not None:
             n_tokens = routing_data.expt_data.token_offs[routing_data.n_expts_tot]

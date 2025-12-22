@@ -28,6 +28,7 @@ class RaggedTensorMetadata:
         128: [(0, 0) (0, 1) (0, 3) (1, 3) -1 ...                   -1]
     }
     """
+
     # slice_sizes[i] is the number of elements in slice i along the ragged dimension
     slice_sizes: torch.Tensor
     # slice_offs = [0] + cumsum(slice_sizes)
@@ -90,8 +91,14 @@ class RaggedTensorMetadata:
 
 
 def ragged_metadata_fields(metadata, block_size):
-    return (metadata.slice_sizes, metadata.slice_offs, metadata.block_offs(block_size),
-            metadata.block_schedule(block_size), metadata.expected_slice_size, metadata.slice_sizes_divisibility or 1)
+    return (
+        metadata.slice_sizes,
+        metadata.slice_offs,
+        metadata.block_offs(block_size),
+        metadata.block_schedule(block_size),
+        metadata.expected_slice_size,
+        metadata.slice_sizes_divisibility or 1,
+    )
 
 
 # utilities
@@ -126,8 +133,16 @@ def _cdiv_pow2(n, log2_k):
 
 
 @triton.jit
-def _ragged_tensor_metadata_memset(SliceSizes, n_slices, BlockOffs, slice_offs_stride_m, BlockSchedule,
-                                   first_block_size_log2, SIZES: tl.constexpr, BLOCK: tl.constexpr):
+def _ragged_tensor_metadata_memset(
+    SliceSizes,
+    n_slices,
+    BlockOffs,
+    slice_offs_stride_m,
+    BlockSchedule,
+    first_block_size_log2,
+    SIZES: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
     pid = tl.program_id(0)
     if pid <= SIZES:
         BlockOffs += pid * slice_offs_stride_m
@@ -149,17 +164,22 @@ def _ragged_tensor_metadata_memset(SliceSizes, n_slices, BlockOffs, slice_offs_s
             BlockOffsPtrs += BLOCK
     else:
         # initialize block schedule to -1
-        pid -= (SIZES + 1)
+        pid -= SIZES + 1
         offs = pid * BLOCK + tl.arange(0, BLOCK)
-        tl.store(BlockSchedule + offs, 0xffffffff)
+        tl.store(BlockSchedule + offs, 0xFFFFFFFF)
 
 
 @triton.jit
-def _ragged_tensor_metadata_compute(SliceSizes,  #
-                                    BlockOffs, block_offs_stride_m,  #
-                                    BlockSchedule, block_schedule_stride_m,  #
-                                    first_block_size_log2,  #
-                                    SIZES: tl.constexpr, BLOCK: tl.constexpr):
+def _ragged_tensor_metadata_compute(
+    SliceSizes,  #
+    BlockOffs,
+    block_offs_stride_m,  #
+    BlockSchedule,
+    block_schedule_stride_m,  #
+    first_block_size_log2,  #
+    SIZES: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
     pid = tl.program_id(0)
     slice_id = pid // SIZES
     block_size_id = pid % SIZES
@@ -194,18 +214,29 @@ def make_ragged_tensor_metadata(slice_sizes, n_total_rows):
     slice_offs, block_offs_data = slice_offs_combined[0], slice_offs_combined[1:]
     n_memset_blocks = exact_div(n_memset_elts, MEMSET_BLOCK)
 
-    _ragged_tensor_metadata_memset[(slice_offs_combined.shape[0] + n_memset_blocks, )](
-        slice_sizes, n_slices,  #
-        slice_offs_combined, slice_offs_combined.stride(0),  #
+    _ragged_tensor_metadata_memset[(slice_offs_combined.shape[0] + n_memset_blocks,)](
+        slice_sizes,
+        n_slices,  #
+        slice_offs_combined,
+        slice_offs_combined.stride(0),  #
         block_schedule_data,  #
-        block_sizes_log2[0], SIZES=len(block_sizes_log2), BLOCK=MEMSET_BLOCK,  # optimization parameters
-        num_warps=4)
+        block_sizes_log2[0],
+        SIZES=len(block_sizes_log2),
+        BLOCK=MEMSET_BLOCK,  # optimization parameters
+        num_warps=4,
+    )
 
-    _ragged_tensor_metadata_compute[(block_size_num * n_slices, )](
-        slice_sizes, block_offs_data, block_offs_data.stride(0), block_schedule_data,
+    _ragged_tensor_metadata_compute[(block_size_num * n_slices,)](
+        slice_sizes,
+        block_offs_data,
+        block_offs_data.stride(0),
+        block_schedule_data,
         block_schedule_data.stride(0),  # outputs
-        block_sizes_log2[0], SIZES=len(block_sizes_log2), BLOCK=512,  # optimization parameters
-        num_warps=4)
+        block_sizes_log2[0],
+        SIZES=len(block_sizes_log2),
+        BLOCK=512,  # optimization parameters
+        num_warps=4,
+    )
 
     return RaggedTensorMetadata(slice_sizes, slice_offs, block_offs_data, block_schedule_data)
 
@@ -235,7 +266,7 @@ def make_ragged_tensor_metadata_torch(slice_sizes, n_total_rows):
         tmp = -torch.ones(total_tiles, dtype=torch.int32, device=device)
         map_idxs = block_off[:-1, None] + col[None, :]
         mask = col[None, :] < n_blocks[:, None]
-        tmp.index_put_((map_idxs[mask], ), (slice_vals + (col << 16)[None, :]).int()[mask])
+        tmp.index_put_((map_idxs[mask],), (slice_vals + (col << 16)[None, :]).int()[mask])
         take = min(max_n_blocks, total_tiles)
         out[:take] = tmp[:take]
         return out
@@ -299,24 +330,36 @@ def _compact_block_schedule(BlockSchedule, SliceMap, n_blocks, offs):
     block_id = block_id.to(tl.int32, bitcast=True)
     conds = conds.to(tl.int32, bitcast=True)
     new_slice_id = tl.load(SliceMap + slice_id, mask=mask)
-    pid_mask = tl.full([
-        1,
-    ], 0xFFFF0000, dtype=tl.uint32)
+    pid_mask = tl.full(
+        [
+            1,
+        ],
+        0xFFFF0000,
+        dtype=tl.uint32,
+    )
     new_block_id = ((block_id & pid_mask) | new_slice_id).to(tl.int32, bitcast=True)
     return new_block_id, conds
 
 
 @triton.jit
-def _remap_ragged_tensor_metadata(BatchSizesOut, BatchSizesInp,  #
-                                  BatchOffsOut, BatchOffsInp,  #
-                                  BlockOffsOut, block_offs_out_stride_m,  #
-                                  BlockOffsInp, block_offs_in_stride_m,  #
-                                  BlockScheduleOut, block_schedule_out_stride_m,  #
-                                  BlockScheduleInp, block_schedule_in_stride_m,  #
-                                  SliceMap,  #
-                                  n_slices, n_blocks,  #
-                                  BLOCK: tl.constexpr  #
-                                  ):
+def _remap_ragged_tensor_metadata(
+    BatchSizesOut,
+    BatchSizesInp,  #
+    BatchOffsOut,
+    BatchOffsInp,  #
+    BlockOffsOut,
+    block_offs_out_stride_m,  #
+    BlockOffsInp,
+    block_offs_in_stride_m,  #
+    BlockScheduleOut,
+    block_schedule_out_stride_m,  #
+    BlockScheduleInp,
+    block_schedule_in_stride_m,  #
+    SliceMap,  #
+    n_slices,
+    n_blocks,  #
+    BLOCK: tl.constexpr,  #
+):
     pid_m = tl.program_id(0)
     # number of valid slices
 
@@ -326,27 +369,48 @@ def _remap_ragged_tensor_metadata(BatchSizesOut, BatchSizesInp,  #
     BlockScheduleOut += pid_m * block_schedule_out_stride_m
     BlockScheduleInp += pid_m * block_schedule_in_stride_m
     # compute batch sizes for this slice by compacting input batch sizes
-    _generic_compaction(BatchSizesOut, _compact_from_slice_map,  #
-                        (BatchSizesInp, SliceMap, n_slices), -1, n_slices,  #
-                        BLOCK=BLOCK)
+    _generic_compaction(
+        BatchSizesOut,
+        _compact_from_slice_map,  #
+        (BatchSizesInp, SliceMap, n_slices),
+        -1,
+        n_slices,  #
+        BLOCK=BLOCK,
+    )
     # compute batch offsets for this slice by compacting input batch offsets
-    _generic_compaction(BatchOffsOut, _compact_from_slice_map,  #
-                        (BatchOffsInp, SliceMap, n_slices), -1, n_slices + 1,  #
-                        BLOCK=BLOCK)
+    _generic_compaction(
+        BatchOffsOut,
+        _compact_from_slice_map,  #
+        (BatchOffsInp, SliceMap, n_slices),
+        -1,
+        n_slices + 1,  #
+        BLOCK=BLOCK,
+    )
     # compute block offsets
-    n_compacted_blocks = _generic_compaction(BlockOffsOut, _compact_from_slice_map,  #
-                                             (BlockOffsInp, SliceMap, n_slices), -1, n_slices + 1,  #
-                                             BLOCK=BLOCK)
+    n_compacted_blocks = _generic_compaction(
+        BlockOffsOut,
+        _compact_from_slice_map,  #
+        (BlockOffsInp, SliceMap, n_slices),
+        -1,
+        n_slices + 1,  #
+        BLOCK=BLOCK,
+    )
     # compute block schedule
-    n_total_blocks = _generic_compaction(BlockScheduleOut, _compact_block_schedule,  #
-                                         (BlockScheduleInp, SliceMap, n_blocks), -1, n_blocks,  #
-                                         BLOCK=BLOCK)
+    n_total_blocks = _generic_compaction(
+        BlockScheduleOut,
+        _compact_block_schedule,  #
+        (BlockScheduleInp, SliceMap, n_blocks),
+        -1,
+        n_blocks,  #
+        BLOCK=BLOCK,
+    )
     # Record the total number of tiles in the trailing slot
     tl.store(BlockOffsOut + n_compacted_blocks, n_total_blocks)
 
 
-def remap_ragged_tensor_metadata(src_ragged_tensor_metadata: RaggedTensorMetadata,
-                                 slice_map: torch.Tensor) -> RaggedTensorMetadata:
+def remap_ragged_tensor_metadata(
+    src_ragged_tensor_metadata: RaggedTensorMetadata, slice_map: torch.Tensor
+) -> RaggedTensorMetadata:
     """
     Let `src` be a ragged tensor, and `src_slices`/`src_ragged_tensor_metadata` be its slices/metadata.
 
@@ -360,7 +424,7 @@ def remap_ragged_tensor_metadata(src_ragged_tensor_metadata: RaggedTensorMetadat
     block_offs_data = torch.empty_like(src_ragged_tensor_metadata.block_offs_data)
     block_schedule_data = torch.empty_like(src_ragged_tensor_metadata.block_schedule_data)
 
-    _remap_ragged_tensor_metadata[(block_offs_data.shape[0], )](
+    _remap_ragged_tensor_metadata[(block_offs_data.shape[0],)](
         slice_sizes,  #
         src_ragged_tensor_metadata.slice_sizes,  #
         slice_offs,  #
@@ -393,11 +457,11 @@ def remap_ragged_tensor_metadata_torch(ragged_tensor_metadata, slice_map):
     def compact(vals, conds, sentinel):
         assert conds.shape == vals.shape
         keep = conds.nonzero().flatten()
-        sentinels = torch.full(((conds == 0).sum().item(), ), sentinel, dtype=vals.dtype, device=vals.device)
+        sentinels = torch.full(((conds == 0).sum().item(),), sentinel, dtype=vals.dtype, device=vals.device)
         return torch.cat((vals[keep], sentinels))
 
     def make_mask(block_pid_map):
-        slice_id = (block_pid_map & 0x0000FFFF)
+        slice_id = block_pid_map & 0x0000FFFF
         valid_id = slice_id != 65535
         valid_slice_id = slice_id[valid_id]
         mask = torch.zeros_like(slice_id)
@@ -405,7 +469,7 @@ def remap_ragged_tensor_metadata_torch(ragged_tensor_metadata, slice_map):
         return mask
 
     def map_slice_id(block_pid_map):
-        slice_id = (block_pid_map & 0x0000FFFF)
+        slice_id = block_pid_map & 0x0000FFFF
         valid_id = slice_id != 65535
         slice_id[valid_id] = slice_map[slice_id[valid_id]]
         return (block_pid_map & 0xFFFF0000) | slice_id
@@ -414,7 +478,7 @@ def remap_ragged_tensor_metadata_torch(ragged_tensor_metadata, slice_map):
     n_block_sizes = ragged_tensor_metadata.block_offs_data.shape[0]
     slice_global = torch.arange(n_slices, device=ragged_tensor_metadata.slice_sizes.device)
     slice_local = slice_map[slice_global] != -1
-    slice_mask = torch.cat((slice_local, torch.zeros((1, ), dtype=torch.bool, device=slice_local.device)))
+    slice_mask = torch.cat((slice_local, torch.zeros((1,), dtype=torch.bool, device=slice_local.device)))
     slice_sizes = compact(ragged_tensor_metadata.slice_sizes, slice_mask[:-1], -1)
     slice_offs = compact(ragged_tensor_metadata.slice_offs, slice_mask, -1)
     block_offs_data = []
@@ -429,5 +493,6 @@ def remap_ragged_tensor_metadata_torch(ragged_tensor_metadata, slice_map):
         # update block_offs/block_schedules/
         block_offs_data += [block_offs]
         block_schedule_data += [block_schedule]
-    return RaggedTensorMetadata(slice_sizes, slice_offs, torch.stack(block_offs_data, dim=0),
-                                torch.stack(block_schedule_data, dim=0))
+    return RaggedTensorMetadata(
+        slice_sizes, slice_offs, torch.stack(block_offs_data, dim=0), torch.stack(block_schedule_data, dim=0)
+    )

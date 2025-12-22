@@ -14,7 +14,7 @@ import sys
 import os
 
 # Add parent directory to path for local triton_kernels
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import triton_kernels.roofline as roofline
 from triton_kernels.matmul import matmul
@@ -25,14 +25,13 @@ from triton_kernels.tensor import make_ragged_tensor_metadata, remap_ragged_tens
 from triton_kernels.distributed import make_expt_dict_uniform, make_expt_assignment, symm_mem_pool
 
 # Import reference utilities
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'reference'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "reference"))
 import distributed as triton_dist
 from bench_utils import prepare_mlp_numerics, resolve_x_dtype
 import tempfile
 
 # Import Iris
 import iris
-import torch.distributed as dist
 
 # Import Iris MoE conversion functions
 from moe_iris_v2 import convert_dp_to_ep_iris, convert_ep_to_dp_iris
@@ -58,12 +57,7 @@ def bench_iris_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
         # Iris requires distributed to be initialized, even for single GPU
         if not dist.is_initialized():
             # Initialize dummy process group for single GPU
-            dist.init_process_group(
-                backend="nccl",
-                init_method="tcp://127.0.0.1:12355",
-                rank=0,
-                world_size=1
-            )
+            dist.init_process_group(backend="nccl", init_method="tcp://127.0.0.1:12355", rank=0, world_size=1)
         shmem = iris.iris()
 
     # -- init data --
@@ -72,7 +66,7 @@ def bench_iris_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     w1 = torch.randn((n_expts_tot // EP, dim1, dim2 // TP), device=dev)
     w2 = torch.randn((n_expts_tot // EP, dim2 // TP // 2, dim1), device=dev)
     # biases
-    bg = triton_dist.broadcast(torch.randn((n_expts_tot, ), device=dev))
+    bg = triton_dist.broadcast(torch.randn((n_expts_tot,), device=dev))
     b1 = torch.randn((n_expts_tot // EP, dim2 // TP), device=dev)
     b2 = torch.randn((n_expts_tot // EP, dim1), device=dev)
     ep_indx = (rank // TP) % EP
@@ -99,7 +93,7 @@ def bench_iris_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     for i in range(100):
         if n_expts_tot > 1:  # sparse (MoE)
             logits = matmul(xg, wg, bg, precision_config=pcg)
-            
+
             # ===== IRIS ROUTING (ONLY DIFFERENCE) =====
             # Use Iris for DP->EP conversion
             ep_rank = (rank // TP) % EP  # Expert parallelism rank
@@ -116,27 +110,27 @@ def bench_iris_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
             dispatch_indx = logits_global.mask_metadata.row_sorted_indx
             combine_indx = logits_global.mask_metadata.col_sorted_indx
             logits_global_metadata = make_ragged_tensor_metadata(expt_sizes, dispatch_indx.shape[0])
-            
+
             # Allocate Iris symmetric memory buffers
             n_tokens_global = batch
             dp_to_ep_buf = shmem.zeros((n_tokens_global * n_expts_act, dim1), dtype=input_x.dtype)
             ep_to_dp_buf = shmem.zeros((batch // DP, dim2), dtype=input_x.dtype)
-            
+
             # DP -> EP using Iris
             x = convert_dp_to_ep_iris(input_x, expt_assignment, active_indx, dispatch_indx, shmem, dp_to_ep_buf)
             rdata = remap_ragged_tensor_metadata(logits_global_metadata, expt_map)
             gather_indx = None
             scatter_indx = None
             # ===== END IRIS ROUTING =====
-            
+
         else:  # dense
             x = triton_dist.all_gather(input_x, dim=0)
             rdata, gather_indx, scatter_indx = None, None, None
-            
+
         if x.nelement() > 0:
             x = matmul(x, w1, b1, rdata, gather_indx=gather_indx, precision_config=pc1, fused_activation=act)
             x = matmul(x, w2, b2 if rank % TP == 0 else None, rdata, scatter_indx=scatter_indx, precision_config=pc2)
-        
+
         if n_expts_tot > 1:  # sparse (MoE)
             # ===== IRIS EP->DP (ONLY DIFFERENCE) =====
             x = convert_ep_to_dp_iris(x, expt_assignment, active_indx, combine_indx, shmem, ep_to_dp_buf)
@@ -147,28 +141,40 @@ def bench_iris_mlp(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
         else:
             # For dense case, use standard reduce_scatter
             x = triton_dist.reduce_scatter(x, n_expts_act, metadata=None, expt_assignment=None)
-            
+
     proton.finalize()
     triton_dist.cleanup_matmul()
     return roofline.parse_profile(fpath.with_suffix(".hatchet"), useful_op_regex=".*matmul.*")
 
 
-def roofline_mlp(batch_sizes, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP, \
-                  name="", verbose=True):
+def roofline_mlp(batch_sizes, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP, name="", verbose=True):
     """EXACT copy from reference"""
     out_path = Path(f"logs/{name}/{x_dtype}x-{w_dtype}w-TP{TP}-EP{EP}/")
     out_path.mkdir(parents=True, exist_ok=True)
-    csv_path = roofline.compute_roofline(dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP,  # fixed args
-                                         bench_fn=bench_iris_mlp,  # function to benchmark
-                                         intensity_proxy_name="batch_per_expt",  # intensity proxy name
-                                         intensity_proxy_values=batch_sizes,  # intensity proxy values to sweep
-                                         verbose=verbose,  # options
-                                         out_path=out_path.with_suffix(".csv"))  # output path
-    png_path = roofline.plot_roofline(series=[csv_path],  # roofline data to plot
-                                      flops_dtype=x_dtype,  # dtype to use for FLOPS roof
-                                      xlabel="batch_per_expt", title=out_path,  # plot option
-                                      out_path=out_path.with_suffix(".png"),  # output path
-                                      max_tbps="memset", max_tflops="cublas")  # hardware limits
+    csv_path = roofline.compute_roofline(
+        dim1,
+        dim2,
+        n_expts_tot,
+        n_expts_act,
+        x_dtype,
+        w_dtype,
+        TP,
+        EP,  # fixed args
+        bench_fn=bench_iris_mlp,  # function to benchmark
+        intensity_proxy_name="batch_per_expt",  # intensity proxy name
+        intensity_proxy_values=batch_sizes,  # intensity proxy values to sweep
+        verbose=verbose,  # options
+        out_path=out_path.with_suffix(".csv"),
+    )  # output path
+    png_path = roofline.plot_roofline(
+        series=[csv_path],  # roofline data to plot
+        flops_dtype=x_dtype,  # dtype to use for FLOPS roof
+        xlabel="batch_per_expt",
+        title=out_path,  # plot option
+        out_path=out_path.with_suffix(".png"),  # output path
+        max_tbps="memset",
+        max_tflops="cublas",
+    )  # hardware limits
 
     return png_path
 
@@ -176,7 +182,7 @@ def roofline_mlp(batch_sizes, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_d
 if __name__ == "__main__":
     has_native_mx4 = torch.cuda.get_device_capability(0)[0] >= 10 or get_cdna_version() == 4
     batch_sizes_dense = [*range(128, 8192, 128)]
-    batch_ranges_moe = [(2**(2 + k), 2**(3 + k), min(2**k, 32)) for k in range(8)]
+    batch_ranges_moe = [(2 ** (2 + k), 2 ** (3 + k), min(2**k, 32)) for k in range(8)]
     batch_sizes_moe = list(chain(*[range(*r) for r in batch_ranges_moe]))
     dense_dtypes = ["fp8", "fp8"]
     quantized_dtypes = ["fp8", "mx4"] if has_native_mx4 else ["bf16", "mx4"]
@@ -205,15 +211,32 @@ if __name__ == "__main__":
         assert TP * EP == world_size, f"TP * EP = {TP} * {EP} = {TP * EP} != {world_size}"
         if name == "dense":
             # dense
-            roofline_mlp(batch_sizes_dense, 6144, 6144, 1, 1, x_dtype, w_dtype, TP, EP, name="iris-dense", verbose=False)
+            roofline_mlp(
+                batch_sizes_dense, 6144, 6144, 1, 1, x_dtype, w_dtype, TP, EP, name="iris-dense", verbose=False
+            )
         elif name:
             # sparse
-            roofline_mlp(batch_sizes_moe, 6144, 24576, 128, 2, x_dtype, w_dtype, TP, EP, name=f"iris-{name}", verbose=False)
+            roofline_mlp(
+                batch_sizes_moe, 6144, 24576, 128, 2, x_dtype, w_dtype, TP, EP, name=f"iris-{name}", verbose=False
+            )
         else:
             assert False, "Please specify --name"
     else:
         # single GPU workload - run all configurations
         for x_dtype, w_dtype in [dense_dtypes, quantized_dtypes]:
-            roofline_mlp(batch_sizes_dense, 6144, 6144, 1, 1, x_dtype, w_dtype, TP=1, EP=1, name="iris-dense", verbose=False)
-            roofline_mlp(batch_sizes_moe, 6144, 24576, 128, 2, x_dtype, w_dtype, TP=1, EP=1, name="iris-gpt-oss-x2", verbose=False)
-
+            roofline_mlp(
+                batch_sizes_dense, 6144, 6144, 1, 1, x_dtype, w_dtype, TP=1, EP=1, name="iris-dense", verbose=False
+            )
+            roofline_mlp(
+                batch_sizes_moe,
+                6144,
+                24576,
+                128,
+                2,
+                x_dtype,
+                w_dtype,
+                TP=1,
+                EP=1,
+                name="iris-gpt-oss-x2",
+                verbose=False,
+            )

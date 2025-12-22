@@ -44,7 +44,7 @@ def define_kernel(src, module, attrs=None, **extra_globals):
     f.__module__ = module.__name__
 
     src = textwrap.dedent(src)
-    src = src[src.find("def "):]
+    src = src[src.find("def ") :]
 
     stored_functions = []
     function_name = src[4:].split("(")[0].strip()
@@ -91,8 +91,8 @@ def specialize(fn, module, constants, tuples, name=None, do_not_specialize=tuple
     header_end = def_idx
     while not lines[header_end].rstrip().endswith(":"):
         header_end += 1
-    body_lines = lines[header_end + 1:]
-    header_lines = lines[def_idx:header_end + 1]
+    body_lines = lines[header_end + 1 :]
+    header_lines = lines[def_idx : header_end + 1]
     # clean-up header
     header_clean = [
         l.split("#", 1)[0].strip()  # keep code, discard comment
@@ -121,7 +121,7 @@ def specialize(fn, module, constants, tuples, name=None, do_not_specialize=tuple
         f"    {key}: tl.constexpr = {value.__name__ if callable(value) else value}" for key, value in constants.items()
     ]
     tuple_lines = [
-        f"    {key} = {'(' + ','.join(value) + (',' if len(value)>=1 else '') + ')'}" for key, value in tuples.items()
+        f"    {key} = {'(' + ','.join(value) + (',' if len(value) >= 1 else '') + ')'}" for key, value in tuples.items()
     ]
     new_src = "\n".join(["@triton.jit", new_signature] + constexpr_lines + tuple_lines + body_lines)
     # Track how many logical lines precede the function body so we can adjust
@@ -173,7 +173,6 @@ class ClosureArg:
 
 
 class SpecializationModule:
-
     def __init__(self, module_name: str, kernels: list[tuple[str, object]], closure_args: dict[str, ClosureArg]):
         self.module_name = module_name
         self.kernels = kernels
@@ -183,6 +182,7 @@ class SpecializationModule:
     def get(self, **kwargs):
         import types
         import sys
+
         specs = [FnSpecs.default()] * len(self.closure_args)
         for key, value in kwargs.items():
             specs[list(self.closure_args.keys()).index(key)] = value
@@ -194,10 +194,13 @@ class SpecializationModule:
         do_not_specialize = []
         for spec in specs:
             do_not_specialize.extend(spec.fn_arg_do_not_specialize)
-        module = types.ModuleType(self.module_name + '_'.join(key))
+        module = types.ModuleType(self.module_name + "_".join(key))
         sys.modules[module.__name__] = module
         for kernel_name, kernel_fn in self.kernels:
-            setattr(module, kernel_name,
-                    specialize(kernel_fn, module, spec_constants, spec_tuples, do_not_specialize=do_not_specialize))
+            setattr(
+                module,
+                kernel_name,
+                specialize(kernel_fn, module, spec_constants, spec_tuples, do_not_specialize=do_not_specialize),
+            )
         self._modules[key] = module
         return module

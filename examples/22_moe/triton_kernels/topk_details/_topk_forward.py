@@ -36,8 +36,16 @@ def key_to_indx(indx, N_EXPTS_PAD: tl.constexpr):
 
 
 @triton.jit
-def streaming_topk(X, stride_xm, n_expts_tot, offs_m, mask_m, N_EXPTS_PAD: tl.constexpr, N_EXPTS_ACT: tl.constexpr,
-                   BLOCK_N: tl.constexpr):
+def streaming_topk(
+    X,
+    stride_xm,
+    n_expts_tot,
+    offs_m,
+    mask_m,
+    N_EXPTS_PAD: tl.constexpr,
+    N_EXPTS_ACT: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
     x_nbits: tl.constexpr = X.dtype.element_ty.primitive_bitwidth
     x_utype: tl.constexpr = tl.dtype(f"uint{x_nbits}")
     if x_nbits < 16:
@@ -87,14 +95,25 @@ def streaming_topk(X, stride_xm, n_expts_tot, offs_m, mask_m, N_EXPTS_PAD: tl.co
 
 
 @triton.jit
-def _topk_forward(X, stride_xm,  # inputs
-                  PeerYvs, PeerYis, stride_ym,  # topk values/indices
-                  USE_PROVIDED_INDX: tl.constexpr, PeerBits, stride_rm: tl.constexpr,
-                  stride_rn: tl.constexpr,  # bitmatrix
-                  n_rows, n_expts_tot,  # shape
-                  dst_offs_m, APPLY_SOFTMAX: tl.constexpr,  # constant
-                  BLOCK_M: tl.constexpr, N_EXPTS_PAD: tl.constexpr, N_EXPTS_ACT: tl.constexpr, BLOCK_N: tl.constexpr):
-
+def _topk_forward(
+    X,
+    stride_xm,  # inputs
+    PeerYvs,
+    PeerYis,
+    stride_ym,  # topk values/indices
+    USE_PROVIDED_INDX: tl.constexpr,
+    PeerBits,
+    stride_rm: tl.constexpr,
+    stride_rn: tl.constexpr,  # bitmatrix
+    n_rows,
+    n_expts_tot,  # shape
+    dst_offs_m,
+    APPLY_SOFTMAX: tl.constexpr,  # constant
+    BLOCK_M: tl.constexpr,
+    N_EXPTS_PAD: tl.constexpr,
+    N_EXPTS_ACT: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
     N_PEERS: tl.constexpr = len(PeerYvs)
 
     pid = tl.program_id(0)
@@ -120,8 +139,16 @@ def _topk_forward(X, stride_xm,  # inputs
         Xv_ptrs = X + offs_m[:, None] * stride_xm + y_indices
         y_values = tl.load(Xv_ptrs, mask=mask_m)
     else:
-        y_values, y_indices = streaming_topk(X, stride_xm, n_expts_tot, offs_m, mask_m,  #
-                                             N_EXPTS_PAD, N_EXPTS_ACT, BLOCK_N)
+        y_values, y_indices = streaming_topk(
+            X,
+            stride_xm,
+            n_expts_tot,
+            offs_m,
+            mask_m,  #
+            N_EXPTS_PAD,
+            N_EXPTS_ACT,
+            BLOCK_N,
+        )
 
     # normalize selected values
     if APPLY_SOFTMAX:

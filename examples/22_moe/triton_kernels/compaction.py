@@ -35,11 +35,16 @@ def compaction(yv, yi, bitmask, sentinel=-1):
     if isinstance(bitmask, Bitmatrix):
         bitmask = bitmask.storage.data
 
-    _masked_compaction[(n_rows, )](
-        yv, yi, bitmask, bitmask.stride(0), bitmask.stride(1),  # inputs
-        ret_yv, ret_yi,  # outputs
+    _masked_compaction[(n_rows,)](
+        yv,
+        yi,
+        bitmask,
+        bitmask.stride(0),
+        bitmask.stride(1),  # inputs
+        ret_yv,
+        ret_yi,  # outputs
         sentinel,  # sentinel
-        K=n_cols  # constants
+        K=n_cols,  # constants
     )
     return ret_yv, ret_yi
 
@@ -51,7 +56,7 @@ def compaction_torch(yv: torch.Tensor, yi: torch.Tensor, bitmask: torch.Tensor, 
     B, K = yi.shape
     device = yi.device
     # Expand bitmask to a boolean matrix of active bits  (B, 32)
-    w = (1 << torch.arange(32, device=device, dtype=bitmask.dtype))
+    w = 1 << torch.arange(32, device=device, dtype=bitmask.dtype)
     bits = (bitmask.unsqueeze(-1) & w) != 0
     mask = bits.flatten(start_dim=-2)  # or bits.reshape(B, -1)
     # For every yi element decide whether it should be kept

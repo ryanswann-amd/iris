@@ -36,7 +36,7 @@ import iris
 from moe_iris_v2 import moe_iris_v2
 
 # Import benchmark utilities from reference
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'reference'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "reference"))
 from bench_utils import prepare_mlp_numerics, resolve_x_dtype
 import tempfile
 
@@ -47,7 +47,7 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     """
     assert n_expts_tot % EP == 0
     assert dim2 % TP == 0
-    
+
     # Get rank and world_size from distributed context
     if dist.is_initialized():
         rank = dist.get_rank()
@@ -55,7 +55,7 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     else:
         rank = 0
         world_size = 1
-    
+
     dev = f"cuda:{rank}"
     DP = world_size
     batch = batch_per_expt * n_expts_tot // n_expts_act
@@ -74,7 +74,7 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     w1 = torch.randn((n_expts_tot // EP, dim1, dim2 // TP), device=dev)
     w2 = torch.randn((n_expts_tot // EP, dim2 // TP // 2, dim1), device=dev)
     # biases
-    bg = torch.randn((n_expts_tot, ), device=dev)
+    bg = torch.randn((n_expts_tot,), device=dev)
     if world_size > 1:
         dist.broadcast(bg, src=0)
     b1 = torch.randn((n_expts_tot // EP, dim2 // TP), device=dev)
@@ -90,10 +90,10 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
 
     input_x = torch.randn((batch // DP, dim1), device=dev).to(x_dtype)
     logits = torch.rand((batch // DP, n_expts_tot), device=dev, dtype=torch.float32)
-    
+
     expt_dict = make_expt_dict_uniform(EP, n_expts_tot)
     expt_assignment = make_expt_assignment(EP, n_expts_tot, expt_dict, device=torch.device(dev))
-    
+
     # Initialize symmetric memory
     symm_mem_pool.initialize_matmul(
         n_tokens_global=batch,
@@ -113,16 +113,8 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
         # In a real scenario, you'd concatenate w1 and w2 properly
         expert_weights = w1
         expert_biases = b1 if b1 is not None else torch.zeros_like(w1[:, 0, :])
-        
-        output = moe_iris_v2(
-            input_x, 
-            logits, 
-            expert_weights, 
-            expert_biases,
-            expt_assignment, 
-            n_expts_act,
-            shmem
-        )
+
+        output = moe_iris_v2(input_x, logits, expert_weights, expert_biases, expt_assignment, n_expts_act, shmem)
         return output
 
     # Warmup
@@ -135,23 +127,23 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
     torch.cuda.synchronize()
     if dist.is_initialized():
         dist.barrier()
-    
+
     start = time.perf_counter()
     for _ in range(n_iters):
         _ = run_layer()
         torch.cuda.synchronize()
-    
+
     if dist.is_initialized():
         dist.barrier()
     end = time.perf_counter()
-    
+
     elapsed_ms = (end - start) * 1000 / n_iters
 
     if rank == 0:
         print(f"\n{'=' * 80}")
-        print(f"Iris MoE Benchmark Results")
+        print("Iris MoE Benchmark Results")
         print(f"{'=' * 80}")
-        print(f"Configuration:")
+        print("Configuration:")
         print(f"  Batch per expert: {batch_per_expt}")
         print(f"  Total batch: {batch}")
         print(f"  Input dim (dim1): {dim1}")
@@ -163,70 +155,64 @@ def bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype
         print(f"  Data Parallelism (DP): {DP}")
         print(f"  Input dtype: {x_dtype}")
         print(f"  Weight dtype: {w_dtype}")
-        print(f"\nPerformance:")
+        print("\nPerformance:")
         print(f"  Time per iteration: {elapsed_ms:.3f} ms")
         print(f"  Throughput: {batch / elapsed_ms * 1000:.1f} tokens/sec")
         print(f"{'=' * 80}\n")
 
     # Cleanup
     symm_mem_pool.release()
-    
+
     if dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
 
 
-def _worker_init_and_run(rank, world_size, batch_per_expt, dim1, dim2, n_expts_tot, 
-                         n_expts_act, x_dtype, w_dtype, TP, EP):
+def _worker_init_and_run(
+    rank, world_size, batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP
+):
     """Worker function for multiprocessing"""
     # Initialize process group
-    dist.init_process_group(
-        backend="nccl", 
-        rank=rank, 
-        world_size=world_size,
-        device_id=torch.device(f"cuda:{rank}")
-    )
+    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=torch.device(f"cuda:{rank}"))
     torch.cuda.set_device(rank)
-    
+
     # Run benchmark
-    bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, 
-                   x_dtype, w_dtype, TP, EP)
+    bench_iris_moe(batch_per_expt, dim1, dim2, n_expts_tot, n_expts_act, x_dtype, w_dtype, TP, EP)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark Iris MoE with various configurations")
-    
+
     # Problem size
     parser.add_argument("--batch-per-expt", type=int, default=8, help="Tokens per expert")
     parser.add_argument("--dim1", type=int, default=2048, help="Input/output dimension")
     parser.add_argument("--dim2", type=int, default=8192, help="Hidden dimension")
     parser.add_argument("--n-expts-tot", type=int, default=16, help="Total number of experts")
     parser.add_argument("--n-expts-act", type=int, default=2, help="Number of active experts (top-k)")
-    
+
     # Parallelism
     parser.add_argument("--EP", type=int, default=8, help="Expert parallelism (GPU count)")
     parser.add_argument("--TP", type=int, default=1, help="Tensor parallelism")
-    
+
     # Data types
-    parser.add_argument("--x-dtype", type=str, default="bf16", choices=["bf16", "fp8", "fp16"],
-                        help="Input data type")
-    parser.add_argument("--w-dtype", type=str, default="bf16", choices=["bf16", "fp8", "mx4"],
-                        help="Weight data type")
-    
+    parser.add_argument("--x-dtype", type=str, default="bf16", choices=["bf16", "fp8", "fp16"], help="Input data type")
+    parser.add_argument("--w-dtype", type=str, default="bf16", choices=["bf16", "fp8", "mx4"], help="Weight data type")
+
     args = parser.parse_args()
-    
+
     if torch.cuda.device_count() < args.EP * args.TP:
         print(f"Error: Need {args.EP * args.TP} GPUs, but only {torch.cuda.device_count()} available")
         return
-    
+
     # Setup distributed
     import torch.multiprocessing as mp
+
     world_size = args.EP * args.TP
-    
+
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ.setdefault("MASTER_PORT", "12356")
-    
+
     if world_size > 1:
         mp.spawn(
             _worker_init_and_run,
@@ -261,4 +247,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

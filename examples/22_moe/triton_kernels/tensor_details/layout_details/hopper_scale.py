@@ -37,9 +37,9 @@ class HopperMXScaleLayout(Layout):
         data = torch.nn.functional.pad(data, (0, pad_k, 0, pad_m))
         *batch, M, K = data.shape
         assert data.is_contiguous()
-        assert M % (
-            2 * self.num_warps * 2 *
-            8) == 0 and K % 2 == 0, f"Input tensor must have a subtile of shape (..., {2 * self.num_warps * 2 * 8}, 2)"
+        assert M % (2 * self.num_warps * 2 * 8) == 0 and K % 2 == 0, (
+            f"Input tensor must have a subtile of shape (..., {2 * self.num_warps * 2 * 8}, 2)"
+        )
         b = len(batch)
         data = data.reshape(*batch, M // (2 * self.num_warps * 2 * 8), 2, self.num_warps, 2, 8, K // 2, 2)
         perm = [0, 2, 5, 1, 4, 6, 3]
@@ -62,7 +62,7 @@ class HopperMXScaleLayout(Layout):
         data = data.permute(*perm)
         data = data.reshape(*batch, M * 32, K // 32)
         data = self._maybe_mT(data)
-        return data[..., :self.M, :self.K]
+        return data[..., : self.M, : self.K]
 
     def swizzle_block_shape(self, block_shape):
         N, K = block_shape[-2:]
