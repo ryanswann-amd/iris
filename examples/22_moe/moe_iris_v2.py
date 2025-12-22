@@ -12,7 +12,11 @@ import triton
 import triton.language as tl
 import iris
 
-# Keep using Triton's routing functions for now
+# Using local copy of Triton kernels for standalone example
+import sys
+import os
+sys.path.insert(0, os.path.dirname(__file__))
+
 from triton_kernels.distributed import make_expt_dict_uniform, make_expt_assignment, symm_mem_pool
 from triton_kernels.reduce import reduce
 from triton_kernels.topk import topk
@@ -20,7 +24,11 @@ from triton_kernels.matmul import matmul
 from triton_kernels.tensor import make_ragged_tensor_metadata, remap_ragged_tensor_metadata
 
 
-def _convert_launch_metadata():
+def _convert_launch_metadata(grid, kernel, args):
+    """
+    Launch metadata for profiling - same signature as Triton reference
+    For now, return empty dict (can add profiling metrics later)
+    """
     return {}
 
 
