@@ -180,7 +180,8 @@ def test_copy_local_read_remote_write(load_cache_modifier, store_cache_modifier)
 
 
 @pytest.mark.parametrize(
-    "load_cache_modifier,store_cache_modifier", list(product(LOAD_CACHE_MODIFIERS_REMOTE_READ, STORE_CACHE_MODIFIERS_LOCAL_WRITE))
+    "load_cache_modifier,store_cache_modifier",
+    list(product(LOAD_CACHE_MODIFIERS_REMOTE_READ, STORE_CACHE_MODIFIERS_LOCAL_WRITE)),
 )
 def test_copy_remote_read_local_write(load_cache_modifier, store_cache_modifier):
     """Test copy: remote read → local write
