@@ -28,7 +28,6 @@ from iris.hip import (
     count_devices,
     get_ipc_handle,
     open_ipc_handle,
-    get_ipc_handle_size,
 )
 from iris.logging import logger
 

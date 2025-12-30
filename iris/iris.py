@@ -26,8 +26,6 @@ import triton
 import triton.language as tl
 
 from iris._common import IrisBase, CCLBase
-import math
-import torch
 
 
 class Iris(IrisBase):
