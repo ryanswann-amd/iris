@@ -26,8 +26,7 @@ import triton
 import triton.language as tl
 
 from iris._common import IrisBase
-from iris._tensor_ops import create_zeros, create_ones, create_full, create_zeros_like
-import numpy as np
+from iris._tensor_ops import create_zeros, create_ones, create_full
 import math
 import torch
 
@@ -54,7 +53,6 @@ class Iris(IrisBase):
 
         # Initialize CCL interface
         self.ccl = self.CCL(self)
-
 
     def zeros_like(
         self, input, *, dtype=None, layout=None, device=None, requires_grad=False, memory_format=torch.preserve_format
@@ -237,7 +235,9 @@ class Iris(IrisBase):
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0., 0., 0.], device='cuda:0')
         """
-        return create_zeros(self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad)
+        return create_zeros(
+            self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad
+        )
 
     def randn(
         self,
@@ -982,7 +982,6 @@ class Iris(IrisBase):
         final_tensor = torch.as_strided(heap_tensor, size, strides)
 
         return final_tensor
-
 
     class CCL:
         """

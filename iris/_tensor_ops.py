@@ -35,9 +35,7 @@ def create_zeros(iris_instance, *size, out=None, dtype=None, layout=torch.stride
     Returns:
         torch.Tensor: Zero-initialized tensor
     """
-    iris_instance.debug(
-        f"zeros: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
-    )
+    iris_instance.debug(f"zeros: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
 
     # Use global default dtype if None is provided
     if dtype is None:
