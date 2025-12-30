@@ -74,7 +74,6 @@ class IrisBase:
 
         heap_bases = np.zeros(num_ranks, dtype=np.uint64)
         heap_bases[cur_rank] = heap_base
-        ipc_handle_size = get_ipc_handle_size()
         ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
 
         distributed_barrier()
@@ -535,8 +534,6 @@ class IrisBase:
         Returns:
             A new tensor with the specified strides, data copied from original, on the same heap
         """
-        import math
-
         # First, create a temporary tensor with the correct strides using PyTorch
         temp_tensor = torch.empty_strided(size, strides, dtype=original_tensor.dtype, device=original_tensor.device)
 
