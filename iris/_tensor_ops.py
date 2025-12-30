@@ -273,6 +273,9 @@ def create_zeros_like(
     # Reshape to match input size
     new_tensor = new_tensor.reshape(size)
 
+    # Apply the requested memory format
+    new_tensor = iris_instance._apply_memory_format(new_tensor, size, memory_format, input)
+
     # Apply the requested layout
     new_tensor = iris_instance._apply_layout(new_tensor, layout)
 
