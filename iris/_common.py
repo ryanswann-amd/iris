@@ -598,6 +598,46 @@ class IrisBase:
             memory_format=memory_format,
         )
 
+    def get_device_context(self):
+        """
+        Get the device context tensor for kernels.
+
+        Returns a tensor encoding: `[cur_rank, num_ranks, heap_base_0, heap_base_1, ...]`
+
+        This method is useful for both Gluon kernels and future Triton backends that
+        utilize aggregates for passing context information.
+
+        Returns:
+            torch.Tensor: Encoded context data as int64 tensor on device
+
+        Example:
+            >>> ctx = iris.iris()
+            >>> context_tensor = ctx.get_device_context()
+            >>>
+            >>> @gluon.jit
+            >>> def kernel(IrisDeviceCtx: gl.constexpr, context_tensor):
+            >>>     ctx = IrisDeviceCtx.initialize(context_tensor)
+            >>>     data = ctx.load(buffer, 1)
+        """
+        # Convert heap_bases to a list for concatenation
+        heap_bases_list = self.heap_bases.tolist()
+
+        # Create context tensor: [cur_rank, num_ranks, heap_base_0, heap_base_1, ...]
+        context_data = [self.cur_rank, self.num_ranks] + heap_bases_list
+        context_tensor = torch.tensor(context_data, dtype=torch.int64, device=self.device)
+
+        return context_tensor
+
+    def get_backend(self):
+        """
+        Legacy method for backward compatibility.
+        Use get_device_context() for kernel context.
+
+        Returns:
+            torch.Tensor: Device context tensor
+        """
+        return self.get_device_context()
+
 
 class CCLBase:
     """
