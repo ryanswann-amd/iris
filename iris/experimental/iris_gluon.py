@@ -39,7 +39,7 @@ except ImportError as e:
 
 import triton.language as tl
 
-from iris._common import IrisBase
+from iris._common import IrisBase, CCLBase
 from iris._tensor_ops import create_zeros, create_ones, create_full, create_zeros_like
 import torch
 
@@ -471,116 +471,7 @@ class IrisGluon(IrisBase):
         super().__init__(heap_size)
 
         # Initialize CCL interface
-        self.ccl = self.CCL(self)
-
-    class CCL:
-        """
-        Collective Communication Library (CCL) interface for IrisGluon.
-
-        Provides collective operations that can be called as methods on the IrisGluon instance.
-        Example usage:
-            >>> shmem = iris_gluon.iris()
-            >>> shmem.ccl.all_to_all(output_tensor, input_tensor)
-        """
-
-        def __init__(self, iris_instance):
-            """
-            Initialize CCL with a reference to the parent IrisGluon instance.
-
-            Args:
-                iris_instance: The parent IrisGluon instance
-            """
-            self._iris = iris_instance
-
-        def all_to_all(self, output_tensor, input_tensor, config=None, async_op=False):
-            """
-            All-to-all collective operation.
-
-            Each rank sends a tensor chunk to each other rank and receives
-            a tensor chunk from each other rank. Input/output tensors should have
-            shape (M, N * world_size) where each chunk of N columns corresponds to one rank.
-
-            Args:
-                output_tensor: Output tensor of shape (M, N * world_size)
-                input_tensor: Input tensor of shape (M, N * world_size)
-                config: Config instance with kernel parameters (default: None).
-                        If None, uses default Config values.
-                        Set config.use_gluon=True to use Gluon implementation with traffic shaping.
-                async_op: If False, performs a barrier at the end. If True, returns immediately.
-                          Default: False.
-
-            Example:
-                >>> shmem = iris_gluon.iris()
-                >>> shmem.ccl.all_to_all(output_tensor, input_tensor)
-
-                >>> # Custom configuration with Gluon traffic shaping
-                >>> from iris.ccl import Config
-                >>> config = Config(use_gluon=True, block_size_m=128, block_size_n=32)
-                >>> shmem.ccl.all_to_all(output_tensor, input_tensor, config=config)
-            """
-            from iris.ccl.all_to_all import all_to_all as _all_to_all
-
-            _all_to_all(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
-
-        def all_gather(self, output_tensor, input_tensor, config=None, async_op=False):
-            """
-            All-gather collective operation.
-
-            Each rank sends its input tensor to all ranks, and all ranks receive
-            and concatenate all input tensors along dimension 0 (rows), matching
-            torch.distributed.all_gather_into_tensor behavior.
-
-            Args:
-                output_tensor: Output tensor of shape (world_size * M, N) - will contain concatenated inputs
-                input_tensor: Input tensor of shape (M, N) - local rank's data to send
-                config: Config instance with kernel parameters (default: None).
-                        If None, uses default Config values.
-                async_op: If False, performs a barrier at the end. If True, returns immediately.
-                          Default: False.
-
-            Example:
-                >>> shmem = iris_gluon.iris()
-                >>> # Input: (M, N), Output: (world_size * M, N)
-                >>> shmem.ccl.all_gather(output_tensor, input_tensor)
-
-                >>> # Custom configuration
-                >>> from iris.ccl import Config
-                >>> config = Config(block_size_m=128, block_size_n=32)
-                >>> shmem.ccl.all_gather(output_tensor, input_tensor, config=config)
-            """
-            from iris.ccl.all_gather import all_gather as _all_gather
-
-            _all_gather(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
-
-        def reduce_scatter(self, output_tensor, input_tensor, config=None, async_op=False):
-            """
-            Reduce-scatter collective operation.
-
-            Each rank reduces its assigned tiles from all ranks' inputs and stores
-            the result only to its own output tensor. This is similar to all-reduce
-            but without broadcasting the result to all ranks.
-
-            Args:
-                output_tensor: Output tensor of shape (M, N) - will contain reduced tiles for this rank
-                input_tensor: Input tensor of shape (M, N) - local rank's partial data
-                config: Config instance with kernel parameters (default: None).
-                        If None, uses default Config values.
-                        Only supports reduce_scatter_variant="two_shot".
-                async_op: If False, performs a barrier at the end. If True, returns immediately.
-                          Default: False.
-
-            Example:
-                >>> shmem = iris_gluon.iris()
-                >>> shmem.ccl.reduce_scatter(output_tensor, input_tensor)
-
-                >>> # Custom configuration
-                >>> from iris.ccl import Config
-                >>> config = Config(reduce_scatter_variant="two_shot", all_reduce_distribution=1)
-                >>> shmem.ccl.reduce_scatter(output_tensor, input_tensor, config=config)
-            """
-            from iris.ccl.reduce_scatter import reduce_scatter as _reduce_scatter
-
-            _reduce_scatter(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
+        self.ccl = CCLBase(self)
 
     def get_device_context(self):
         """
