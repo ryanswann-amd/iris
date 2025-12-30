@@ -25,32 +25,14 @@ Example:
 import triton
 import triton.language as tl
 
-from iris._distributed_helpers import (
-    init_distributed,
-    distributed_allgather,
-    distributed_barrier,
-    distributed_broadcast_scalar,
-    distributed_broadcast_tensor,
-)
-from iris.hip import (
-    set_device,
-    get_cu_count,
-    count_devices,
-    get_ipc_handle,
-    open_ipc_handle,
-    get_ipc_handle_size,
-)
+from iris._common import IrisBase
+from iris._tensor_ops import create_zeros, create_ones, create_full, create_zeros_like
 import numpy as np
 import math
 import torch
-import ctypes
-import logging
-
-# Import logging functionality from the separate logging module
-from .logging import logger
 
 
-class Iris:
+class Iris(IrisBase):
     """
     Main Iris class for multi-GPU communication and memory management.
 
@@ -67,221 +49,12 @@ class Iris:
     """
 
     def __init__(self, heap_size=1 << 30):
-        # Initialize
-        comm, cur_rank, num_ranks = init_distributed()
-        num_gpus = count_devices()
-
-        gpu_id = cur_rank % num_gpus
-        set_device(gpu_id)
-
-        self.comm = comm
-        self.num_ranks = num_ranks
-        self.cur_rank = cur_rank
-        self.gpu_id = gpu_id
-        self.heap_size = heap_size
-        self.heap_offset = 0
-        self.alignment = 1024
-        self.device = f"cuda:{gpu_id}"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
-
-        heap_base = self.memory_pool.data_ptr()
-        heap_base_ptr = ctypes.c_void_p(heap_base)
-
-        heap_bases = np.zeros(num_ranks, dtype=np.uint64)
-        heap_bases[cur_rank] = heap_base
-        ipc_handle_size = get_ipc_handle_size()
-        ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
-        ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
-
-        distributed_barrier()
-
-        all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
-        heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
-        all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
-        all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
-
-        distributed_barrier()
-
-        ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
-        for rank in range(num_ranks):
-            if rank != cur_rank:
-                handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
-                ipc_heap_bases[rank] = int(handle)
-            else:
-                ipc_heap_bases[rank] = heap_bases[rank]
-
-        for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
-
-        distributed_barrier()
-        self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
-
-        distributed_barrier()
+        # Initialize base class
+        super().__init__(heap_size)
 
         # Initialize CCL interface
         self.ccl = self.CCL(self)
 
-    def _log_with_rank(self, level, message):
-        """Helper method to log with rank information injected into the record."""
-        if logger.isEnabledFor(level):
-            record = logging.LogRecord(
-                name=logger.name, level=level, pathname="", lineno=0, msg=message, args=(), exc_info=None
-            )
-            # Inject rank information into the record
-            record.iris_rank = self.cur_rank
-            record.iris_num_ranks = self.num_ranks
-            logger.handle(record)
-
-    def debug(self, message):
-        """
-        Log a debug message with rank information.
-
-        Args:
-            message (str): Human-readable message to log at debug level.
-
-        Notes:
-            The log record is enriched with ``iris_rank`` and ``iris_num_ranks`` so
-            formatters can display the originating rank and world size.
-
-        Example:
-            >>> ctx = iris.iris()
-            >>> iris.set_logger_level(iris.DEBUG)
-            >>> ctx.debug("Allocating buffers")  # [Iris] [0/1] Allocating buffers
-        """
-        self._log_with_rank(logging.DEBUG, message)
-
-    def info(self, message):
-        """
-        Log an info message with rank information.
-
-        Args:
-            message (str): Human-readable message to log at info level.
-
-        Example:
-            >>> ctx = iris.iris()
-            >>> ctx.info("Starting iteration 0")  # [Iris] [0/1] Starting iteration 0
-        """
-        self._log_with_rank(logging.INFO, message)
-
-    def warning(self, message):
-        """
-        Log a warning message with rank information.
-
-        Args:
-            message (str): Human-readable message to log at warning level.
-
-        Example:
-            >>> ctx = iris.iris()
-            >>> ctx.warning("Memory usage is high")  # [Iris] [0/1] Memory usage is high
-        """
-        self._log_with_rank(logging.WARNING, message)
-
-    def error(self, message):
-        """
-        Log an error message with rank information.
-
-        Args:
-            message (str): Human-readable message to log at error level.
-
-        Example:
-            >>> ctx = iris.iris()
-            >>> ctx.error("Failed to allocate memory")  # [Iris] [0/1] Failed to allocate memory
-        """
-        self._log_with_rank(logging.ERROR, message)
-
-    def broadcast(self, value, source_rank):
-        """
-        Broadcast a value from one rank to all ranks.
-
-        This method automatically detects the type of value and uses the appropriate
-        broadcast mechanism:
-        - For tensors and arrays: uses efficient PyTorch distributed tensor collectives
-        - For scalars and other objects: uses object broadcast
-
-        Args:
-            value (Any): The value to broadcast. Can be a scalar, tensor, numpy array,
-                or any picklable object. Only the ``source_rank`` value is used;
-                other ranks should pass a placeholder (e.g., ``None``).
-            source_rank (int): Rank id that holds the authoritative value.
-
-        Returns:
-            Any: The value broadcast to all ranks. Tensors and arrays are returned as
-                numpy arrays; scalars and objects are returned in their original type.
-
-        Examples:
-            >>> ctx = iris.iris()
-            >>> # Broadcasting a scalar
-            >>> value = 42 if ctx.cur_rank == 0 else None
-            >>> value = ctx.broadcast(value, source_rank=0)  # All ranks get 42
-            >>>
-            >>> # Broadcasting a tensor
-            >>> if ctx.cur_rank == 0:
-            >>>     data = torch.randn(10, 10)
-            >>> else:
-            >>>     data = None
-            >>> data = ctx.broadcast(data, source_rank=0)  # All ranks get the same array
-        """
-        # Check if the value on source_rank is a tensor or array-like
-        if self.cur_rank == source_rank and value is not None:
-            # Explicitly exclude strings and non-numeric types
-            if isinstance(value, (str, dict, bool)):
-                is_tensor = False
-            elif isinstance(value, torch.Tensor):
-                is_tensor = True
-            elif isinstance(value, np.ndarray):
-                is_tensor = True
-            elif isinstance(value, (list, tuple)):
-                # Try to convert list/tuple to tensor to check if it's numeric
-                try:
-                    torch.as_tensor(value)
-                    is_tensor = True
-                except (TypeError, ValueError):
-                    is_tensor = False
-            else:
-                # For other types, try to convert and check
-                try:
-                    test_array = np.asarray(value)
-                    # Check if it's a numeric dtype that torch can handle
-                    if np.issubdtype(test_array.dtype, np.number):
-                        torch.as_tensor(test_array)
-                        is_tensor = True
-                    else:
-                        is_tensor = False
-                except (TypeError, ValueError):
-                    is_tensor = False
-        else:
-            is_tensor = False
-
-        # Broadcast the type decision to all ranks
-        is_tensor = distributed_broadcast_scalar(is_tensor, source_rank)
-
-        if is_tensor:
-            return distributed_broadcast_tensor(value, root=source_rank)
-        else:
-            return distributed_broadcast_scalar(value, source_rank)
-
-    def __allocate(self, num_elements, dtype):
-        self.debug(f"allocate: num_elements = {num_elements}, dtype = {dtype}")
-
-        element_size = torch.tensor([], dtype=dtype).element_size()
-        size_in_bytes = num_elements * element_size
-        aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
-
-        if self.heap_offset + aligned_size > self.heap_size:
-            raise MemoryError("Heap out of memory")
-
-        start = self.heap_offset
-        self.heap_offset += aligned_size
-
-        sub_buffer = self.memory_pool[start : start + size_in_bytes].view(dtype)
-        return sub_buffer.reshape((num_elements,))
-
-    def __parse_size(self, size):
-        # Handle nested tuples/lists by flattening them recursively
-        while len(size) == 1 and isinstance(size[0], (tuple, list)):
-            size = size[0]
-        num_elements = math.prod(size)
-        return size, num_elements
 
     def zeros_like(
         self, input, *, dtype=None, layout=None, device=None, requires_grad=False, memory_format=torch.preserve_format
@@ -323,14 +96,14 @@ class Iris:
             device = input.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Get the size from input tensor
         size = input.size()
         num_elements = input.numel()
 
         # Allocate new tensor with the same size
-        new_tensor = self.__allocate(num_elements, dtype)
+        new_tensor = self._allocate(num_elements, dtype)
         new_tensor.zero_()
 
         # Reshape to match input size
@@ -340,7 +113,7 @@ class Iris:
         new_tensor = self.__apply_memory_format(new_tensor, size, memory_format, input)
 
         # Apply the requested layout
-        new_tensor = self.__apply_layout(new_tensor, layout)
+        new_tensor = self._apply_layout(new_tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -418,20 +191,20 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             tensor = out
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
 
         target_device = tensor.device
         arange_tensor = torch.arange(start, end, step, dtype=dtype, device=target_device)
 
         tensor[:] = arange_tensor
 
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         if requires_grad:
             tensor.requires_grad_()
@@ -464,44 +237,7 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0., 0., 0.], device='cuda:0')
         """
-        self.debug(f"zeros: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Fill with zeros
-            out.zero_()
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with zeros
-            tensor.zero_()
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
+        return create_zeros(self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad)
 
     def randn(
         self,
@@ -573,21 +309,21 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        size, num_elements = self._parse_size(size)
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Generate random data and copy to out tensor
             random_data = torch.randn(num_elements, generator=generator, dtype=dtype, device=device, layout=layout)
             out.copy_(random_data)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Generate random data and copy to tensor
             random_data = torch.randn(num_elements, generator=generator, dtype=dtype, device=device, layout=layout)
             tensor.copy_(random_data)
@@ -595,7 +331,7 @@ class Iris:
             tensor = tensor.reshape(size)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -629,44 +365,7 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([1., 1., 1.], device='cuda:0')
         """
-        self.debug(f"ones: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Fill with ones
-            out.fill_(1)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with ones
-            tensor.fill_(1)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
+        return create_ones(self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad)
 
     def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -694,47 +393,32 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([3.1400, 3.1400, 3.1400], device='cuda:0')
         """
-        self.debug(
-            f"full: size = {size}, fill_value = {fill_value}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
+        return create_full(
+            self, size, fill_value, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad
         )
 
-        # Infer dtype from fill_value if not provided
-        if dtype is None:
-            if isinstance(fill_value, (int, float)):
-                if isinstance(fill_value, float):
-                    dtype = torch.get_default_dtype()
-                else:
-                    dtype = torch.int64
-            else:
-                # For other types (like tensors), use their dtype
-                dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        size, num_elements = self._parse_size(size)
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Fill with the specified value
             out.fill_(fill_value)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Fill with the specified value
             tensor.fill_(fill_value)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -762,8 +446,8 @@ class Iris:
             >>> print(tensor[0])  # tensor([0.1234, 0.5678, 0.9012], device='cuda:0')
         """
         self.debug(f"uniform: size = {size}, low = {low}, high = {high}, dtype = {dtype}")
-        size, num_elements = self.__parse_size(size)
-        tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+        size, num_elements = self._parse_size(size)
+        tensor = self._allocate(num_elements=num_elements, dtype=dtype)
         tensor.uniform_(low, high)
         return tensor.reshape(size)
 
@@ -824,18 +508,18 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        size, num_elements = self._parse_size(size)
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
@@ -843,7 +527,7 @@ class Iris:
         tensor = self.__apply_memory_format(tensor, size, memory_format)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -906,18 +590,18 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        size, num_elements = self._parse_size(size)
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
@@ -932,7 +616,7 @@ class Iris:
             torch.randint(low, high, size, out=tensor, dtype=dtype, device=target_device)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -988,7 +672,7 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse steps and extract the integer value
         if isinstance(steps, (tuple, list)):
@@ -999,8 +683,8 @@ class Iris:
                 if isinstance(steps_int, (tuple, list)):
                     steps_int = steps_int[0]
             else:
-                # Multi-element tuple/list - use __parse_size for compatibility
-                size, num_elements = self.__parse_size(steps)
+                # Multi-element tuple/list - use _parse_size for compatibility
+                size, num_elements = self._parse_size(steps)
                 steps_int = num_elements
         else:
             # steps is a single integer
@@ -1013,11 +697,11 @@ class Iris:
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
@@ -1027,7 +711,7 @@ class Iris:
         torch.linspace(start, end, steps_int, out=tensor, dtype=dtype, device=target_device)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -1087,18 +771,18 @@ class Iris:
             device = self.device
 
         # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        self._throw_if_invalid_device(device)
 
         # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        size, num_elements = self._parse_size(size)
 
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
+            self._throw_if_invalid_output_tensor(out, num_elements, dtype)
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = self._allocate(num_elements=num_elements, dtype=dtype)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
@@ -1112,7 +796,7 @@ class Iris:
             torch.rand(size, out=tensor, dtype=dtype, device=device)
 
         # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        tensor = self._apply_layout(tensor, layout)
 
         # Set requires_grad if specified
         if requires_grad:
@@ -1123,130 +807,8 @@ class Iris:
     def __deallocate(self, pointer):
         pass
 
-    def get_heap_bases(self):
-        """
-        Return the tensor of symmetric heap base addresses for all ranks.
-
-        Returns:
-            torch.Tensor: A 1D tensor of ``uint64`` heap base addresses of size ``num_ranks``
-            on the Iris device. Pass this to device-side Triton kernels that require
-            heap translation.
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> heap_bases = ctx.get_heap_bases()
-            >>> print(heap_bases.shape)  # torch.Size([num_ranks])
-        """
-        return self.heap_bases
-
-    def barrier(self, stream=None):
-        """
-        Synchronize all ranks and their CUDA devices.
-
-        This first calls ``torch.cuda.synchronize()`` or ``stream.synchronize()`` to ensure the local GPU has
-        finished all queued work, then performs a global distributed barrier so that all
-        ranks reach the same point before proceeding.
-        Args:
-            stream: If stream is given: wait only for that stream before barrier. If stream is None: legacy behavior (device-wide sync).
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> ctx.barrier()  # Synchronize all ranks
-        """
-        # Wait for all GPUs to finish work
-        if stream is None:
-            torch.cuda.synchronize()
-        else:
-            stream.synchronize()
-
-        # Distributed barrier
-        distributed_barrier()
-
-    def get_device(self):
-        """
-        Get the underlying device where the Iris symmetric heap resides.
-
-        Returns:
-            torch.device: The CUDA device of Iris-managed memory.
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> device = ctx.get_device()
-            >>> print(device)  # cuda:0
-        """
-        return self.memory_pool.device
-
-    def get_cu_count(self):
-        """
-        Get the number of compute units (CUs) for the current GPU.
-
-        Returns:
-            int: Number of compute units on this rank's GPU.
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> cu_count = ctx.get_cu_count()
-            >>> print(f"GPU has {cu_count} CUs")  # GPU has 304 CUs
-        """
-        return get_cu_count(self.gpu_id)
-
-    def get_rank(self):
-        """
-        Get this process's rank id in the distributed communicator.
-
-        Returns:
-            int: Zero-based rank id of the current process.
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> rank = ctx.get_rank()
-            >>> print(f"This is rank {rank}")  # This is rank 0
-        """
-        return self.cur_rank
-
-    def get_num_ranks(self):
-        """
-        Get the total number of ranks in the distributed communicator.
-
-        Returns:
-            int: World size (number of ranks).
-
-        Example:
-            >>> ctx = iris.iris(1 << 20)
-            >>> num_ranks = ctx.get_num_ranks()
-            >>> print(f"Total ranks: {num_ranks}")  # Total ranks: 1
-        """
-        return self.num_ranks
-
-    def __throw_if_invalid_output_tensor(self, tensor: torch.Tensor, num_elements: int, dtype: torch.dtype):
-        if not self.__tensor_on_device(tensor):
-            raise RuntimeError(
-                f"The output tensor is not on the same device as the Iris instance. The Iris instance is on device {self.device} but the output tensor is on device {tensor.device}"
-            )
-        if not self.__on_symmetric_heap(tensor):
-            raise RuntimeError(
-                f"The output tensor is not on the symmetric heap. The Iris instance is on heap base {self.heap_bases[self.cur_rank]} but the output tensor is on heap base {tensor.data_ptr()}"
-            )
-        if tensor.numel() != num_elements:
-            raise RuntimeError(f"The output tensor has {tensor.numel()} elements, but {num_elements} are required")
-        if tensor.dtype != dtype:
-            raise RuntimeError(f"The output tensor has dtype {tensor.dtype}, but {dtype} is required")
-
-    def __throw_if_invalid_device(self, device):
-        """
-        Throw a RuntimeError if the requested device is not compatible with this Iris instance.
-
-        Args:
-            device: The requested device (can be string, torch.device, or None)
-
-        Raises:
-            RuntimeError: If the device is not compatible
-        """
-        if not self.__is_valid_device(device):
-            raise RuntimeError(
-                f"Device mismatch: requested device {device} but Iris instance is on device {self.device}. "
-                f"Iris only supports tensors on its own device."
-            )
+    def __deallocate(self, pointer):
+        pass
 
     def __apply_memory_format(
         self, tensor: torch.Tensor, size: tuple, memory_format: torch.memory_format, input_tensor: torch.Tensor = None
@@ -1403,7 +965,7 @@ class Iris:
 
         # Now allocate a new tensor on our symmetric heap
         num_elements = math.prod(size)
-        heap_tensor = self.__allocate(num_elements, original_tensor.dtype)
+        heap_tensor = self._allocate(num_elements, original_tensor.dtype)
 
         # Reshape to the desired size
         heap_tensor = heap_tensor.reshape(size)
@@ -1421,80 +983,6 @@ class Iris:
 
         return final_tensor
 
-    def __apply_layout(self, tensor: torch.Tensor, layout: torch.layout) -> torch.Tensor:
-        """
-        Apply the requested layout to a tensor.
-
-        Args:
-            tensor: The tensor to modify
-            layout: The desired layout
-
-        Returns:
-            Tensor with the requested layout
-        """
-
-        if layout == torch.strided:
-            # Strided layout is the default - no changes needed
-            return tensor
-        else:
-            # Only support strided layout for now
-            raise ValueError(f"Layout {layout} not supported. Only torch.strided is currently supported.")
-
-    def __tensor_on_device(self, tensor: torch.Tensor):
-        # Get the Iris device from memory_pool.device
-        iris_device = self.get_device()
-        tensor_device = tensor.device
-
-        # For CUDA devices, check if they're compatible
-        if tensor_device.type == "cuda" and iris_device.type == "cuda":
-            if iris_device.index is None:
-                return True
-            return tensor_device.index == iris_device.index
-
-        # For non-CUDA devices, they must be exactly equal
-        return tensor_device == iris_device
-
-    def __on_symmetric_heap(self, tensor: torch.Tensor):
-        # Special case for empty tensors - they might not have a valid data_ptr
-        if tensor.numel() == 0:
-            self.debug("Empty tensor detected, skipping heap check")
-            return True
-
-        # Convert CUDA pointer to integer for comparison
-        tensor_ptr = int(tensor.data_ptr())
-        heap_base = int(self.heap_bases[self.cur_rank])
-
-        result = tensor_ptr >= heap_base and tensor_ptr < heap_base + self.heap_size
-
-        return result
-
-    def __is_valid_device(self, device) -> bool:
-        """
-        Check if the requested device is compatible with this Iris instance.
-
-        Args:
-            device: The requested device (can be string, torch.device, or None)
-
-        Returns:
-            bool: True if the device is compatible, False otherwise
-        """
-        if device is None:
-            return True  # None means use default device
-
-        # Convert device strings to torch.device objects for proper comparison
-        requested_device = torch.device(device) if isinstance(device, str) else device
-        iris_device = self.get_device()
-
-        # Check if both are CUDA devices
-        if requested_device.type == "cuda" and iris_device.type == "cuda":
-            # Check if index matches or if requested is "cuda" (any index)
-            if requested_device.index is None:
-                return True
-            else:
-                return requested_device.index == iris_device.index
-
-        # For non-CUDA devices, always return False
-        return False
 
     class CCL:
         """
