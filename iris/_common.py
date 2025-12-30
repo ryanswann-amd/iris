@@ -477,7 +477,8 @@ class IrisBase:
             torch.Tensor: Zero-initialized tensor on the symmetric heap
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.zeros(2, 3)
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0., 0., 0.], device='cuda:0')
@@ -510,7 +511,8 @@ class IrisBase:
             torch.Tensor: Ones-initialized tensor on the symmetric heap
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.ones(2, 3)
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([1., 1., 1.], device='cuda:0')
@@ -541,7 +543,8 @@ class IrisBase:
             torch.Tensor: Tensor filled with fill_value
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.full((2, 3), 3.14)
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([3.1400, 3.1400, 3.1400], device='cuda:0')
@@ -583,7 +586,8 @@ class IrisBase:
             torch.Tensor: Zero-initialized tensor with same shape as input
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> input_tensor = ctx.ones(2, 3)
             >>> zeros_tensor = ctx.zeros_like(input_tensor)
             >>> print(zeros_tensor.shape)  # torch.Size([2, 3])
@@ -628,7 +632,8 @@ class IrisBase:
             torch.Tensor: 1-D tensor with evenly spaced values
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.arange(0, 10, 2)  # [0, 2, 4, 6, 8]
             >>> print(tensor.shape)  # torch.Size([5])
         """
@@ -715,7 +720,8 @@ class IrisBase:
             torch.Tensor: Tensor filled with random numbers from normal distribution
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.randn(2, 3)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
@@ -772,7 +778,8 @@ class IrisBase:
             torch.Tensor: A tensor filled with random numbers from a uniform distribution.
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.uniform((2, 3), low=0.0, high=1.0)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
@@ -813,7 +820,8 @@ class IrisBase:
             torch.Tensor: Tensor with uninitialized data
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.empty(2, 3)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
@@ -876,7 +884,8 @@ class IrisBase:
             torch.Tensor: Tensor filled with random integers
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.randint(0, 10, (2, 3))  # Random integers [0, 10)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
@@ -952,7 +961,8 @@ class IrisBase:
             torch.Tensor: 1-D tensor with evenly spaced values from start to end
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.linspace(0, 10, 5)  # [0, 2.5, 5, 7.5, 10]
             >>> print(tensor)
         """
@@ -1046,7 +1056,8 @@ class IrisBase:
             torch.Tensor: Tensor filled with random values in [0, 1)
 
         Example:
-            >>> ctx = iris.iris(1 << 20)
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> tensor = ctx.rand(2, 3)  # Random values in [0, 1)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
@@ -1104,7 +1115,8 @@ class IrisBase:
             torch.Tensor: Encoded context data as int64 tensor on device
 
         Example:
-            >>> ctx = iris.iris()
+            >>> import iris  # or: from iris.experimental import iris_gluon
+            >>> ctx = iris.Iris(1 << 20)  # or: ctx = iris_gluon.IrisGluon(1 << 20)
             >>> context_tensor = ctx.get_device_context()
             >>>
             >>> @gluon.jit
