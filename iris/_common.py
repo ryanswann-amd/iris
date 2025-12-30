@@ -33,6 +33,10 @@ from iris.hip import (
 from iris.logging import logger
 
 
+# Import tensor operations for use in IrisBase methods
+from iris._tensor_ops import create_zeros, create_ones, create_full, create_zeros_like
+
+
 class IrisBase:
     """
     Base class for Iris implementations containing shared functionality.
@@ -448,6 +452,151 @@ class IrisBase:
             int: World size (number of ranks).
         """
         return self.num_ranks
+
+    def zeros(self, *size, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
+        """
+        Returns a tensor filled with the scalar value 0, with the shape defined by the variable argument size.
+        The tensor is allocated on the Iris symmetric heap.
+
+        Args:
+            *size (int...): a sequence of integers defining the shape of the output tensor.
+                Can be a variable number of arguments or a collection like a list or tuple.
+
+        Keyword Arguments:
+            out (Tensor, optional): the output tensor.
+            dtype (torch.dtype, optional): the desired data type of returned tensor.
+                Default: if None, uses a global default (see torch.set_default_dtype()).
+            layout (torch.layout, optional): the desired layout of returned Tensor.
+                Default: torch.strided. Note: Iris tensors always use `torch.strided` regardless of this parameter.
+            device (torch.device, optional): the desired device of returned tensor.
+                Default: if None, uses the current device for the default tensor type.
+            requires_grad (bool, optional): If autograd should record operations on the returned tensor.
+                Default: False.
+
+        Returns:
+            torch.Tensor: Zero-initialized tensor on the symmetric heap
+
+        Example:
+            >>> ctx = iris.iris(1 << 20)
+            >>> tensor = ctx.zeros(2, 3)
+            >>> print(tensor.shape)  # torch.Size([2, 3])
+            >>> print(tensor[0])  # tensor([0., 0., 0.], device='cuda:0')
+        """
+        return create_zeros(
+            self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad
+        )
+
+    def ones(self, *size, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
+        """
+        Returns a tensor filled with the scalar value 1, with the shape defined by the variable argument size.
+        The tensor is allocated on the Iris symmetric heap.
+
+        Args:
+            *size (int...): a sequence of integers defining the shape of the output tensor.
+                Can be a variable number of arguments or a collection like a list or tuple.
+
+        Keyword Arguments:
+            out (Tensor, optional): the output tensor.
+            dtype (torch.dtype, optional): the desired data type of returned tensor.
+                Default: if None, uses a global default (see torch.set_default_dtype()).
+            layout (torch.layout, optional): the desired layout of returned Tensor.
+                Default: torch.strided. Note: Iris tensors always use `torch.strided` regardless of this parameter.
+            device (torch.device, optional): the desired device of returned tensor.
+                Default: if None, uses the current device for the default tensor type.
+            requires_grad (bool, optional): If autograd should record operations on the returned tensor.
+                Default: False.
+
+        Returns:
+            torch.Tensor: Ones-initialized tensor on the symmetric heap
+
+        Example:
+            >>> ctx = iris.iris(1 << 20)
+            >>> tensor = ctx.ones(2, 3)
+            >>> print(tensor.shape)  # torch.Size([2, 3])
+            >>> print(tensor[0])  # tensor([1., 1., 1.], device='cuda:0')
+        """
+        return create_ones(self, *size, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad)
+
+    def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
+        """
+        Creates a tensor of size size filled with fill_value. The tensor's dtype is inferred from fill_value.
+        The tensor is allocated on the Iris symmetric heap.
+
+        Args:
+            size (int...): a list, tuple, or torch.Size of integers defining the shape of the output tensor.
+            fill_value (Scalar): the value to fill the output tensor with.
+
+        Keyword Arguments:
+            out (Tensor, optional): the output tensor.
+            dtype (torch.dtype, optional): the desired data type of returned tensor.
+                Default: if None, uses a global default (see torch.set_default_dtype()).
+            layout (torch.layout, optional): the desired layout of returned Tensor.
+                Default: torch.strided. Note: Iris tensors always use `torch.strided` regardless of this parameter.
+            device (torch.device, optional): the desired device of returned tensor.
+                Default: if None, uses the current device for the default tensor type.
+            requires_grad (bool, optional): If autograd should record operations on the returned tensor.
+                Default: False.
+
+        Returns:
+            torch.Tensor: Tensor filled with fill_value
+
+        Example:
+            >>> ctx = iris.iris(1 << 20)
+            >>> tensor = ctx.full((2, 3), 3.14)
+            >>> print(tensor.shape)  # torch.Size([2, 3])
+            >>> print(tensor[0])  # tensor([3.1400, 3.1400, 3.1400], device='cuda:0')
+        """
+        return create_full(
+            self, size, fill_value, out=out, dtype=dtype, layout=layout, device=device, requires_grad=requires_grad
+        )
+
+    def zeros_like(
+        self,
+        input,
+        *,
+        dtype=None,
+        layout=None,
+        device=None,
+        requires_grad=False,
+        memory_format=torch.preserve_format,
+    ):
+        """
+        Returns a tensor filled with the scalar value 0, with the same size as input,
+        allocated on the Iris symmetric heap.
+
+        Args:
+            input (Tensor): the size of input will determine size of the output tensor.
+
+        Keyword Arguments:
+            dtype (torch.dtype, optional): the desired data type of returned Tensor.
+                Default: if None, defaults to the dtype of input.
+            layout (torch.layout, optional): the desired layout of returned tensor.
+                Default: if None, defaults to the layout of input. Note: Iris tensors are always contiguous (strided).
+            device (torch.device, optional): the desired device of returned tensor.
+                Default: if None, defaults to the device of input. Must be compatible with this Iris instance.
+            requires_grad (bool, optional): If autograd should record operations on the returned tensor.
+                Default: False.
+            memory_format (torch.memory_format, optional): the desired memory format of returned Tensor.
+                Default: torch.preserve_format.
+
+        Returns:
+            torch.Tensor: Zero-initialized tensor with same shape as input
+
+        Example:
+            >>> ctx = iris.iris(1 << 20)
+            >>> input_tensor = ctx.ones(2, 3)
+            >>> zeros_tensor = ctx.zeros_like(input_tensor)
+            >>> print(zeros_tensor.shape)  # torch.Size([2, 3])
+        """
+        return create_zeros_like(
+            self,
+            input,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+            memory_format=memory_format,
+        )
 
 
 class CCLBase:
