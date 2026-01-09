@@ -82,7 +82,8 @@ class Iris:
         self.heap_size = heap_size
         self.heap_offset = 0
         self.alignment = 1024
-        self.device = f"cuda:{gpu_id}"
+        #self.device = f"cuda:{gpu_id}"
+        self.device = f"cuda"
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
 
         heap_base = self.memory_pool.data_ptr()
