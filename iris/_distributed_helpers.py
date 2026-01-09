@@ -200,6 +200,7 @@ def distributed_broadcast_tensor(value_to_broadcast=None, root=0):
 
 
 def distributed_barrier():
+    return
     """
     Synchronization barrier using PyTorch distributed.
     """

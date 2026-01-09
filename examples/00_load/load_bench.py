@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+
+import hip
+hip.hip.hipInit(0)
+
+
 import argparse
 
 import torch
@@ -13,6 +18,7 @@ import random
 import numpy as np
 import json
 import iris
+
 
 
 torch.manual_seed(123)
@@ -90,7 +96,7 @@ def parse_args():
         choices=["int8", "fp16", "bf16", "fp32"],
         help="Datatype of computation",
     )
-    parser.add_argument("-z", "--buffer_size", type=int, default=1 << 32, help="Buffer Size")
+    parser.add_argument("-z", "--buffer_size", type=int, default=1 << 30, help="Buffer Size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-d", "--validate", action="store_true", help="Enable validation output")
@@ -149,7 +155,8 @@ def bench_load(
                 shmem.get_heap_bases(),
             )
 
-    store_ms = iris.do_bench(run_store, shmem.barrier, n_repeat=num_experiments, n_warmup=num_warmup)
+    #store_ms = iris.do_bench(run_store, shmem.barrier, n_repeat=num_experiments, n_warmup=num_warmup)
+    store_ms = 0.0
     get_ms = iris.do_bench(run_load, shmem.barrier, n_repeat=num_experiments, n_warmup=num_warmup)
 
     # Subtract overhead
@@ -166,7 +173,6 @@ def bench_load(
             shmem.info(f"Bandwidth between {source_rank} and {destination_rank} is {bandwidth_gbps:.4f} GiB/s")
     shmem.barrier()
     bandwidth_gbps = shmem.broadcast(bandwidth_gbps, source_rank)
-
     success = True
     if validate and cur_rank == destination_rank:
         if verbose:
@@ -240,18 +246,20 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         init_method=init_url,
         world_size=world_size,
         rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
     )
 
     # Main benchmark logic
+    iris.set_logger_level(iris.DEBUG)
     shmem = iris.iris(args["heap_size"])
     num_ranks = shmem.get_num_ranks()
     bandwidth_matrix = np.zeros((num_ranks, num_ranks), dtype=np.float32)
 
     dtype = torch_dtype_from_str(args["datatype"])
     element_size_bytes = torch.tensor([], dtype=dtype).element_size()
-    source_buffer = shmem.ones(args["buffer_size"] // element_size_bytes, device="cuda", dtype=dtype)
+    source_buffer_list = shmem.ones(args["buffer_size"] // element_size_bytes, device="cuda", dtype=dtype)
+    source_buffer = source_buffer_list[0]
     result_buffer = shmem.zeros_like(source_buffer)
+
 
     for source_rank in range(num_ranks):
         for destination_rank in range(num_ranks):

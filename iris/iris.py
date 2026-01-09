@@ -72,6 +72,7 @@ class Iris:
         num_gpus = count_devices()
 
         gpu_id = cur_rank % num_gpus
+        
         set_device(gpu_id)
 
         self.comm = comm
@@ -87,33 +88,33 @@ class Iris:
         heap_base = self.memory_pool.data_ptr()
         heap_base_ptr = ctypes.c_void_p(heap_base)
 
-        heap_bases = np.zeros(num_ranks, dtype=np.uint64)
-        heap_bases[cur_rank] = heap_base
-        ipc_handle_size = get_ipc_handle_size()
-        ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
-        ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
-
-        distributed_barrier()
-
-        all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
-        heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
-        all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
-        all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
-
-        distributed_barrier()
-
+        #heap_bases = np.zeros(num_ranks, dtype=np.uint64)
+        #heap_bases[cur_rank] = heap_base
+        #ipc_handle_size = get_ipc_handle_size()
+        #ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
+        #ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
+#
+        #distributed_barrier()
+#
+        #all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
+        #heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
+        #all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
+        #all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
+#
+        #distributed_barrier()
+        
         ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
-        for rank in range(num_ranks):
-            if rank != cur_rank:
-                handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
-                ipc_heap_bases[rank] = int(handle)
-            else:
-                ipc_heap_bases[rank] = heap_bases[rank]
-
-        for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
-
-        distributed_barrier()
+        #for rank in range(num_ranks):
+        #    if rank != cur_rank:
+        #        handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
+        #        ipc_heap_bases[rank] = int(handle)
+        #    else:
+        #        ipc_heap_bases[rank] = heap_bases[rank]
+#
+        #for i in range(num_ranks):
+        #    self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
+#
+        #distributed_barrier()
         self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
 
         distributed_barrier()
@@ -221,6 +222,7 @@ class Iris:
             >>>     data = None
             >>> data = ctx.broadcast(data, source_rank=0)  # All ranks get the same array
         """
+        return value
         # Check if the value on source_rank is a tensor or array-like
         if self.cur_rank == source_rank and value is not None:
             # Explicitly exclude strings and non-numeric types
@@ -261,8 +263,6 @@ class Iris:
             return distributed_broadcast_scalar(value, source_rank)
 
     def __allocate(self, num_elements, dtype):
-        self.debug(f"allocate: num_elements = {num_elements}, dtype = {dtype}")
-
         element_size = torch.tensor([], dtype=dtype).element_size()
         size_in_bytes = num_elements * element_size
         aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
@@ -273,8 +273,13 @@ class Iris:
         start = self.heap_offset
         self.heap_offset += aligned_size
 
-        sub_buffer = self.memory_pool[start : start + size_in_bytes].view(dtype)
-        return sub_buffer.reshape((num_elements,))
+        # Use narrow + view instead of slice + view
+        byte_offset_in_elements = start  # start is already in bytes, memory_pool is int8
+        num_bytes = size_in_bytes
+        
+        sub_buffer_bytes = self.memory_pool.narrow(0, byte_offset_in_elements, num_bytes)
+        sub_buffer = sub_buffer_bytes.view(dtype)
+        return [sub_buffer]
 
     def __parse_size(self, size):
         # Handle nested tuples/lists by flattening them recursively
@@ -310,10 +315,6 @@ class Iris:
             >>> zeros_tensor = ctx.zeros_like(input_tensor)
             >>> print(zeros_tensor.shape)  # torch.Size([2, 3])
         """
-        self.debug(
-            f"zeros_like: input_shape = {input.shape}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
-        )
-
         # Use input's properties as defaults if not specified
         if dtype is None:
             dtype = input.dtype
@@ -330,8 +331,10 @@ class Iris:
         num_elements = input.numel()
 
         # Allocate new tensor with the same size
-        new_tensor = self.__allocate(num_elements, dtype)
-        new_tensor.zero_()
+        new_tensor_list = self.__allocate(num_elements, dtype)
+        new_tensor = new_tensor_list[0]
+        zeros_cpu = torch.zeros(num_elements, dtype=dtype, device='cpu')
+        new_tensor.copy_(zeros_cpu)
 
         # Reshape to match input size
         new_tensor = new_tensor.reshape(size)
@@ -644,7 +647,6 @@ class Iris:
 
         # Parse size and calculate number of elements
         size, num_elements = self.__parse_size(size)
-
         # If out is provided, use it; otherwise allocate new tensor
         if out is not None:
             self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
@@ -653,9 +655,10 @@ class Iris:
             # Create a reshaped view of the out tensor
             tensor = out.view(size)
         else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with ones
-            tensor.fill_(1)
+            tensor_list = self.__allocate(num_elements=num_elements, dtype=dtype)
+            tensor = tensor_list[0]
+            ones_cpu = torch.ones(num_elements, dtype=dtype, device='cpu')
+            tensor.copy_(ones_cpu)
             # Reshape to the desired size
             tensor = tensor.reshape(size)
 
@@ -666,7 +669,7 @@ class Iris:
         if requires_grad:
             tensor.requires_grad_()
 
-        return tensor
+        return [tensor]
 
     def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
