@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+import hip
+hip.hip.hipInit(0)
+
 import argparse
+import os
 
 import torch
 import torch.distributed as dist
@@ -117,7 +121,7 @@ def run_experiment(shmem, args, buffer):
             )
 
     # Warmup
-    run_experiment()
+    #run_experiment()
     shmem.barrier()
 
     triton_ms = iris.do_bench(
@@ -242,16 +246,33 @@ def print_bandwidth_matrix(
             raise ValueError(f"Unsupported output file extension: {output_file}")
 
 
-def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
+def _worker(local_rank: int = None, world_size: int = None, init_url: str = None, args: dict = None):
     """Worker function for PyTorch distributed execution."""
-    backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(
-        backend=backend,
-        init_method=init_url,
-        world_size=world_size,
-        rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
-    )
+    # Support torchrun: read from environment variables if available
+    if local_rank is None:
+        local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    if world_size is None:
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if init_url is None:
+        # torchrun sets MASTER_ADDR and MASTER_PORT
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+        init_url = f"tcp://{master_addr}:{master_port}"
+    
+    backend = "gloo"
+    print(f"Using torchrun backend: {backend}")
+    
+    # Use environment-based initialization if torchrun is detected
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # For torchrun, set device before init_process_group
+        dist.init_process_group(backend=backend, init_method="env://")
+    else:
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_url,
+            world_size=world_size,
+            rank=local_rank,
+        )
 
     # Main benchmark logic
     heap_size = args["heap_size"]
@@ -270,8 +291,11 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         buffer_size *= 2
 
     # Allocate one large buffer that can fit the maximum size
+    # Use ones() then zeros_like() to work around zeros() bug (same pattern as load_bench.py)
     max_elements = max_buffer_size // element_size_bytes
-    buffer = shmem.zeros(max_elements, device="cuda", dtype=dtype)
+    temp_buffer_list = shmem.ones(max_elements, device="cuda", dtype=dtype)
+    temp_buffer = temp_buffer_list[0]
+    buffer = shmem.zeros_like(temp_buffer)
 
     # Initialize bandwidth data structure: [rank][buffer_size_index]
     bandwidth_data = [[0.0 for _ in range(len(buffer_sizes))] for _ in range(num_ranks)]
@@ -295,22 +319,29 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     if shmem.get_rank() == 0:
         print_bandwidth_matrix(bandwidth_data, buffer_sizes, output_file=args["output_file"])
 
-    dist.barrier()
+    #dist.barrier()
     dist.destroy_process_group()
 
 
 def main():
+    print("Starting all store benchmark...")
     args = parse_args()
 
-    num_ranks = args["num_ranks"]
-
-    init_url = "tcp://127.0.0.1:29500"
-    mp.spawn(
-        fn=_worker,
-        args=(num_ranks, init_url, args),
-        nprocs=num_ranks,
-        join=True,
-    )
+    # Check if running with torchrun (detected by environment variables)
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # torchrun handles process spawning, so call _worker directly
+        print("Detected torchrun execution mode")
+        _worker(args=args)
+    else:
+        # Use multiprocessing spawn for backward compatibility
+        num_ranks = args["num_ranks"]
+        init_url = "tcp://127.0.0.1:29500"
+        mp.spawn(
+            fn=_worker,
+            args=(num_ranks, init_url, args),
+            nprocs=num_ranks,
+            join=True,
+        )
 
 
 if __name__ == "__main__":

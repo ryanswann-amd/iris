@@ -89,6 +89,7 @@ class Iris:
         heap_base = self.memory_pool.data_ptr()
         heap_base_ptr = ctypes.c_void_p(heap_base)
 
+        self.debug(f"Creating heap bases for {num_ranks} ranks on GPU {gpu_id}")
         #heap_bases = np.zeros(num_ranks, dtype=np.uint64)
         #heap_bases[cur_rank] = heap_base
         #ipc_handle_size = get_ipc_handle_size()
@@ -105,6 +106,7 @@ class Iris:
         #distributed_barrier()
         
         ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
+        self.debug(f"Creating IPC heap bases for {num_ranks} ranks on GPU {gpu_id}")
         #for rank in range(num_ranks):
         #    if rank != cur_rank:
         #        handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
@@ -118,10 +120,14 @@ class Iris:
         #distributed_barrier()
         self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
 
+        self.debug(f"Barrier after creating heap bases")
         distributed_barrier()
 
         # Initialize CCL interface
+        self.debug(f"Initializing CCL interface")
         self.ccl = self.CCL(self)
+
+        self.debug(f"CCL interface initialized")
 
     def _log_with_rank(self, level, message):
         """Helper method to log with rank information injected into the record."""

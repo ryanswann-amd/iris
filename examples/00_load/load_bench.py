@@ -8,6 +8,7 @@ hip.hip.hipInit(0)
 
 
 import argparse
+import os
 
 import torch
 import torch.distributed as dist
@@ -144,6 +145,7 @@ def bench_load(
             store_kernel[grid](result_buffer, n_elements, BLOCK_SIZE)
 
     def run_load():
+        print(f"Worker {cur_rank} running load kernel...")
         if cur_rank == source_rank:
             load_kernel[grid](
                 source_buffer,
@@ -238,15 +240,32 @@ def print_bandwidth_matrix(matrix, label="Unidirectional LOAD bandwidth GiB/s [R
             raise ValueError(f"Unsupported output file extension: {output_file}")
 
 
-def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
+def _worker(local_rank: int = None, world_size: int = None, init_url: str = None, args: dict = None):
     """Worker function for PyTorch distributed execution."""
+    # Support torchrun: read from environment variables if available
+    if local_rank is None:
+        local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    if world_size is None:
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if init_url is None:
+        # torchrun sets MASTER_ADDR and MASTER_PORT
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+        init_url = f"tcp://{master_addr}:{master_port}"
+    
+    print(f"Worker {local_rank} starting...")
     backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(
-        backend=backend,
-        init_method=init_url,
-        world_size=world_size,
-        rank=local_rank,
-    )
+    
+    # Use environment-based initialization if torchrun is detected
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        dist.init_process_group(backend=backend, init_method="env://")
+    else:
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_url,
+            world_size=world_size,
+            rank=local_rank,
+        )
 
     # Main benchmark logic
     iris.set_logger_level(iris.DEBUG)
@@ -260,7 +279,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     source_buffer = source_buffer_list[0]
     result_buffer = shmem.zeros_like(source_buffer)
 
-
+    print(f"Worker {local_rank} starting benchmark...")
     for source_rank in range(num_ranks):
         for destination_rank in range(num_ranks):
             bandwidth_gbps = bench_load(
@@ -279,25 +298,33 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             bandwidth_matrix[source_rank, destination_rank] = bandwidth_gbps
             shmem.barrier()
 
+    print(f"Worker {local_rank} finished benchmark...")
     if shmem.get_rank() == 0:
         print_bandwidth_matrix(bandwidth_matrix, output_file=args["output_file"])
 
-    dist.barrier()
+    #dist.barrier()
     dist.destroy_process_group()
 
 
 def main():
+    print("Starting load benchmark...")
     args = parse_args()
 
-    num_ranks = args["num_ranks"]
-
-    init_url = "tcp://127.0.0.1:29500"
-    mp.spawn(
-        fn=_worker,
-        args=(num_ranks, init_url, args),
-        nprocs=num_ranks,
-        join=True,
-    )
+    # Check if running with torchrun (detected by environment variables)
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # torchrun handles process spawning, so call _worker directly
+        print("Detected torchrun execution mode")
+        _worker(args=args)
+    else:
+        # Use multiprocessing spawn for backward compatibility
+        num_ranks = args["num_ranks"]
+        init_url = "tcp://127.0.0.1:29500"
+        mp.spawn(
+            fn=_worker,
+            args=(num_ranks, init_url, args),
+            nprocs=num_ranks,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
