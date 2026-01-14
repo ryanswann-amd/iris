@@ -118,7 +118,14 @@ class Iris:
         #    self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
 #
         #distributed_barrier()
-        self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
+        # Create heap_bases tensor on CUDA
+        # Pad to > 16 KB (4097 elements) to avoid __amd_rocclr_copyBuffer.kd kernel
+        padded_size = 4097  # > 4096 threshold (16 KB)
+        ipc_heap_bases_padded = np.zeros(padded_size, dtype=np.uint64)
+        ipc_heap_bases_padded[:num_ranks] = ipc_heap_bases
+        self.heap_bases = torch.tensor(ipc_heap_bases_padded, device=self.device, dtype=torch.uint64)
+        # Only use the first num_ranks elements
+        self.heap_bases = self.heap_bases[:num_ranks]
 
         self.debug(f"Barrier after creating heap bases")
         distributed_barrier()
