@@ -14,7 +14,7 @@ authors = [
     { name = "Muhammad Osama", email = "Muhammad.Osama@amd.com" },
     { name = "Brandon Potter", email = "Brandon.Potter@amd.com" }
 ]
-license = { text = "MIT" }
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
@@ -55,7 +55,7 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "W"]
-ignore = ["E501", "E701", "E731", "E741", "F841", "F401"]
+ignore = ["E501", "E701", "E731", "E741", "F841"]
 
 [tool.ruff.format]
 quote-style = "double"

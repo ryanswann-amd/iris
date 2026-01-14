@@ -2,6 +2,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 .venv/
+.pip-cache/
 _build/
 docs-repo-template-main/
 results/
@@ -29,3 +30,18 @@ slurm*.out
 examples/gemm/results/*
 asm/
 *.img
+
+.cache/
+.local/
+.triton/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz

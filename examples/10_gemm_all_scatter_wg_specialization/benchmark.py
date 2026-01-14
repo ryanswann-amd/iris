@@ -7,10 +7,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import triton
 import random
-import sys
-import os
 import argparse
-import json
 import math
 
 from examples.common.utils import JSONWriter, Timestamps, is_triton_interpret_set
@@ -40,7 +37,7 @@ def parse_args():
         "--datatype",
         type=str,
         default="fp16",
-        choices=["fp16", "fp32", "int8", "bf16"],
+        choices=["fp16", "fp32", "bf16"],
         help="Datatype of computation",
     )
     parser.add_argument(
@@ -66,6 +63,7 @@ def parse_args():
         default=None,
         help="Number of total SMs for gemm + scatter kernel (default: auto-detected)",
     )
+    parser.add_argument("--num_stages", type=int, default=2, help="Number of stages")
     parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
     parser.add_argument(
         "-c", "--use_copy_engine", action="store_true", help="Use copy engine for device-to-device copies"
@@ -103,8 +101,6 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         datatype = torch.float16
     elif args["datatype"] == "fp32":
         datatype = torch.float32
-    elif args["datatype"] == "int8":
-        datatype = torch.int8
     elif args["datatype"] == "bf16":
         datatype = torch.bfloat16
     else:
@@ -202,6 +198,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 args["BLK_N"],
                 args["BLK_K"],
                 args["gsize_m"],
+                args["num_stages"],
                 shmem.get_heap_bases(),
                 "gfx942",
                 args["trace_tiles"],
