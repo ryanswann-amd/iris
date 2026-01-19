@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 """
 Iris: Multi-GPU Communication and Memory Management Framework
@@ -39,10 +39,13 @@ from iris.hip import (
     get_ipc_handle,
     open_ipc_handle,
     get_ipc_handle_size,
+    export_dmabuf_handle,
 )
+from iris.gpu_array_wrapper import GpuArrayWrapper
 import numpy as np
 import math
 import torch
+import torch.distributed as dist
 import ctypes
 import logging
 
@@ -79,44 +82,45 @@ class Iris:
         self.cur_rank = cur_rank
         self.gpu_id = gpu_id
         self.heap_size = heap_size
-        self.heap_offset = 0
         self.alignment = 1024
         self.device = f"cuda:{gpu_id}"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
+        
+        # Initialize vmem allocator for *this rank* first (to pick a base if requested_base=None).
+        try:
+            from iris._iris_vmem import SymmetricHeapResource
+            self.vmem_allocator = SymmetricHeapResource(None, heap_size, gpu_id)
+            heap_base = int(self.vmem_allocator.base())
+            self.info(f"Initialized vmem allocator with VA base: {hex(heap_base)}")
+        except ImportError as e:
+            raise RuntimeError(f"Failed to import vmem allocator: {e}. Please build the C++ extension.")
 
-        heap_base = self.memory_pool.data_ptr()
-        heap_base_ptr = ctypes.c_void_p(heap_base)
+        # All-gather heap bases so every process can reserve VA at the same per-rank bases.
+        # This enables the "import remote address" model: remote rank r lives at heap_bases[r] in every process.
+        local_base_arr = np.array([heap_base], dtype=np.uint64)
+        all_bases = distributed_allgather(local_base_arr).reshape(num_ranks).astype(np.uint64)
+        self.heap_bases = torch.from_numpy(all_bases).to(device=self.device, dtype=torch.uint64)
 
-        heap_bases = np.zeros(num_ranks, dtype=np.uint64)
-        heap_bases[cur_rank] = heap_base
-        ipc_handle_size = get_ipc_handle_size()
-        ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
-        ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
+        # Create one vmem allocator per rank, each reserving the VA range at heap_bases[r].
+        # For cur_rank we reuse the allocator already created above.
+        self.vmem_allocators = {cur_rank: self.vmem_allocator}
+        for r in range(num_ranks):
+            if r == cur_rank:
+                continue
+            base_r = int(all_bases[r])
+            self.vmem_allocators[r] = SymmetricHeapResource(base_r, heap_size, gpu_id)
 
-        distributed_barrier()
-
-        all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
-        heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
-        all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
-        all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
-
-        distributed_barrier()
-
-        ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
-        for rank in range(num_ranks):
-            if rank != cur_rank:
-                handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
-                ipc_heap_bases[rank] = int(handle)
-            else:
-                ipc_heap_bases[rank] = heap_bases[rank]
-
-        for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
-
-        distributed_barrier()
-        self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
-
-        distributed_barrier()
+        # Setup FD passing mesh for multi-process DMA-BUF IPC (needed; FD integers are process-local).
+        self._fd_conns = None
+        if num_ranks > 1:
+            from iris.fd_passing import make_rank_sock_path, setup_fd_mesh
+            prefix = "iris-dmabuf"
+            my_path = make_rank_sock_path(prefix, cur_rank)
+            obj_list = [None for _ in range(num_ranks)]
+            dist.all_gather_object(obj_list, my_path)
+            all_paths = {r: obj_list[r] for r in range(num_ranks)}
+            distributed_barrier()
+            self._fd_conns = setup_fd_mesh(cur_rank, num_ranks, all_paths)
+            distributed_barrier()
 
         # Initialize CCL interface
         self.ccl = self.CCL(self)
@@ -265,16 +269,103 @@ class Iris:
 
         element_size = torch.tensor([], dtype=dtype).element_size()
         size_in_bytes = num_elements * element_size
-        aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
+        
+        # Allocate using vmem allocator (returns pointer as integer)
+        data_ptr = self.vmem_allocators[self.cur_rank].allocate(size_in_bytes)
+        
+        # Map torch dtype to CAI dtype_str (GpuArrayWrapper) and any required post-view dtype.
+        dtype_map = {
+            torch.float64: ("float64", None),
+            torch.float32: ("float32", None),
+            torch.float16: ("float16", None),
+            torch.int64: ("int64", None),
+            torch.int32: ("int32", None),
+            torch.int16: ("int16", None),
+            torch.int8: ("int8", None),
+            torch.uint64: ("uint64", None),
+            torch.uint32: ("uint32", None),
+            torch.uint16: ("uint16", None),
+            torch.uint8: ("uint8", None),
+            torch.bool: ("bool", None),
+        }
+        # bfloat16: export as uint16 and then view as bfloat16 (zero-copy)
+        if hasattr(torch, "bfloat16"):
+            dtype_map[torch.bfloat16] = ("bfloat16", torch.bfloat16)
 
-        if self.heap_offset + aligned_size > self.heap_size:
-            raise MemoryError("Heap out of memory")
+        dtype_str, post_view = dtype_map.get(dtype, ("float32", None))
+        
+        # Create GPU array wrapper with __cuda_array_interface__
+        gpu_array = GpuArrayWrapper(data_ptr, (num_elements,), dtype_str, self.gpu_id)
+        
+        # Convert to torch tensor directly via __cuda_array_interface__ (zero-copy)
+        torch_tensor = torch.as_tensor(gpu_array, device=self.device)
+        if post_view is not None:
+            torch_tensor = torch_tensor.view(post_view)
+        
+        # Store allocation info for cleanup and sharing
+        torch_tensor._iris_vmem_ptr = data_ptr
+        torch_tensor._iris_vmem_size = size_in_bytes
+        
+        # Auto-export and share allocation with other ranks
+        if self.num_ranks > 1:
+            self._export_and_share_allocation(data_ptr, size_in_bytes)
+        
+        return torch_tensor
+    
+    def _export_and_share_allocation(self, ptr, size):
+        """Export allocation and share with other ranks (DMA-BUF IPC)."""
+        try:
+            if self._fd_conns is None:
+                # Single-rank or IPC channel not initialized.
+                return
 
-        start = self.heap_offset
-        self.heap_offset += aligned_size
+            # Compute deterministic offset from our local heap base.
+            local_base = int(self.heap_bases[self.cur_rank].item())
+            offset = int(ptr) - local_base
+            if offset < 0:
+                raise RuntimeError(f"Pointer {hex(ptr)} is below local heap base {hex(local_base)}")
 
-        sub_buffer = self.memory_pool[start : start + size_in_bytes].view(dtype)
-        return sub_buffer.reshape((num_elements,))
+            # Export DMA-BUF FD for this allocation.
+            # We prefer the allocator's export so size gets granularity-aligned consistently.
+            dmabuf_fd = int(self.vmem_allocators[self.cur_rank].export_dmabuf(int(ptr), int(size)))
+
+            # Share (offset,size) via torch dist (numeric), and share FD via SCM_RIGHTS.
+            meta = np.array([offset, int(size)], dtype=np.int64)
+            all_meta = distributed_allgather(meta)  # (world, 2)
+
+            # Send my FD to all peers; receive peer FDs.
+            from iris.fd_passing import send_fd, recv_fd
+            for peer, sock in self._fd_conns.items():
+                if peer == self.cur_rank:
+                    continue
+                # To avoid deadlock, higher rank sends first.
+                if self.cur_rank > peer:
+                    send_fd(sock, dmabuf_fd)
+                    peer_fd, _ = recv_fd(sock)
+                else:
+                    peer_fd, _ = recv_fd(sock)
+                    send_fd(sock, dmabuf_fd)
+
+                peer_offset = int(all_meta[peer, 0])
+                peer_size = int(all_meta[peer, 1])
+
+                # Deterministic safety check: offsets must match our allocation order.
+                # If this fails, allocator determinism/order diverged.
+                if peer_offset != offset or peer_size != int(size):
+                    self.warning(
+                        f"Offset/size mismatch for peer {peer}: "
+                        f"local(offset={offset}, size={int(size)}) vs "
+                        f"peer(offset={peer_offset}, size={peer_size})"
+                    )
+
+                # Import peer allocation into our VA at the *peer's* base+offset (remote address model).
+                peer_base = int(self.heap_bases[peer].item())
+                target_va = peer_base + peer_offset
+                self.vmem_allocators[peer].import_dmabuf_at(int(target_va), int(peer_fd), int(peer_size))
+
+        except Exception as e:
+            self.warning(f"Failed to export/share allocation: {e}")
+
 
     def __parse_size(self, size):
         # Handle nested tuples/lists by flattening them recursively
@@ -1174,7 +1265,7 @@ class Iris:
             >>> device = ctx.get_device()
             >>> print(device)  # cuda:0
         """
-        return self.memory_pool.device
+        return torch.device(self.device)
 
     def get_cu_count(self):
         """
