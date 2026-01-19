@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 import ctypes
 import numpy as np
@@ -254,3 +254,56 @@ def hip_free(ptr):
         gpu_try(gpu_runtime.hipFree(ptr))
     else:
         gpu_try(gpu_runtime.cudaFree(ptr))
+
+
+def export_dmabuf_handle(ptr, size):
+    """
+    Export a DMA-BUF file descriptor for a memory range (vmem allocations).
+    
+    Args:
+        ptr: Integer or ctypes pointer to GPU memory
+        size: Size of the memory range in bytes
+    
+    Returns:
+        File descriptor (integer) for the DMA-BUF handle
+    
+    Raises:
+        RuntimeError: If export fails or backend doesn't support it
+    """
+    if not _is_amd_backend:
+        raise RuntimeError("DMA-BUF export only supported on AMD/HIP backend")
+    
+    fd = ctypes.c_int(-1)
+    ptr_arg = ctypes.c_void_p(ptr) if isinstance(ptr, int) else ptr
+    
+    # hipMemRangeHandleTypeDmaBufFd = 1
+    err = gpu_runtime.hipMemGetHandleForAddressRange(
+        ctypes.byref(fd), ptr_arg, size, 1, 0
+    )
+    
+    if err != 0:
+        gpu_try(err)  # Will raise with error message
+    
+    return fd.value
+
+
+def import_dmabuf_handle(fd, size):
+    """
+    Import a DMA-BUF file descriptor into the current process.
+    
+    Args:
+        fd: File descriptor for the DMA-BUF handle
+        size: Size of the memory range in bytes
+    
+    Returns:
+        Integer pointer to the imported memory
+    
+    Raises:
+        RuntimeError: If import fails or backend doesn't support it
+    """
+    if not _is_amd_backend:
+        raise RuntimeError("DMA-BUF import only supported on AMD/HIP backend")
+    
+    # This would use hipMemImportFromShareableHandle
+    # For now, raise NotImplementedError as this needs vmem allocator integration
+    raise NotImplementedError("DMA-BUF import should be done via vmem_allocator.import_buffer()")
