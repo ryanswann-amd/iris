@@ -277,9 +277,7 @@ def export_dmabuf_handle(ptr, size):
     ptr_arg = ctypes.c_void_p(ptr) if isinstance(ptr, int) else ptr
 
     # hipMemRangeHandleTypeDmaBufFd = 1
-    err = gpu_runtime.hipMemGetHandleForAddressRange(
-        ctypes.byref(fd), ptr_arg, size, 1, 0
-    )
+    err = gpu_runtime.hipMemGetHandleForAddressRange(ctypes.byref(fd), ptr_arg, size, 1, 0)
 
     if err != 0:
         gpu_try(err)  # Will raise with error message

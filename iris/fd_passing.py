@@ -29,9 +29,7 @@ def send_fd(sock: socket.socket, fd: int, payload: bytes = b"\x00") -> None:
 def recv_fd(sock: socket.socket, payload_size: int = 1) -> Tuple[int, bytes]:
     """Receive an FD over a connected Unix domain socket."""
     fds = array.array("i")
-    msg, ancdata, flags, addr = sock.recvmsg(
-        payload_size, socket.CMSG_SPACE(fds.itemsize)
-    )
+    msg, ancdata, flags, addr = sock.recvmsg(payload_size, socket.CMSG_SPACE(fds.itemsize))
     for cmsg_level, cmsg_type, cmsg_data in ancdata:
         if cmsg_level == socket.SOL_SOCKET and cmsg_type == socket.SCM_RIGHTS:
             fds.frombytes(cmsg_data[: fds.itemsize])
@@ -81,9 +79,7 @@ def setup_fd_mesh(rank: int, world_size: int, all_paths: Dict[int, str]) -> Dict
             except ConnectionRefusedError as e:
                 last_err = e
             if time.time() >= deadline:
-                raise FileNotFoundError(
-                    f"Timed out connecting rank {rank} -> {peer} at {all_paths[peer]}: {last_err}"
-                )
+                raise FileNotFoundError(f"Timed out connecting rank {rank} -> {peer} at {all_paths[peer]}: {last_err}")
             time.sleep(0.01)
         # Identify ourselves to the server
         s.sendall(rank.to_bytes(4, "little", signed=False))
@@ -97,4 +93,3 @@ def setup_fd_mesh(rank: int, world_size: int, all_paths: Dict[int, str]) -> Dict
 
     listener.close()
     return conns
-

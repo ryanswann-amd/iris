@@ -83,6 +83,7 @@ class Iris:
         # Initialize vmem allocator for *this rank* first (to pick a base if requested_base=None).
         try:
             from iris._iris_vmem import SymmetricHeapResource
+
             self.vmem_allocator = SymmetricHeapResource(None, heap_size, gpu_id)
             heap_base = int(self.vmem_allocator.base())
             self.info(f"Initialized vmem allocator with VA base: {hex(heap_base)}")
@@ -108,6 +109,7 @@ class Iris:
         self._fd_conns = None
         if num_ranks > 1:
             from iris.fd_passing import make_rank_sock_path, setup_fd_mesh
+
             prefix = "iris-dmabuf"
             my_path = make_rank_sock_path(prefix, cur_rank)
             obj_list = [None for _ in range(num_ranks)]
@@ -330,6 +332,7 @@ class Iris:
 
             # Send my FD to all peers; receive peer FDs.
             from iris.fd_passing import send_fd, recv_fd
+
             for peer, sock in self._fd_conns.items():
                 if peer == self.cur_rank:
                     continue
@@ -360,7 +363,6 @@ class Iris:
 
         except Exception as e:
             self.warning(f"Failed to export/share allocation: {e}")
-
 
     def __parse_size(self, size):
         # Handle nested tuples/lists by flattening them recursively
