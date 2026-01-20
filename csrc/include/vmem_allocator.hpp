@@ -129,6 +129,12 @@ private:
     hip_try(hipSetDevice(device_id_));
 
     std::size_t size = align_to_granularity(bytes);
+    
+    // For empty allocations (0 bytes), allocate minimum granularity
+    // hipMemCreate fails with 0 bytes, so we always allocate at least granularity_
+    if (size == 0) {
+      size = granularity_;
+    }
 
     // Bump allocate consecutively
     void* va = current_va_;

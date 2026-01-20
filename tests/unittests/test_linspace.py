@@ -12,8 +12,6 @@ import iris
         torch.float16,
         torch.float32,
         torch.float64,
-        torch.complex64,
-        torch.complex128,
     ],
 )
 @pytest.mark.parametrize(
@@ -236,8 +234,6 @@ def test_linspace_pytorch_equivalence():
     [
         {"dtype": torch.float32, "requires_grad": True},
         {"dtype": torch.float64, "requires_grad": False},
-        {"dtype": torch.complex64},
-        {"dtype": torch.complex128},
         {"layout": torch.strided},
         {},
     ],
@@ -273,8 +269,6 @@ def test_linspace_parameter_combinations(params):
         (0.0, 1.0, 5, torch.float32),
         (-10.0, 10.0, 11, torch.float64),
         (3.0, 10.0, 5, torch.float16),
-        (0.0, 100.0, 101, torch.complex64),
-        (1.0, 2.0, 2, torch.complex128),
     ],
 )
 def test_linspace_symmetric_heap_shapes_dtypes(start, end, steps, dtype):
@@ -296,7 +290,7 @@ def test_linspace_symmetric_heap_shapes_dtypes(start, end, steps, dtype):
     assert torch.allclose(result[-1], torch.tensor(end, dtype=dtype))
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.float64, torch.complex64, torch.complex128])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32, torch.float64])
 def test_linspace_symmetric_heap_dtype_override(dtype):
     """Test that linspace with dtype override returns tensors on symmetric heap."""
     shmem = iris.iris(1 << 20)
@@ -397,22 +391,23 @@ def test_linspace_steps_parsing():
     assert result3.shape == result4.shape
 
 
-def test_linspace_complex_numbers():
-    """Test linspace with complex numbers."""
-    shmem = iris.iris(1 << 20)
-
-    # Test with complex start and end
-    result = shmem.linspace(0.0 + 0.0j, 1.0 + 1.0j, 5, dtype=torch.complex64)
-    assert result.shape == (5,)
-    assert result.dtype == torch.complex64
-    assert torch.allclose(result[0], torch.tensor(0.0 + 0.0j, dtype=torch.complex64))
-    assert torch.allclose(result[-1], torch.tensor(1.0 + 1.0j, dtype=torch.complex64))
-    assert shmem._Iris__on_symmetric_heap(result)
-
-    # Test with complex dtype inference
-    result = shmem.linspace(0.0 + 0.0j, 1.0 + 1.0j, 5)
-    assert result.dtype == torch.complex64  # Should infer complex dtype
-    assert shmem._Iris__on_symmetric_heap(result)
+# Complex numbers are not supported - test removed
+# def test_linspace_complex_numbers():
+#     """Test linspace with complex numbers."""
+#     shmem = iris.iris(1 << 20)
+#
+#     # Test with complex start and end
+#     result = shmem.linspace(0.0 + 0.0j, 1.0 + 1.0j, 5, dtype=torch.complex64)
+#     assert result.shape == (5,)
+#     assert result.dtype == torch.complex64
+#     assert torch.allclose(result[0], torch.tensor(0.0 + 0.0j, dtype=torch.complex64))
+#     assert torch.allclose(result[-1], torch.tensor(1.0 + 1.0j, dtype=torch.complex64))
+#     assert shmem._Iris__on_symmetric_heap(result)
+#
+#     # Test with complex dtype inference
+#     result = shmem.linspace(0.0 + 0.0j, 1.0 + 1.0j, 5)
+#     assert result.dtype == torch.complex64  # Should infer complex dtype
+#     assert shmem._Iris__on_symmetric_heap(result)
 
 
 def test_linspace_tensor_inputs():
@@ -429,14 +424,7 @@ def test_linspace_tensor_inputs():
     assert torch.allclose(result[-1], torch.tensor(1.0))
     assert shmem._Iris__on_symmetric_heap(result)
 
-    # Test with complex tensor inputs
-    start_complex = torch.tensor(0.0 + 0.0j, device="cuda")
-    end_complex = torch.tensor(1.0 + 1.0j, device="cuda")
-
-    result_complex = shmem.linspace(start_complex, end_complex, 5)
-    assert result_complex.shape == (5,)
-    assert result_complex.dtype == torch.complex64
-    assert shmem._Iris__on_symmetric_heap(result_complex)
+    # Complex tensor inputs removed - complex numbers are not supported
 
 
 def test_linspace_accuracy():
