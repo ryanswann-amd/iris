@@ -82,6 +82,7 @@ class Iris:
 
         # Initialize vmem allocator for *this rank* first
         from iris._iris_vmem import SymmetricHeapResource
+
         self.vmem_allocator = SymmetricHeapResource(heap_size, gpu_id)
         heap_base = int(self.vmem_allocator.base())
         self.info(f"Initialized vmem allocator with VA base: {hex(heap_base)}")
@@ -92,8 +93,10 @@ class Iris:
         all_bases = distributed_allgather(local_base_arr).reshape(num_ranks).astype(np.uint64)
         self.heap_bases = torch.from_numpy(all_bases).to(device=self.device, dtype=torch.uint64)
 
-        self.debug(f"Symmetric heap initialized: base = {hex(heap_base)}, "
-                   f"offsets consistent across ranks via same allocation order")
+        self.debug(
+            f"Symmetric heap initialized: base = {hex(heap_base)}, "
+            f"offsets consistent across ranks via same allocation order"
+        )
 
         # Setup FD passing mesh for multi-process DMA-BUF IPC (needed; FD integers are process-local).
         self._fd_conns = None

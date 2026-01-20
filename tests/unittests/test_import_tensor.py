@@ -33,7 +33,7 @@ def test_import_tensor_basic(dtype, shape):
     shmem = iris.iris(1 << 28)  # 256MB
 
     # Create external tensor
-    external = torch.ones(shape, device='cuda', dtype=dtype)
+    external = torch.ones(shape, device="cuda", dtype=dtype)
 
     # Import it
     imported = shmem.import_tensor(external)
@@ -60,7 +60,7 @@ def test_import_tensor_shared_memory(dtype):
     shmem = iris.iris(1 << 28)
 
     # Create external tensor
-    external = torch.ones(100, 100, device='cuda', dtype=dtype)
+    external = torch.ones(100, 100, device="cuda", dtype=dtype)
 
     # Import it
     imported = shmem.import_tensor(external)
@@ -87,7 +87,7 @@ def test_import_only():
     shmem = iris.iris(1 << 28)
 
     # Just import a tensor
-    external = torch.randn(256, 256, device='cuda', dtype=torch.float32)
+    external = torch.randn(256, 256, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     # Verify it works
@@ -96,7 +96,7 @@ def test_import_only():
 
     # Verify shared memory (use approximate comparison for float32)
     external[0, 0] = 123.456
-    assert torch.isclose(imported[0, 0], torch.tensor(123.456, device='cuda'), rtol=1e-5)
+    assert torch.isclose(imported[0, 0], torch.tensor(123.456, device="cuda"), rtol=1e-5)
 
 
 def test_allocate_then_import():
@@ -108,7 +108,7 @@ def test_allocate_then_import():
     alloc2 = shmem.ones(50, 50, dtype=torch.float32)
 
     # Now import
-    external = torch.randn(200, 200, device='cuda', dtype=torch.float32)
+    external = torch.randn(200, 200, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     # Verify all are on symmetric heap
@@ -126,7 +126,7 @@ def test_import_then_allocate():
     shmem = iris.iris(1 << 28)
 
     # Import first
-    external = torch.randn(100, 100, device='cuda', dtype=torch.float32)
+    external = torch.randn(100, 100, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     # Now allocate
@@ -157,7 +157,7 @@ def test_import_different_sizes(size):
     """Test importing tensors of different sizes"""
     shmem = iris.iris(1 << 28)
 
-    external = torch.randn(size, device='cuda', dtype=torch.float32)
+    external = torch.randn(size, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     assert imported.shape == (size,)
@@ -177,7 +177,7 @@ def test_multiple_imports():
     importeds = []
 
     for i in range(5):
-        ext = torch.full((100, 100), i, device='cuda', dtype=torch.float32)
+        ext = torch.full((100, 100), i, device="cuda", dtype=torch.float32)
         imp = shmem.import_tensor(ext)
         externals.append(ext)
         importeds.append(imp)
@@ -215,14 +215,14 @@ def test_mixed_allocate_import():
     alloc1 = shmem.zeros(50, 50, dtype=torch.float32)
 
     # Import
-    ext1 = torch.ones(100, 100, device='cuda', dtype=torch.float32)
+    ext1 = torch.ones(100, 100, device="cuda", dtype=torch.float32)
     imp1 = shmem.import_tensor(ext1)
 
     # Allocate
     alloc2 = shmem.full((75, 75), 2.0, dtype=torch.float32)
 
     # Import
-    ext2 = torch.randn(200, 200, device='cuda', dtype=torch.float32)
+    ext2 = torch.randn(200, 200, device="cuda", dtype=torch.float32)
     imp2 = shmem.import_tensor(ext2)
 
     # Allocate
@@ -261,7 +261,7 @@ def test_many_mixed_operations(num_ops):
             tensors.append(t)
         else:
             # Import
-            ext = torch.ones(50, 50, device='cuda', dtype=torch.float32) * i
+            ext = torch.ones(50, 50, device="cuda", dtype=torch.float32) * i
             imp = shmem.import_tensor(ext)
             tensors.append(imp)
             externals.append(ext)
@@ -279,14 +279,14 @@ def test_import_tensor_metadata():
     """Test that imported tensor has correct metadata"""
     shmem = iris.iris(1 << 28)
 
-    external = torch.randn(100, 100, device='cuda', dtype=torch.float32)
+    external = torch.randn(100, 100, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     # Check metadata attributes
-    assert hasattr(imported, '_iris_vmem_ptr')
-    assert hasattr(imported, '_iris_vmem_size')
-    assert hasattr(imported, '_iris_imported')
-    assert hasattr(imported, '_iris_external_ptr')
+    assert hasattr(imported, "_iris_vmem_ptr")
+    assert hasattr(imported, "_iris_vmem_size")
+    assert hasattr(imported, "_iris_imported")
+    assert hasattr(imported, "_iris_external_ptr")
 
     # Verify metadata values
     assert imported._iris_imported is True
@@ -302,7 +302,7 @@ def test_import_allocator_stats():
     initial_allocs = shmem.vmem_allocator.active_allocations()
 
     # Import a tensor
-    external = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    external = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
     imported = shmem.import_tensor(external)
 
     final_allocs = shmem.vmem_allocator.active_allocations()
@@ -324,13 +324,13 @@ def test_import_different_shapes_sequence(shape1, shape2, shape3):
     shmem = iris.iris(1 << 28)
 
     # Import three tensors with different shapes
-    ext1 = torch.ones(shape1, device='cuda', dtype=torch.float32)
+    ext1 = torch.ones(shape1, device="cuda", dtype=torch.float32)
     imp1 = shmem.import_tensor(ext1)
 
-    ext2 = torch.ones(shape2, device='cuda', dtype=torch.float32)
+    ext2 = torch.ones(shape2, device="cuda", dtype=torch.float32)
     imp2 = shmem.import_tensor(ext2)
 
-    ext3 = torch.ones(shape3, device='cuda', dtype=torch.float32)
+    ext3 = torch.ones(shape3, device="cuda", dtype=torch.float32)
     imp3 = shmem.import_tensor(ext3)
 
     # Verify shapes
@@ -349,7 +349,7 @@ def test_import_edge_cases():
     shmem = iris.iris(1 << 28)
 
     # Small tensor (single element)
-    ext_small = torch.tensor([42.0], device='cuda', dtype=torch.float32)
+    ext_small = torch.tensor([42.0], device="cuda", dtype=torch.float32)
     imp_small = shmem.import_tensor(ext_small)
     assert imp_small.shape == (1,)
     assert shmem._Iris__on_symmetric_heap(imp_small)
@@ -357,7 +357,7 @@ def test_import_edge_cases():
     assert imp_small[0].item() == 99.0
 
     # Large tensor
-    ext_large = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    ext_large = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
     imp_large = shmem.import_tensor(ext_large)
     assert imp_large.shape == (1000, 1000)
     assert shmem._Iris__on_symmetric_heap(imp_large)
@@ -370,18 +370,18 @@ def test_import_with_pytorch_operations():
     shmem = iris.iris(1 << 28)
 
     # Create and import tensors
-    ext1 = torch.ones(100, 100, device='cuda', dtype=torch.float32)
+    ext1 = torch.ones(100, 100, device="cuda", dtype=torch.float32)
     imp1 = shmem.import_tensor(ext1)
 
-    ext2 = torch.ones(100, 100, device='cuda', dtype=torch.float32) * 2
+    ext2 = torch.ones(100, 100, device="cuda", dtype=torch.float32) * 2
     imp2 = shmem.import_tensor(ext2)
 
     # Perform operations
     result = imp1 + imp2
-    assert torch.allclose(result, torch.full((100, 100), 3.0, device='cuda'))
+    assert torch.allclose(result, torch.full((100, 100), 3.0, device="cuda"))
 
     result = imp1 * imp2
-    assert torch.allclose(result, torch.full((100, 100), 2.0, device='cuda'))
+    assert torch.allclose(result, torch.full((100, 100), 2.0, device="cuda"))
 
     result = torch.matmul(imp1, imp2)
     assert result.shape == (100, 100)
@@ -395,7 +395,7 @@ def test_import_consecutive_layout():
     alloc1 = shmem.zeros(100, dtype=torch.float32)
     alloc1_ptr = alloc1.data_ptr()
 
-    ext1 = torch.ones(100, device='cuda', dtype=torch.float32)
+    ext1 = torch.ones(100, device="cuda", dtype=torch.float32)
     imp1 = shmem.import_tensor(ext1)
     imp1_ptr = imp1.data_ptr()
 
