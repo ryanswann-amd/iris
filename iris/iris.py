@@ -80,30 +80,20 @@ class Iris:
         self.alignment = 1024
         self.device = f"cuda:{gpu_id}"
 
-        # Initialize vmem allocator for *this rank* first (to pick a base if requested_base=None).
-        try:
-            from iris._iris_vmem import SymmetricHeapResource
+        # Initialize vmem allocator for *this rank* first
+        from iris._iris_vmem import SymmetricHeapResource
+        self.vmem_allocator = SymmetricHeapResource(heap_size, gpu_id)
+        heap_base = int(self.vmem_allocator.base())
+        self.info(f"Initialized vmem allocator with VA base: {hex(heap_base)}")
 
-            self.vmem_allocator = SymmetricHeapResource(None, heap_size, gpu_id)
-            heap_base = int(self.vmem_allocator.base())
-            self.info(f"Initialized vmem allocator with VA base: {hex(heap_base)}")
-        except ImportError as e:
-            raise RuntimeError(f"Failed to import vmem allocator: {e}. Please build the C++ extension.")
-
-        # All-gather heap bases so every process can reserve VA at the same per-rank bases.
-        # This enables the "import remote address" model: remote rank r lives at heap_bases[r] in every process.
+        # All-gather heap bases for pointer translation in __translate()
+        # With single VA reservation and same allocation order, offsets are automatically consistent
         local_base_arr = np.array([heap_base], dtype=np.uint64)
         all_bases = distributed_allgather(local_base_arr).reshape(num_ranks).astype(np.uint64)
         self.heap_bases = torch.from_numpy(all_bases).to(device=self.device, dtype=torch.uint64)
 
-        # Create one vmem allocator per rank, each reserving the VA range at heap_bases[r].
-        # For cur_rank we reuse the allocator already created above.
-        self.vmem_allocators = {cur_rank: self.vmem_allocator}
-        for r in range(num_ranks):
-            if r == cur_rank:
-                continue
-            base_r = int(all_bases[r])
-            self.vmem_allocators[r] = SymmetricHeapResource(base_r, heap_size, gpu_id)
+        self.debug(f"Symmetric heap initialized: base = {hex(heap_base)}, "
+                   f"offsets consistent across ranks via same allocation order")
 
         # Setup FD passing mesh for multi-process DMA-BUF IPC (needed; FD integers are process-local).
         self._fd_conns = None
@@ -268,7 +258,7 @@ class Iris:
         size_in_bytes = num_elements * element_size
 
         # Allocate using vmem allocator (returns pointer as integer)
-        data_ptr = self.vmem_allocators[self.cur_rank].allocate(size_in_bytes)
+        data_ptr = self.vmem_allocator.allocate(size_in_bytes)
 
         # Map torch dtype to CAI dtype_str (GpuArrayWrapper) and any required post-view dtype.
         dtype_map = {
@@ -324,7 +314,7 @@ class Iris:
 
             # Export DMA-BUF FD for this allocation.
             # We prefer the allocator's export so size gets granularity-aligned consistently.
-            dmabuf_fd = int(self.vmem_allocators[self.cur_rank].export_dmabuf(int(ptr), int(size)))
+            dmabuf_fd = int(self.vmem_allocator.export_dmabuf(int(ptr), int(size)))
 
             # Share (offset,size) via torch dist (numeric), and share FD via SCM_RIGHTS.
             meta = np.array([offset, int(size)], dtype=np.int64)
@@ -359,7 +349,8 @@ class Iris:
                 # Import peer allocation into our VA at the *peer's* base+offset (remote address model).
                 peer_base = int(self.heap_bases[peer].item())
                 target_va = peer_base + peer_offset
-                self.vmem_allocators[peer].import_dmabuf_at(int(target_va), int(peer_fd), int(peer_size))
+                # Import into OUR allocator at the corresponding VA in our address space
+                self.vmem_allocator.import_dmabuf_at(int(target_va), int(peer_fd), int(peer_size))
 
         except Exception as e:
             self.warning(f"Failed to export/share allocation: {e}")
@@ -755,6 +746,111 @@ class Iris:
             tensor.requires_grad_()
 
         return tensor
+
+    def import_tensor(self, tensor):
+        """
+        Import an existing PyTorch tensor into the Iris symmetric heap.
+
+        This takes a tensor allocated with regular PyTorch memory (e.g., torch.ones(..., device='cuda'))
+        and imports it into the symmetric heap by mapping the same physical GPU memory at a new
+        virtual address within the heap. The original tensor and returned tensor share the same
+        physical memory - changes to one will be visible in the other.
+
+        Args:
+            tensor (torch.Tensor): Existing CUDA tensor to import (must be on the same GPU device)
+
+        Returns:
+            torch.Tensor: New tensor view within symmetric heap pointing to same physical memory
+
+        Example:
+            >>> ctx = iris.iris(heap_size=2**30)
+            >>> # Create tensor with PyTorch allocator
+            >>> external_tensor = torch.ones(1000, 1000, device='cuda', dtype=torch.float32)
+            >>> # Import into symmetric heap
+            >>> symmetric_tensor = ctx.import_tensor(external_tensor)
+            >>> # Both tensors share physical memory
+            >>> external_tensor[0, 0] = 42.0
+            >>> print(symmetric_tensor[0, 0])  # 42.0
+
+        Note:
+            - The tensor must be on a CUDA device matching this Iris instance
+            - The tensor must be contiguous
+            - Both tensors share the same physical GPU memory (not a copy)
+            - The returned tensor can be used with all Iris RMA operations
+        """
+        self.debug(f"import_tensor: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}")
+
+        # Validate tensor is on correct device
+        if not tensor.is_cuda:
+            raise ValueError(f"Can only import CUDA tensors, got tensor on {tensor.device}")
+
+        if tensor.device.index != self.gpu_id:
+            raise ValueError(
+                f"Tensor is on GPU {tensor.device.index}, but Iris instance is on GPU {self.gpu_id}. "
+                f"Tensor must be on the same GPU as the Iris symmetric heap."
+            )
+
+        # Ensure tensor is contiguous for reliable memory access
+        if not tensor.is_contiguous():
+            self.warning("Imported tensor is not contiguous, making it contiguous first")
+            tensor = tensor.contiguous()
+
+        # Get tensor memory info
+        external_ptr = tensor.data_ptr()
+        element_size = tensor.element_size()
+        num_elements = tensor.numel()
+        size_in_bytes = num_elements * element_size
+        shape = tensor.shape
+        dtype = tensor.dtype
+
+        # Import the external buffer into symmetric heap
+        # This creates a new VA mapping to the same physical memory
+        imported_va_ptr = self.vmem_allocator.import_buffer(external_ptr, size_in_bytes)
+
+        self.info(f"Imported tensor from external ptr {hex(external_ptr)} to symmetric heap VA {hex(imported_va_ptr)}")
+
+        # Map torch dtype to CAI dtype_str (same as __allocate)
+        dtype_map = {
+            torch.float64: ("float64", None),
+            torch.float32: ("float32", None),
+            torch.float16: ("float16", None),
+            torch.int64: ("int64", None),
+            torch.int32: ("int32", None),
+            torch.int16: ("int16", None),
+            torch.int8: ("int8", None),
+            torch.uint64: ("uint64", None),
+            torch.uint32: ("uint32", None),
+            torch.uint16: ("uint16", None),
+            torch.uint8: ("uint8", None),
+            torch.bool: ("bool", None),
+        }
+        if hasattr(torch, "bfloat16"):
+            dtype_map[torch.bfloat16] = ("bfloat16", torch.bfloat16)
+
+        dtype_str, post_view = dtype_map.get(dtype, ("float32", None))
+
+        # Create GPU array wrapper pointing to imported VA
+        gpu_array = GpuArrayWrapper(imported_va_ptr, (num_elements,), dtype_str, self.gpu_id)
+
+        # Convert to torch tensor via __cuda_array_interface__
+        imported_tensor = torch.as_tensor(gpu_array, device=self.device)
+        if post_view is not None:
+            imported_tensor = imported_tensor.view(post_view)
+
+        # Reshape to match original tensor shape
+        imported_tensor = imported_tensor.reshape(shape)
+
+        # Store allocation info
+        imported_tensor._iris_vmem_ptr = imported_va_ptr
+        imported_tensor._iris_vmem_size = size_in_bytes
+        imported_tensor._iris_imported = True  # Mark as imported (not allocated)
+        imported_tensor._iris_external_ptr = external_ptr  # Track original ptr
+
+        # Auto-export and share with other ranks if in distributed mode
+        if self.num_ranks > 1:
+            self._export_and_share_allocation(imported_va_ptr, size_in_bytes)
+
+        return imported_tensor
 
     def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """

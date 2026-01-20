@@ -87,67 +87,25 @@ struct AllocationInfo {
   std::size_t size;
   hipMemGenericAllocationHandle_t handle;
   bool is_imported;
-};
-
-// Free block in the VA space
-struct FreeBlock {
-  void* va;
-  std::size_t size;
+  void* external_ptr;  // For imported allocations, store the original external pointer
 };
 
 class SymmetricHeapResource : public std::pmr::memory_resource {
 private:
   void* base_va_;
   std::size_t heap_size_;
-  void* current_va_;
   std::map<void*, AllocationInfo> allocations_;
-  std::vector<FreeBlock> free_list_;  // Track freed VA regions for reuse
   hipMemAllocationProp alloc_prop_;
   int device_id_;
   std::size_t granularity_;
-  std::size_t cumulative_allocated_;  // Track cumulative size for hipMemSetAccess workaround
+
+  // Single VA reservation with consecutive allocations
+  void* current_va_;              // Current bump allocation pointer
+  std::size_t cumulative_allocated_;  // Cumulative size for hipMemSetAccess workaround
 
   // Helper: Align size to granularity
   std::size_t align_to_granularity(std::size_t size) const {
     return (size + granularity_ - 1) & ~(granularity_ - 1);
-  }
-
-  // Helper: Find and remove a suitable free block
-  void* find_free_block(std::size_t size) {
-    for (auto it = free_list_.begin(); it != free_list_.end(); ++it) {
-      if (it->size >= size) {
-        void* va = it->va;
-        std::size_t block_size = it->size;
-        free_list_.erase(it);
-
-        // If the block is larger than needed, split it and return the remainder
-        if (block_size > size) {
-          void* remainder_va = static_cast<char*>(va) + size;
-          std::size_t remainder_size = block_size - size;
-          free_list_.push_back({remainder_va, remainder_size});
-          log_debug("Split free block: using {} bytes at {}, returning {} bytes to free list",
-                    size, va, remainder_size);
-        }
-
-        return va;
-      }
-    }
-    return nullptr;  // No suitable block found
-  }
-
-  // Helper: Add block to free list
-  void add_to_free_list(void* va, std::size_t size) {
-    log_debug("Adding {} bytes at {} to free list", size, va);
-    free_list_.push_back({va, size});
-    // TODO: Could merge adjacent free blocks here for better space utilization
-  }
-
-  // Helper: Check space
-  void check_space(std::size_t size) const {
-    if (static_cast<char*>(current_va_) + size >
-        static_cast<char*>(base_va_) + heap_size_) {
-      throw std::bad_alloc();
-    }
   }
 
   // Helper: Get allocation info
@@ -162,49 +120,41 @@ private:
   // Helper: Track allocation (no bump for reused blocks)
   void track_allocation(void* va, std::size_t size,
                         hipMemGenericAllocationHandle_t handle,
-                        bool is_imported) {
-    allocations_[va] = {size, handle, is_imported};
+                        bool is_imported, void* external_ptr = nullptr) {
+    allocations_[va] = {size, handle, is_imported, external_ptr};
   }
 
   // std::pmr::memory_resource interface
   void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-    // Ensure we're operating on the intended device for this allocator.
-    // In complex Python/Triton programs the current device can drift.
     hip_try(hipSetDevice(device_id_));
 
     std::size_t size = align_to_granularity(bytes);
 
-    // DISABLED: Free list disabled for debugging
-    // First, try to reuse a freed block
-    // void* va = find_free_block(size);
+    // Bump allocate consecutively
+    void* va = current_va_;
+    if (static_cast<char*>(va) + size > static_cast<char*>(base_va_) + heap_size_) {
+      log_error("Heap out of space");
+      throw std::bad_alloc();
+    }
 
-    // if (va) {
-    //   // Reusing a free block
-    //   log_debug("Allocating {} bytes (aligned to {}) at {} [REUSED from free list]",
-    //             bytes, size, va);
-    // } else {
-      // No suitable free block, bump allocate
-      void* va = current_va_;
-      check_space(size);
-      log_debug("Allocating {} bytes (aligned to {}) at {} [NEW]", bytes, size, va);
-      current_va_ = static_cast<char*>(va) + size;  // Bump the pointer
-    // }
+    log_debug("Allocating {} bytes (aligned to {}) at VA {}", bytes, size, va);
+    current_va_ = static_cast<char*>(va) + size;  // Bump for next allocation
 
     // Create physical memory and map it
     hipMemGenericAllocationHandle_t handle;
     hip_try(hipMemCreate(&handle, size, &alloc_prop_, 0));
     hip_try(hipMemMap(va, size, 0, handle, 0));
 
-    // ROCm workaround: hipMemSetAccess validates against cumulative size of ALL sub-buffers
-    // Must call with base_va and cumulative size, not current va and current size
+    // Update cumulative size
     cumulative_allocated_ += size;
-    log_debug("Cumulative allocated size now: {} bytes", cumulative_allocated_);
+    log_debug("Cumulative allocated: {} bytes", cumulative_allocated_);
 
+    // Always call hipMemSetAccess from base_va with cumulative size
     hipMemAccessDesc access_desc;
     access_desc.location = alloc_prop_.location;
     access_desc.flags = hipMemAccessFlagsProtReadWrite;
     hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
-    log_debug("Set access on base_va_ {} with cumulative size {}", base_va_, cumulative_allocated_);
+    log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
 
     track_allocation(va, size, handle, false);
 
@@ -214,30 +164,16 @@ private:
 
   void do_deallocate(void* ptr, std::size_t bytes, std::size_t alignment) override {
     if (!ptr) return;
-    hip_try(hipSetDevice(device_id_));
 
     const auto& info = get_allocation_info(ptr);
     if (info.is_imported) {
-      log_error("Cannot deallocate imported pointer at {}", ptr);
-      throw std::runtime_error("Cannot deallocate imported pointer, use unimport_buffer()");
+      // Imported buffers: just do nothing
+      log_info("Deallocated imported buffer at {} [no-op]", ptr);
+      return;
     }
 
-    log_debug("Deallocating {} bytes at {} [DEFERRED]", info.size, ptr);
-
-    // ROCm workaround limitation: Cannot unmap individual allocations when using cumulative hipMemSetAccess
-    // The cumulative approach requires all memory from base_va to cumulative_allocated to stay mapped
-    // Unmapping creates "holes" which cause hipMemSetAccess to fail on unmapped regions
-    //
-    // Solution: Defer ALL cleanup (unmap + release) until destructor
-    // This effectively makes deallocation a no-op during the allocator's lifetime
-    // Physical memory and VA mappings are only freed when the allocator is destroyed
-    //
-    // Limitation: Memory usage is "high water mark" - never decreases until destruction
-
-    // Do NOT unmap or release here - all cleanup happens in destructor
-    // Keep allocation tracked so destructor can clean it up properly
-
-    log_info("Deallocated {} bytes at {} [cleanup deferred until destructor due to ROCm workaround]", info.size, ptr);
+    // Physical allocations: deferred until destructor
+    log_info("Deallocated {} bytes at {} [cleanup deferred]", info.size, ptr);
   }
 
   bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
@@ -249,15 +185,12 @@ public:
   SymmetricHeapResource(void* requested_base, std::size_t heap_size, int device_id = 0)
       : base_va_(nullptr),
         heap_size_(heap_size),
-        current_va_(nullptr),
         device_id_(device_id),
         granularity_(4096),
         cumulative_allocated_(0) {
 
-    log_info("Initializing symmetric heap resource");
+    log_info("Initializing symmetric heap with single VA reservation");
 
-    // Use the caller-provided device_id (do NOT override with hipGetDevice()).
-    // In multi-process setups, relying on hipGetDevice() here can drift from the intended rank->device mapping.
     hip_try(hipSetDevice(device_id_));
     log_debug("Using device {}", device_id_);
 
@@ -270,12 +203,13 @@ public:
                                            hipMemAllocationGranularityMinimum));
     log_debug("Allocation granularity: {} bytes", granularity_);
 
+    // Reserve a SINGLE VA range for all allocations (physical + imports)
     hip_try(hipMemAddressReserve(&base_va_, heap_size_, granularity_,
                                  requested_base, 0));
-    log_info("Reserved VA range: {} - {} ({} bytes)",
+    log_info("Reserved VA range: {} - {} ({} MB)",
         base_va_,
         static_cast<void*>(static_cast<char*>(base_va_) + heap_size_),
-        heap_size_);
+        heap_size_ / (1024*1024));
 
     current_va_ = base_va_;
   }
@@ -294,16 +228,13 @@ public:
     }
     allocations_.clear();
 
-    log_debug("Freeing VA range {} - {} ({} bytes)",
-              base_va_,
-              static_cast<void*>(static_cast<char*>(base_va_) + heap_size_),
-              heap_size_);
+    log_debug("Freeing VA range {} ({} bytes)", base_va_, heap_size_);
     (void)hipMemAddressFree(base_va_, heap_size_);
 
     log_info("Symmetric heap resource destroyed");
   }
 
-  // Import hipMalloc buffer
+  // Import external buffer (e.g., from PyTorch/hipMalloc)
   void* import_buffer(void* external_ptr, std::size_t bytes) {
     hip_try(hipSetDevice(device_id_));
     if (!external_ptr) {
@@ -311,55 +242,64 @@ public:
       throw std::runtime_error("Cannot import null pointer");
     }
 
-    std::size_t aligned_size = align_to_granularity(bytes);
+    // Query the base allocation to handle offset pointers (PyTorch caching allocator)
+    void* alloc_base = nullptr;
+    std::size_t alloc_size = 0;
+    hip_try(hipMemGetAddressRange(&alloc_base, &alloc_size, external_ptr));
+    std::size_t offset_in_alloc = static_cast<char*>(external_ptr) - static_cast<char*>(alloc_base);
+    log_debug("External ptr {} is at offset {} in allocation base {} (size {})",
+              external_ptr, offset_in_alloc, alloc_base, alloc_size);
 
-    // DISABLED: Free list disabled for debugging
-    // Try to reuse a free block first
-    // void* va = find_free_block(aligned_size);
+    std::size_t aligned_size = align_to_granularity(alloc_size);
 
-    // if (va) {
-    //   log_info("Importing {} bytes from {} to {} [REUSED from free list]",
-    //            bytes, external_ptr, va);
-    // } else {
-      // No suitable free block, bump allocate
-      void* va = current_va_;
-      check_space(aligned_size);
-      log_info("Importing {} bytes from {} to {} [NEW]", bytes, external_ptr, va);
-      current_va_ = static_cast<char*>(va) + aligned_size;  // Bump the pointer
-    // }
+    // Bump allocate consecutively
+    void* va_base = current_va_;
+    if (static_cast<char*>(va_base) + aligned_size > static_cast<char*>(base_va_) + heap_size_) {
+      log_error("Heap out of space");
+      throw std::bad_alloc();
+    }
 
-    log_debug("Aligned the size to {} bytes", aligned_size);
+    log_info("Importing {} bytes (full alloc) from base {} to VA {}",
+             alloc_size, alloc_base, va_base);
+    current_va_ = static_cast<char*>(va_base) + aligned_size;  // Bump for next allocation
 
-    int dmabuf_fd{-1};
-    hip_try(hipMemGetHandleForAddressRange((void*)&dmabuf_fd, external_ptr, aligned_size,
+    // Export the BASE allocation to DMA-BUF
+    int dmabuf_fd = -1;
+    hip_try(hipMemGetHandleForAddressRange((void*)&dmabuf_fd, alloc_base, aligned_size,
                                            hipMemRangeHandleTypeDmaBufFd, 0));
-    log_debug("Got dmabuf_fd={} for external_ptr={}", dmabuf_fd, external_ptr);
+    log_debug("Got dmabuf_fd={} for alloc_base={}", dmabuf_fd, alloc_base);
 
+    // Import DMA-BUF handle
     hipMemGenericAllocationHandle_t handle{};
     hip_try(hipMemImportFromShareableHandle(&handle, (void*)(intptr_t)dmabuf_fd,
                                             hipMemHandleTypePosixFileDescriptor));
     log_debug("Imported handle from fd, handle={}", (void*)handle);
 
-    hip_try(hipMemMap(va, aligned_size, 0, handle, 0));
-    log_debug("Mapped handle to VA {}, size {}", va, aligned_size);
+    ::close(dmabuf_fd);
 
-    // ROCm workaround: hipMemSetAccess validates against cumulative size of ALL sub-buffers
-    // Must call with base_va and cumulative size, not current va and current size
+    // Map into our VA range (consecutive!)
+    hip_try(hipMemMap(va_base, aligned_size, 0, handle, 0));
+    log_debug("Mapped handle to VA {}, size {}", va_base, aligned_size);
+
+    // Update cumulative size
     cumulative_allocated_ += aligned_size;
-    log_debug("Cumulative allocated size now: {} bytes", cumulative_allocated_);
+    log_debug("Cumulative allocated: {} bytes", cumulative_allocated_);
 
+    // CRITICAL: Always call hipMemSetAccess from base_va with cumulative size
     hipMemAccessDesc access_desc;
-    access_desc.location = alloc_prop_.location;  // Use same as allocate()
+    access_desc.location = alloc_prop_.location;
     access_desc.flags = hipMemAccessFlagsProtReadWrite;
-    log_debug("Setting access: device type={}, id={}, flags={}",
-              (int)access_desc.location.type, access_desc.location.id, (int)access_desc.flags);
     hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
-    log_debug("Access set successfully on base_va_ {} with cumulative size {}", base_va_, cumulative_allocated_);
+    log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
 
-    track_allocation(va, aligned_size, handle, true);
+    // Store the external allocation base pointer so we can re-export it later
+    track_allocation(va_base, aligned_size, handle, true, alloc_base);
 
-    log_info("Imported {} bytes from {} to {}", aligned_size, external_ptr, va);
-    return va;
+    // Return remapped VA with same offset as original pointer (for symmetric heap)
+    void* va_with_offset = static_cast<char*>(va_base) + offset_in_alloc;
+    log_info("Imported {} bytes from {} to {} (base {} + offset {})",
+             alloc_size, external_ptr, va_with_offset, va_base, offset_in_alloc);
+    return va_with_offset;
   }
 
   // Import a DMA-BUF FD and map it at an explicit VA (e.g., base + deterministic offset).
@@ -435,8 +375,7 @@ public:
     hip_try(hipMemMap(target_va, aligned_size, 0, handle, 0));
     log_debug("Mapped imported handle to VA {}, size {}", target_va, aligned_size);
 
-    // ROCm workaround: Calculate the maximum extent that's been mapped
-    // For import_dmabuf_at, we need to track the farthest mapped address
+    // Calculate cumulative size up to and including this import
     auto target_end = static_cast<char*>(target_va) + aligned_size;
     auto cumulative_end = static_cast<char*>(base_va_) + cumulative_allocated_;
     if (target_end > cumulative_end) {
@@ -445,14 +384,15 @@ public:
                 cumulative_allocated_, target_va);
     }
 
+    // Always call hipMemSetAccess from base_va with cumulative size
     hipMemAccessDesc access_desc;
     access_desc.location = alloc_prop_.location;
     access_desc.flags = hipMemAccessFlagsProtReadWrite;
     hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
-    log_debug("Set access on base_va_ {} with cumulative size {}", base_va_, cumulative_allocated_);
+    log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
 
     track_allocation(target_va, aligned_size, handle, true);
-    log_info("Imported dmabuf fd={} to {}, size {}", dmabuf_fd, target_va, aligned_size);
+    log_info("Imported dmabuf to {}, size {}", target_va, aligned_size);
     return target_va;
   }
 
@@ -463,10 +403,23 @@ public:
       throw std::runtime_error("Cannot export null pointer");
     }
     std::size_t aligned_size = align_to_granularity(bytes);
+
+    // Check if this is an imported allocation
+    const auto& info = get_allocation_info(ptr);
+    void* export_ptr = ptr;
+
+    if (info.is_imported && info.external_ptr) {
+      // For imported allocations, export the original external pointer
+      // This is the actual PyTorch/hipMalloc allocation that we can export
+      export_ptr = info.external_ptr;
+      log_debug("Exporting imported allocation: using external_ptr={} instead of VA={}",
+                export_ptr, ptr);
+    }
+
     int dmabuf_fd{-1};
-    hip_try(hipMemGetHandleForAddressRange((void*)&dmabuf_fd, ptr, aligned_size,
+    hip_try(hipMemGetHandleForAddressRange((void*)&dmabuf_fd, export_ptr, aligned_size,
                                            hipMemRangeHandleTypeDmaBufFd, 0));
-    log_debug("Exported dmabuf_fd={} for ptr={}, size={}", dmabuf_fd, ptr, aligned_size);
+    log_debug("Exported dmabuf_fd={} for ptr={}, size={}", dmabuf_fd, export_ptr, aligned_size);
     return dmabuf_fd;
   }
 
@@ -480,17 +433,8 @@ public:
       throw std::runtime_error("Not an imported pointer");
     }
 
-    log_debug("Unimporting {} bytes at {}", info.size, ptr);
-
-    hip_try(hipMemUnmap(ptr, info.size));
-    hip_try(hipMemRelease(info.handle));
-
-    // Add the freed VA region to the free list for reuse
-    add_to_free_list(ptr, info.size);
-
-    allocations_.erase(ptr);
-
-    log_info("Unimported {} bytes at {} [added to free list]", info.size, ptr);
+    // Do nothing - cleanup deferred to destructor
+    log_info("Unimported {} bytes at {} [cleanup deferred]", info.size, ptr);
   }
 
   // Query functions
@@ -498,15 +442,7 @@ public:
   std::size_t heap_size() const { return heap_size_; }
   std::size_t granularity() const { return granularity_; }
   std::size_t bytes_allocated() const {
-    return static_cast<char*>(current_va_) - static_cast<char*>(base_va_);
-  }
-  std::size_t free_list_size() const { return free_list_.size(); }
-  std::size_t free_list_bytes() const {
-    std::size_t total = 0;
-    for (const auto& block : free_list_) {
-      total += block.size;
-    }
-    return total;
+    return cumulative_allocated_;
   }
   std::size_t active_allocations() const { return allocations_.size(); }
 

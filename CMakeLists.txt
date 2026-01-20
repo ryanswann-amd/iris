@@ -35,7 +35,7 @@ target_include_directories(_iris_vmem PRIVATE
 )
 
 # Link libraries
-target_link_libraries(_iris_vmem PRIVATE 
+target_link_libraries(_iris_vmem PRIVATE
     hip::host
     fmt::fmt
 )

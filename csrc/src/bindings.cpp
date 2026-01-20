@@ -11,10 +11,10 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(_iris_vmem, m) {
     m.doc() = "Iris Virtual Memory Allocator";
-    
+
     // Expose SymmetricHeapResource - simple pointer-based interface
     py::class_<iris::memory::SymmetricHeapResource>(m, "SymmetricHeapResource")
-        .def(py::init([](py::object requested_base, size_t heap_size, int device_id) {
+        .def(py::init([](size_t heap_size, int device_id, py::object requested_base) {
                  void* base_ptr = nullptr;
                  if (!requested_base.is_none()) {
                      base_ptr = reinterpret_cast<void*>(requested_base.cast<uintptr_t>());
@@ -22,10 +22,10 @@ PYBIND11_MODULE(_iris_vmem, m) {
                  return new iris::memory::SymmetricHeapResource(base_ptr, heap_size, device_id);
              }),
              "Initialize symmetric heap resource",
-             py::arg("requested_base") = py::none(),
              py::arg("heap_size"),
-             py::arg("device_id") = 0)
-        .def("allocate", 
+             py::arg("device_id") = 0,
+             py::arg("requested_base") = py::none())
+        .def("allocate",
              [](iris::memory::SymmetricHeapResource& self, size_t bytes) {
                  return reinterpret_cast<uintptr_t>(self.allocate(bytes, 1));
              },
@@ -70,7 +70,7 @@ PYBIND11_MODULE(_iris_vmem, m) {
              "Export DMA-BUF FD for an allocation range.",
              py::arg("ptr"),
              py::arg("bytes"))
-        .def("base", 
+        .def("base",
              [](const iris::memory::SymmetricHeapResource& self) {
                  return reinterpret_cast<uintptr_t>(self.base());
              },
@@ -81,10 +81,6 @@ PYBIND11_MODULE(_iris_vmem, m) {
              "Get allocation granularity")
         .def("bytes_allocated", &iris::memory::SymmetricHeapResource::bytes_allocated,
              "Get total bytes allocated (bump pointer position)")
-        .def("free_list_size", &iris::memory::SymmetricHeapResource::free_list_size,
-             "Get number of free blocks")
-        .def("free_list_bytes", &iris::memory::SymmetricHeapResource::free_list_bytes,
-             "Get total bytes in free list")
         .def("active_allocations", &iris::memory::SymmetricHeapResource::active_allocations,
              "Get number of active allocations");
 }
