@@ -5,12 +5,9 @@ import argparse
 
 import torch
 import torch.distributed as dist
-import torch.multiprocessing as mp
 import triton
 import triton.language as tl
 import random
-import os
-import sys
 
 from mpi4py import MPI
 

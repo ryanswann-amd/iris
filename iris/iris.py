@@ -40,7 +40,6 @@ from iris.hip import (
     open_ipc_handle,
     get_ipc_handle_size,
 )
-import sys
 
 import anvil
 
