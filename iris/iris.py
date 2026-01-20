@@ -2028,29 +2028,29 @@ def put(
         required_bytes = command_in_bytes * num_strides
         # queue_offsets = (command_in_bytes // 4) * tl.arange(0, num_strides)
         # if tl.program_id(axis=0) == 23 and to_rank == 0:
-        if to_rank == 7:
-            # if tl.program_id(axis=0) == 230:
-            #     tl.device_print("required_bytes", required_bytes)
-            # Acquire space
-            base = anvil.acquire(
-                queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
-            )
+        # if to_rank == 7:
+        # if tl.program_id(axis=0) == 230:
+        #     tl.device_print("required_bytes", required_bytes)
+        # Acquire space
+        base = anvil.acquire(
+            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
+        )
 
-            # Place command
-            for stride in range(0, num_strides):
-                # slot_ptr_u32 = queue_ptr_u32 + (base // 4) + (stride * 7)
-                offset_bytes = base + (stride * command_in_bytes)
-                anvil.place_copy_packet(
-                    queue_ptr_u32,
-                    offset_bytes,
-                    size_bytes,
-                    src_ptr_val0 + (src_stride * stride),
-                    dst_ptr_val0 + (dst_stride * stride),
-                )
-                # anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
+        # Place command
+        for stride in range(0, num_strides):
+            # slot_ptr_u32 = queue_ptr_u32 + (base // 4) + (stride * 7)
+            offset_bytes = base + (stride * command_in_bytes)
+            # anvil.place_copy_packet(
+            #     queue_ptr_u32,
+            #     offset_bytes,
+            #     size_bytes,
+            #     src_ptr_val0 + (src_stride * stride),
+            #     dst_ptr_val0 + (dst_stride * stride),
+            # )
+            anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
 
-            # Submit command
-            anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
+        # Submit command
+        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
 
 
 @triton.jit
