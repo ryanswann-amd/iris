@@ -750,27 +750,27 @@ class Iris:
 
         return tensor
 
-    def import_tensor(self, tensor):
+    def as_symmetric(self, tensor):
         """
-        Import an existing PyTorch tensor into the Iris symmetric heap.
+        Convert an existing PyTorch tensor to a symmetric heap tensor.
 
         This takes a tensor allocated with regular PyTorch memory (e.g., torch.ones(..., device='cuda'))
-        and imports it into the symmetric heap by mapping the same physical GPU memory at a new
-        virtual address within the heap. The original tensor and returned tensor share the same
+        and creates a symmetric heap view by mapping the same physical GPU memory at a new virtual
+        address within the symmetric heap. The original tensor and returned tensor share the same
         physical memory - changes to one will be visible in the other.
 
         Args:
-            tensor (torch.Tensor): Existing CUDA tensor to import (must be on the same GPU device)
+            tensor (torch.Tensor): Existing CUDA tensor (must be on the same GPU device)
 
         Returns:
-            torch.Tensor: New tensor view within symmetric heap pointing to same physical memory
+            torch.Tensor: Symmetric heap tensor view pointing to same physical memory
 
         Example:
             >>> ctx = iris.iris(heap_size=2**30)
             >>> # Create tensor with PyTorch allocator
             >>> external_tensor = torch.ones(1000, 1000, device='cuda', dtype=torch.float32)
-            >>> # Import into symmetric heap
-            >>> symmetric_tensor = ctx.import_tensor(external_tensor)
+            >>> # Convert to symmetric heap tensor
+            >>> symmetric_tensor = ctx.as_symmetric(external_tensor)
             >>> # Both tensors share physical memory
             >>> external_tensor[0, 0] = 42.0
             >>> print(symmetric_tensor[0, 0])  # 42.0
@@ -781,7 +781,7 @@ class Iris:
             - Both tensors share the same physical GPU memory (not a copy)
             - The returned tensor can be used with all Iris RMA operations
         """
-        self.debug(f"import_tensor: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}")
+        self.debug(f"as_symmetric: shape={tensor.shape}, dtype={tensor.dtype}, device={tensor.device}")
 
         # Validate tensor is on correct device
         if not tensor.is_cuda:
@@ -810,7 +810,7 @@ class Iris:
         # This creates a new VA mapping to the same physical memory
         imported_va_ptr = self.vmem_allocator.import_buffer(external_ptr, size_in_bytes)
 
-        self.info(f"Imported tensor from external ptr {hex(external_ptr)} to symmetric heap VA {hex(imported_va_ptr)}")
+        self.info(f"Mapped external tensor from ptr {hex(external_ptr)} to symmetric heap VA {hex(imported_va_ptr)}")
 
         # Map torch dtype to CAI dtype_str (same as __allocate)
         dtype_map = {
