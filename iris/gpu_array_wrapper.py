@@ -7,7 +7,7 @@ GPU Array wrapper with __cuda_array_interface__ support
 
 class GpuArrayWrapper:
     """Wrapper that exposes __cuda_array_interface__ for vmem allocations"""
-    
+
     def __init__(self, data_ptr, shape, dtype_str, device_id=0):
         """
         Args:
@@ -20,7 +20,7 @@ class GpuArrayWrapper:
         self._shape = shape if isinstance(shape, tuple) else (shape,)
         self._dtype_str = dtype_str
         self._device_id = device_id
-        
+
         # Map dtype to typestr for CAI (CUDA Array Interface v3).
         # Note: torch bfloat16 is not representable directly via CAI typestr in this build;
         # we handle bfloat16 by exporting as uint16 (<u2) and viewing as bfloat16 in Python.
@@ -41,7 +41,7 @@ class GpuArrayWrapper:
             'bfloat16': '<u2',
             'bf16': '<u2',
         }
-    
+
     @property
     def __cuda_array_interface__(self):
         """CUDA Array Interface v3"""
@@ -53,15 +53,15 @@ class GpuArrayWrapper:
             'strides': None,  # C-contiguous
             'descr': [('', self._dtype_map[self._dtype_str])],
         }
-    
+
     @property
     def shape(self):
         return self._shape
-    
+
     @property
     def dtype(self):
         return self._dtype_str
-    
+
     @property
     def device(self):
         return self._device_id

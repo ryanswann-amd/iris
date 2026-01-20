@@ -36,17 +36,12 @@ from iris.hip import (
     set_device,
     get_cu_count,
     count_devices,
-    get_ipc_handle,
-    open_ipc_handle,
-    get_ipc_handle_size,
-    export_dmabuf_handle,
 )
 from iris.gpu_array_wrapper import GpuArrayWrapper
 import numpy as np
 import math
 import torch
 import torch.distributed as dist
-import ctypes
 import logging
 
 # Import logging functionality from the separate logging module
@@ -84,7 +79,7 @@ class Iris:
         self.heap_size = heap_size
         self.alignment = 1024
         self.device = f"cuda:{gpu_id}"
-        
+
         # Initialize vmem allocator for *this rank* first (to pick a base if requested_base=None).
         try:
             from iris._iris_vmem import SymmetricHeapResource
@@ -269,10 +264,10 @@ class Iris:
 
         element_size = torch.tensor([], dtype=dtype).element_size()
         size_in_bytes = num_elements * element_size
-        
+
         # Allocate using vmem allocator (returns pointer as integer)
         data_ptr = self.vmem_allocators[self.cur_rank].allocate(size_in_bytes)
-        
+
         # Map torch dtype to CAI dtype_str (GpuArrayWrapper) and any required post-view dtype.
         dtype_map = {
             torch.float64: ("float64", None),
@@ -293,25 +288,25 @@ class Iris:
             dtype_map[torch.bfloat16] = ("bfloat16", torch.bfloat16)
 
         dtype_str, post_view = dtype_map.get(dtype, ("float32", None))
-        
+
         # Create GPU array wrapper with __cuda_array_interface__
         gpu_array = GpuArrayWrapper(data_ptr, (num_elements,), dtype_str, self.gpu_id)
-        
+
         # Convert to torch tensor directly via __cuda_array_interface__ (zero-copy)
         torch_tensor = torch.as_tensor(gpu_array, device=self.device)
         if post_view is not None:
             torch_tensor = torch_tensor.view(post_view)
-        
+
         # Store allocation info for cleanup and sharing
         torch_tensor._iris_vmem_ptr = data_ptr
         torch_tensor._iris_vmem_size = size_in_bytes
-        
+
         # Auto-export and share allocation with other ranks
         if self.num_ranks > 1:
             self._export_and_share_allocation(data_ptr, size_in_bytes)
-        
+
         return torch_tensor
-    
+
     def _export_and_share_allocation(self, ptr, size):
         """Export allocation and share with other ranks (DMA-BUF IPC)."""
         try:
