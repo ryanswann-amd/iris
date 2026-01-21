@@ -63,17 +63,37 @@ elif [ "$INSTALL_METHOD" = "install" ]; then
 fi
 
 # Run tests in container
-"$SCRIPT_DIR/container_exec.sh" $GPU_ARG "
-    set -e
-    echo \"Installing iris using method: $INSTALL_METHOD\"
-    $INSTALL_CMD
-    
-    # Run tests in the specified directory
-    for test_file in tests/$TEST_DIR/test_*.py; do
-        if [ -f \"\$test_file\" ]; then
-            echo \"Testing: \$test_file with $NUM_RANKS ranks (install: $INSTALL_METHOD)\"
-            python tests/run_tests_distributed.py --num_ranks $NUM_RANKS \"\$test_file\" -v --tb=short --durations=10
-        fi
-    done
-"
+# Disabled: Running on baremetal, not using containers
+# "$SCRIPT_DIR/container_exec.sh" $GPU_ARG "
+#     set -e
+#     echo \"Installing iris using method: $INSTALL_METHOD\"
+#     $INSTALL_CMD
+#     
+#     # Run tests in the specified directory
+#     for test_file in tests/$TEST_DIR/test_*.py; do
+#         if [ -f \"\$test_file\" ]; then
+#             echo \"Testing: \$test_file with $NUM_RANKS ranks (install: $INSTALL_METHOD)\"
+#             python tests/run_tests_distributed.py --num_ranks $NUM_RANKS \"\$test_file\" -v --tb=short --durations=10
+#         fi
+#     done
+# "
+
+# Run tests on baremetal
+set -e
+
+# Set GPU devices if provided
+if [ -n "$GPU_DEVICES" ]; then
+    export HIP_VISIBLE_DEVICES="$GPU_DEVICES"
+fi
+
+echo "Installing iris using method: $INSTALL_METHOD"
+$INSTALL_CMD
+
+# Run tests in the specified directory
+for test_file in tests/$TEST_DIR/test_*.py; do
+    if [ -f "$test_file" ]; then
+        echo "Testing: $test_file with $NUM_RANKS ranks (install: $INSTALL_METHOD)"
+        python tests/run_tests_distributed.py --num_ranks $NUM_RANKS "$test_file" -v --tb=short --durations=10
+    fi
+done
 

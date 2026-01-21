@@ -21,16 +21,28 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Run benchmark in container
-"$SCRIPT_DIR/container_exec.sh" --gpus "0,1,2,3,4,5,6,7" "
-    set -e
-    pip install -e .
-    python examples/${EXAMPLE_PATH}/benchmark.py \
-        --benchmark \
-        --validate \
-        -r 8 \
-        ${BENCHMARK_ARGS} \
-        --output_file perf_result.json
-"
+# Disabled: Running on baremetal, not using containers
+# "$SCRIPT_DIR/container_exec.sh" --gpus "0,1,2,3,4,5,6,7" "
+#     set -e
+#     pip install -e .
+#     python examples/${EXAMPLE_PATH}/benchmark.py \
+#         --benchmark \
+#         --validate \
+#         -r 8 \
+#         ${BENCHMARK_ARGS} \
+#         --output_file perf_result.json
+# "
+
+# Run benchmark on baremetal
+set -e
+export HIP_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+pip install -e .
+python examples/${EXAMPLE_PATH}/benchmark.py \
+    --benchmark \
+    --validate \
+    -r 8 \
+    ${BENCHMARK_ARGS} \
+    --output_file perf_result.json
 
 # Validate performance (runs outside container)
 echo "Validating performance results..."
