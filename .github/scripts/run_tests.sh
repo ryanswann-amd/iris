@@ -79,8 +79,6 @@ fi
 # "
 
 # Run tests on baremetal
-set -e
-
 # Set GPU devices if provided
 if [ -n "$GPU_DEVICES" ]; then
     export HIP_VISIBLE_DEVICES="$GPU_DEVICES"

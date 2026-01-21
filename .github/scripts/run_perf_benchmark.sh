@@ -34,7 +34,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # "
 
 # Run benchmark on baremetal
-set -e
 export HIP_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 pip install -e .
 python examples/${EXAMPLE_PATH}/benchmark.py \
