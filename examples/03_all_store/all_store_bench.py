@@ -43,15 +43,23 @@ def all_store_kernel(
 
     # Store chunk to target buffer
     for destination_rank in range(world_size):
-        if destination_rank != source_rank:  # Skip local HBM access
-            iris.store(
-                target_buffer + offsets,
-                offsets,
-                source_rank,
-                destination_rank,
-                heap_bases_ptr,
-                mask=mask,
-            )
+        #if destination_rank != source_rank:  # Skip local HBM access
+        #    iris.store(
+        #        target_buffer + offsets,
+        #        offsets,
+        #        source_rank,
+        #        destination_rank,
+        #        heap_bases_ptr,
+        #        mask=mask,
+        #    )
+        iris.store(
+            target_buffer + offsets,
+            offsets,
+            source_rank,
+            destination_rank,
+            heap_bases_ptr,
+            mask=mask,
+        )        
 
 
 def torch_dtype_from_str(datatype: str) -> torch.dtype:
@@ -81,8 +89,8 @@ def parse_args():
         choices=["fp16", "fp32", "int8", "bf16"],
         help="Datatype of computation",
     )
-    parser.add_argument("-m", "--buffer_size_min", type=int, default=1 << 20, help="Minimum buffer size")
-    parser.add_argument("-M", "--buffer_size_max", type=int, default=1 << 32, help="Maximum buffer size")
+    parser.add_argument("-m", "--buffer_size_min", type=int, default=1 << 26, help="Minimum buffer size")
+    parser.add_argument("-M", "--buffer_size_max", type=int, default=1 << 26, help="Maximum buffer size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-d", "--validate", action="store_true", help="Enable validation output")
@@ -92,7 +100,7 @@ def parse_args():
     parser.add_argument("-w", "--num_warmup", type=int, default=2, help="Number of warmup experiments")
     parser.add_argument("-a", "--active_ranks", type=int, default=8, help="Number of active ranks")
     parser.add_argument("-o", "--output_file", type=str, default="", help="Output file")
-    parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
+    parser.add_argument("-r", "--num_ranks", type=int, default=1, help="Number of ranks/processes")
 
     return vars(parser.parse_args())
 
@@ -249,30 +257,30 @@ def print_bandwidth_matrix(
 def _worker(local_rank: int = None, world_size: int = None, init_url: str = None, args: dict = None):
     """Worker function for PyTorch distributed execution."""
     # Support torchrun: read from environment variables if available
-    if local_rank is None:
-        local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
-    if world_size is None:
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-    if init_url is None:
-        # torchrun sets MASTER_ADDR and MASTER_PORT
-        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-        master_port = os.environ.get("MASTER_PORT", "29500")
-        init_url = f"tcp://{master_addr}:{master_port}"
-    
-    backend = "gloo"
-    print(f"Using torchrun backend: {backend}")
+    #if local_rank is None:
+    #    local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    #if world_size is None:
+    #    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    #if init_url is None:
+    #    # torchrun sets MASTER_ADDR and MASTER_PORT
+    #    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    #    master_port = os.environ.get("MASTER_PORT", "29500")
+    #    init_url = f"tcp://{master_addr}:{master_port}"
+    #
+    #backend = "gloo"
+    #print(f"Using torchrun backend: {backend}")
     
     # Use environment-based initialization if torchrun is detected
-    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
-        # For torchrun, set device before init_process_group
-        dist.init_process_group(backend=backend, init_method="env://")
-    else:
-        dist.init_process_group(
-            backend=backend,
-            init_method=init_url,
-            world_size=world_size,
-            rank=local_rank,
-        )
+    #if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+    #    # For torchrun, set device before init_process_group
+    #    dist.init_process_group(backend=backend, init_method="env://")
+    #else:
+    #    dist.init_process_group(
+    #        backend=backend,
+    #        init_method=init_url,
+    #        world_size=world_size,
+    #        rank=local_rank,
+    #    )
 
     # Main benchmark logic
     heap_size = args["heap_size"]
@@ -320,29 +328,30 @@ def _worker(local_rank: int = None, world_size: int = None, init_url: str = None
         print_bandwidth_matrix(bandwidth_data, buffer_sizes, output_file=args["output_file"])
 
     #dist.barrier()
-    dist.destroy_process_group()
+    #dist.destroy_process_group()
 
 
 def main():
     print("Starting all store benchmark...")
     args = parse_args()
 
+    _worker(args=args)
     # Check if running with torchrun (detected by environment variables)
-    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
-        # torchrun handles process spawning, so call _worker directly
-        print("Detected torchrun execution mode")
-        _worker(args=args)
-    else:
-        # Use multiprocessing spawn for backward compatibility
-        num_ranks = args["num_ranks"]
-        init_url = "tcp://127.0.0.1:29500"
-        mp.spawn(
-            fn=_worker,
-            args=(num_ranks, init_url, args),
-            nprocs=num_ranks,
-            join=True,
-        )
-
+    #if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+    #    # torchrun handles process spawning, so call _worker directly
+    #    print("Detected torchrun execution mode")
+    #    _worker(args=args)
+    #else:
+    #    # Use multiprocessing spawn for backward compatibility
+    #    num_ranks = args["num_ranks"]
+    #    init_url = "tcp://127.0.0.1:29500"
+    #    mp.spawn(
+    #        fn=_worker,
+    #        args=(num_ranks, init_url, args),
+    #        nprocs=num_ranks,
+    #        join=True,
+    #    )
+#
 
 if __name__ == "__main__":
     main()

@@ -68,7 +68,11 @@ class Iris:
 
     def __init__(self, heap_size=1 << 30):
         # Initialize
-        comm, cur_rank, num_ranks = init_distributed()
+        #comm, cur_rank, num_ranks = init_distributed()
+        comm = None
+        cur_rank = 0
+        num_ranks = 1
+        
         num_gpus = count_devices()
 
         gpu_id = cur_rank % num_gpus
