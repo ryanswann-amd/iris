@@ -41,6 +41,20 @@ ENV PYTHONPATH=$TRITON_PATH
 # Install rocprofiler-systems
 WORKDIR /workspace
 
+# Install anvil
+RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+RUN --mount=type=ssh git clone git@github.com:AARInternal/shader_sdma.git -b dev/dasidler/iris-integration
+RUN cd shader_sdma && git submodule update --init --recursive
+RUN cd shader_sdma/anvil && pip install -e .
+#RUN mkdir build && \
+#    cd build && \
+#    CXX=/opt/rocm/bin/hipcc cmake -DCMAKE_BUILD_TYPE=Release .. &&\
+#    make && \
+#    cd .. && \
+#    pip install scikit-build-core && \
+#    pip install ./anvil && \
+#    pip install -r scripts/requirements.txt
+
 # Create entrypoint script
 RUN echo '#!/bin/bash' > /entrypoint.sh && \
     echo 'echo "Welcome to the ROCm-aware Docker image!"' >> /entrypoint.sh && \
