@@ -72,11 +72,11 @@ class Iris:
         comm = None
         cur_rank = 0
         num_ranks = 1
-        
+
         num_gpus = count_devices()
 
         gpu_id = cur_rank % num_gpus
-        
+
         set_device(gpu_id)
 
         self.comm = comm
@@ -108,7 +108,7 @@ class Iris:
         #all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
 #
         #distributed_barrier()
-        
+
         ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
         self.debug(f"Creating IPC heap bases for {num_ranks} ranks on GPU {gpu_id}")
         #for rank in range(num_ranks):
@@ -294,7 +294,7 @@ class Iris:
         # Use narrow + view instead of slice + view
         byte_offset_in_elements = start  # start is already in bytes, memory_pool is int8
         num_bytes = size_in_bytes
-        
+
         sub_buffer_bytes = self.memory_pool.narrow(0, byte_offset_in_elements, num_bytes)
         sub_buffer = sub_buffer_bytes.view(dtype)
         return [sub_buffer]
@@ -1717,15 +1717,15 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
 
     # Optimization to vectorize the load/store
     # We can't do this in general because we don't know the shape of the tensor or block sizes
-    # ptr = tl.max_contiguous(tl.multiple_of(ptr, (16, 16)), (16, 32))
+    #ptr = tl.max_contiguous(tl.multiple_of(ptr, (16, 16)), (16, 32))
 
     # 0 You can use this if your block sizes are multiples of 32.
     # Largest vectorized load instruction is dwordx4 (128-bits)
     # translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
     # translated_ptr = tl.max_contiguous(translated_ptr, (1, 32))
 
-    # ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
-    # translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
+    ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
+    translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
     return translated_ptr
 
 
