@@ -46,4 +46,7 @@ __pycache__/
 *.pyzw
 *.pyzwz
 
+# Baremetal venv directory
+baremetal/venv/
+
 !.devcontainer/devcontainer.json
