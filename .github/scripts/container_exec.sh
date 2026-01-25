@@ -129,28 +129,31 @@ elif [ "$CONTAINER_RUNTIME" = "docker" ]; then
     exit $EXIT_CODE
     
 elif [ "$CONTAINER_RUNTIME" = "baremetal" ]; then
-    # Find venv
-    VENV_DIR="baremetal/venv"
+    # Find venv (use absolute path)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    VENV_DIR="$REPO_DIR/baremetal/venv"
+    
     if [ ! -d "$VENV_DIR" ]; then
         echo "[ERROR] Baremetal venv not found at $VENV_DIR" >&2
         echo "[ERROR] Please run baremetal/build.sh first" >&2
         exit 1
     fi
     
-    # Build exec command
-    EXEC_CMD="bash -c 'source $VENV_DIR/bin/activate && cd /iris_workspace"
+    # Build exec command - activate venv and run in current directory
+    EXEC_CMD="source $VENV_DIR/bin/activate"
     
     # Add GPU selection if specified
     if [ -n "$GPU_DEVICES" ]; then
         EXEC_CMD="$EXEC_CMD && export HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
     fi
     
-    # Add command and close script
-    EXEC_CMD="$EXEC_CMD && $COMMAND'"
+    # Add command
+    EXEC_CMD="$EXEC_CMD && $COMMAND"
     
-    # Execute in current directory (simulating bind mount to /iris_workspace)
+    # Execute in current directory
     EXIT_CODE=0
-    (cd "${PWD}" && eval "$EXEC_CMD") || EXIT_CODE=$?
+    bash -c "$EXEC_CMD" || EXIT_CODE=$?
     exit $EXIT_CODE
 fi
 
