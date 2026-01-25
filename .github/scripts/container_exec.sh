@@ -127,7 +127,7 @@ elif [ "$CONTAINER_RUNTIME" = "docker" ]; then
     EXIT_CODE=0
     $RUN_CMD "$IMAGE_NAME" -c "$COMMAND" || EXIT_CODE=$?
     exit $EXIT_CODE
-    
+
 elif [ "$CONTAINER_RUNTIME" = "baremetal" ]; then
     # Find venv (use absolute path)
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

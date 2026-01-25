@@ -1,6 +1,9 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+#
+# Note: This script is designed for Unix-like systems (Linux, macOS).
+# Windows users should use WSL or container-based backends.
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 VENV_DIR="${SCRIPT_DIR}/venv"

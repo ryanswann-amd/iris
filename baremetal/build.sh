@@ -26,6 +26,8 @@ echo "[INFO] Upgrading pip..."
 pip install --upgrade pip
 
 # Install basic dependencies similar to Docker/Apptainer images
+# Note: Using latest versions for simplicity. For reproducible builds,
+# consider creating a requirements.txt with pinned versions.
 echo "[INFO] Installing base dependencies..."
 pip install wheel jupyter
 
