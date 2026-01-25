@@ -8,11 +8,10 @@
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 VENV_DIR="${SCRIPT_DIR}/venv"
 
-# Check if virtual environment exists
+# Check if virtual environment exists, if not, build it
 if [ ! -d "${VENV_DIR}" ]; then
-    echo "[ERROR] Virtual environment not found at ${VENV_DIR}"
-    echo "[ERROR] Please run baremetal/build.sh first to create the environment"
-    exit 1
+    echo "[INFO] Virtual environment not found at ${VENV_DIR}, building it now..."
+    bash "${SCRIPT_DIR}/build.sh"
 fi
 
 echo "[INFO] Using baremetal environment at ${VENV_DIR}"
