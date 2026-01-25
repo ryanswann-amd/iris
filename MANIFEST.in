@@ -4,4 +4,12 @@ include LICENSE
 include iris/README.md
 
 # Include build configuration
-include pyproject.toml 
+include pyproject.toml
+include setup.py
+include CMakeLists.txt
+
+# Include CMake modules
+include cmake/CPM.cmake
+
+# Include C++ source files
+recursive-include csrc *.cpp *.hpp *.h
