@@ -12,7 +12,7 @@ echo "[INFO] Setting up baremetal Python venv at ${VENV_DIR}"
 # Create virtual environment if it doesn't exist
 if [ ! -d "${VENV_DIR}" ]; then
     echo "[INFO] Creating new Python virtual environment..."
-    python3 -m venv "${VENV_DIR}"
+    python3 -m venv --system-site-packages "${VENV_DIR}"
     echo "[INFO] Virtual environment created successfully"
 else
     echo "[INFO] Using existing virtual environment at ${VENV_DIR}"
