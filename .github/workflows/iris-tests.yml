@@ -13,9 +13,7 @@ concurrency:
 
 env:
   DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME || 'iris-dev-triton-aafec41' }}
-  # Override container runtime (options: apptainer, docker, baremetal)
-  # If not set, will auto-detect based on available tools
-  # CONTAINER_RUNTIME: baremetal
+  CONTAINER_RUNTIME: baremetal
 
 jobs:
   build-container-image:

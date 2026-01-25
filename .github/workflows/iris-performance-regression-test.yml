@@ -13,6 +13,7 @@ concurrency:
 
 env:
   DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME || 'iris-dev-triton-aafec41' }}
+  CONTAINER_RUNTIME: baremetal
 
 jobs:
   build-container-image:
