@@ -4,7 +4,7 @@
 #
 # Note: This script is designed for Unix-like systems (Linux, macOS).
 # Windows users should use WSL or container-based backends.
-
+export PATH="/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 VENV_DIR="${SCRIPT_DIR}/venv"
 # Check if virtual environment exists, if not, build it
