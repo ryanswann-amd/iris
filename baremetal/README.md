@@ -57,7 +57,32 @@ The baremetal backend integrates seamlessly with the existing testing infrastruc
 - `.github/scripts/container_run.sh` - Runs interactive sessions
 - `.github/scripts/run_tests.sh` - Works with baremetal backend
 
-When neither Docker nor Apptainer is available, the scripts automatically fall back to using the baremetal backend.
+### Auto-Detection
+
+By default, the scripts auto-detect which backend to use:
+1. Apptainer (if available)
+2. Docker (if available)
+3. Baremetal (fallback)
+
+### Override Runtime Selection
+
+You can override the auto-detection by setting the `CONTAINER_RUNTIME` environment variable:
+
+```bash
+# Force use of baremetal backend
+export CONTAINER_RUNTIME=baremetal
+bash .github/scripts/container_build.sh
+
+# Or for a single command
+CONTAINER_RUNTIME=baremetal bash .github/scripts/container_exec.sh "pytest tests/"
+```
+
+In CI workflows, set it in the environment variables:
+
+```yaml
+env:
+  CONTAINER_RUNTIME: baremetal  # Options: apptainer, docker, baremetal
+```
 
 ## Notes
 

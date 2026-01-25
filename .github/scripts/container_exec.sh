@@ -34,17 +34,22 @@ if [ -z "$COMMAND" ]; then
     exit 1
 fi
 
-# Check which container runtime is available
-if command -v apptainer &> /dev/null; then
-    CONTAINER_RUNTIME="apptainer"
-    echo "[INFO] Using Apptainer"
-elif command -v docker &> /dev/null; then
-    CONTAINER_RUNTIME="docker"
-    echo "[INFO] Using Docker"
+# Check if CONTAINER_RUNTIME is already set (e.g., from CI environment)
+# If not set, auto-detect based on available tools
+if [ -z "$CONTAINER_RUNTIME" ]; then
+    if command -v apptainer &> /dev/null; then
+        CONTAINER_RUNTIME="apptainer"
+        echo "[INFO] Auto-detected Apptainer"
+    elif command -v docker &> /dev/null; then
+        CONTAINER_RUNTIME="docker"
+        echo "[INFO] Auto-detected Docker"
+    else
+        # Fallback to baremetal (Python venv)
+        CONTAINER_RUNTIME="baremetal"
+        echo "[INFO] Auto-detected Baremetal (Python venv)"
+    fi
 else
-    # Fallback to baremetal (Python venv)
-    CONTAINER_RUNTIME="baremetal"
-    echo "[INFO] Using Baremetal (Python venv)"
+    echo "[INFO] Using CONTAINER_RUNTIME from environment: $CONTAINER_RUNTIME"
 fi
 
 # Execute based on detected runtime
