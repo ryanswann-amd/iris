@@ -11,7 +11,10 @@ VENV_DIR="${SCRIPT_DIR}/venv"
 # Check if virtual environment exists, if not, build it
 if [ ! -d "${VENV_DIR}" ]; then
     echo "[INFO] Virtual environment not found at ${VENV_DIR}, building it now..."
-    bash "${SCRIPT_DIR}/build.sh"
+    if ! bash "${SCRIPT_DIR}/build.sh"; then
+        echo "[ERROR] Failed to build virtual environment"
+        exit 1
+    fi
 fi
 
 echo "[INFO] Using baremetal environment at ${VENV_DIR}"

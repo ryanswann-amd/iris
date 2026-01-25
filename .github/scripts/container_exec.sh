@@ -142,7 +142,10 @@ elif [ "$CONTAINER_RUNTIME" = "baremetal" ]; then
     # Check if venv exists, if not, build it
     if [ ! -d "$VENV_DIR" ]; then
         echo "[INFO] Baremetal venv not found at $VENV_DIR, building it now..." >&2
-        bash "$REPO_DIR/baremetal/build.sh"
+        if ! bash "$REPO_DIR/baremetal/build.sh"; then
+            echo "[ERROR] Failed to build baremetal venv" >&2
+            exit 1
+        fi
     fi
     
     # Build exec command - activate venv and run in current directory
