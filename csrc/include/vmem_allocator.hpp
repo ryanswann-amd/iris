@@ -403,9 +403,9 @@ public:
       hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
       log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
     } else {
-      // For RMA: Set access on the RMA region directly
-      hip_try(hipMemSetAccess(target_va, aligned_size, &access_desc, 1));
-      log_debug("Set access on RMA VA {} with size {}", target_va, aligned_size);
+      // For RMA: hipMemMap is sufficient; access permissions come from the exporting process
+      // We don't call hipMemSetAccess on unmapped VA ranges
+      log_debug("RMA import complete at {} (skipping hipMemSetAccess)", target_va);
     }
 
     track_allocation(target_va, aligned_size, handle, true);
