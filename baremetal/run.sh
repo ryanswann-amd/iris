@@ -7,7 +7,6 @@
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 VENV_DIR="${SCRIPT_DIR}/venv"
-export PATH="/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # Check if virtual environment exists, if not, build it
 if [ ! -d "${VENV_DIR}" ]; then
     echo "[INFO] Virtual environment not found at ${VENV_DIR}, building it now..."
