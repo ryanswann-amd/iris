@@ -42,8 +42,9 @@ elif command -v docker &> /dev/null; then
     CONTAINER_RUNTIME="docker"
     echo "[INFO] Using Docker"
 else
-    echo "[ERROR] Neither Apptainer nor Docker is available" >&2
-    exit 1
+    # Fallback to baremetal (Python venv)
+    CONTAINER_RUNTIME="baremetal"
+    echo "[INFO] Using Baremetal (Python venv)"
 fi
 
 # Execute based on detected runtime
@@ -125,6 +126,31 @@ elif [ "$CONTAINER_RUNTIME" = "docker" ]; then
     # Execute and capture exit code
     EXIT_CODE=0
     $RUN_CMD "$IMAGE_NAME" -c "$COMMAND" || EXIT_CODE=$?
+    exit $EXIT_CODE
+    
+elif [ "$CONTAINER_RUNTIME" = "baremetal" ]; then
+    # Find venv
+    VENV_DIR="baremetal/venv"
+    if [ ! -d "$VENV_DIR" ]; then
+        echo "[ERROR] Baremetal venv not found at $VENV_DIR" >&2
+        echo "[ERROR] Please run baremetal/build.sh first" >&2
+        exit 1
+    fi
+    
+    # Build exec command
+    EXEC_CMD="bash -c 'source $VENV_DIR/bin/activate && cd /iris_workspace"
+    
+    # Add GPU selection if specified
+    if [ -n "$GPU_DEVICES" ]; then
+        EXEC_CMD="$EXEC_CMD && export HIP_VISIBLE_DEVICES=${GPU_DEVICES}"
+    fi
+    
+    # Add command and close script
+    EXEC_CMD="$EXEC_CMD && $COMMAND'"
+    
+    # Execute in current directory (simulating bind mount to /iris_workspace)
+    EXIT_CODE=0
+    (cd "${PWD}" && eval "$EXEC_CMD") || EXIT_CODE=$?
     exit $EXIT_CODE
 fi
 
