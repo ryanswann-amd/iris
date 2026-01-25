@@ -54,15 +54,16 @@ PYBIND11_MODULE(_iris_vmem, m) {
              "Unimport buffer",
              py::arg("ptr"))
         .def("import_dmabuf_at",
-             [](iris::memory::SymmetricHeapResource& self, uintptr_t target_ptr, int fd, size_t bytes) {
+             [](iris::memory::SymmetricHeapResource& self, uintptr_t target_ptr, int fd, size_t bytes, bool rma) {
                  return reinterpret_cast<uintptr_t>(
-                     self.import_dmabuf_at(reinterpret_cast<void*>(target_ptr), fd, bytes)
+                     self.import_dmabuf_at(reinterpret_cast<void*>(target_ptr), fd, bytes, rma)
                  );
              },
-             "Import a DMA-BUF FD and map it at an explicit VA (target_ptr).",
+             "Import a DMA-BUF FD and map it at an explicit VA. Set rma=True for RMA imports.",
              py::arg("target_ptr"),
              py::arg("fd"),
-             py::arg("bytes"))
+             py::arg("bytes"),
+             py::arg("rma") = false)
         .def("export_dmabuf",
              [](iris::memory::SymmetricHeapResource& self, uintptr_t ptr, size_t bytes) {
                  return self.export_dmabuf(reinterpret_cast<void*>(ptr), bytes);

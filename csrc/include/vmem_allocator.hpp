@@ -129,7 +129,7 @@ private:
     hip_try(hipSetDevice(device_id_));
 
     std::size_t size = align_to_granularity(bytes);
-    
+
     // For empty allocations (0 bytes), allocate minimum granularity
     // hipMemCreate fails with 0 bytes, so we always allocate at least granularity_
     if (size == 0) {
@@ -308,10 +308,11 @@ public:
     return va_with_offset;
   }
 
-  // Import a DMA-BUF FD and map it at an explicit VA (e.g., base + deterministic offset).
-  // This is the primitive needed for multi-process sharing where the receiver does not
-  // have the sender's `external_ptr`, only a DMA-BUF handle (fd).
-  void* import_dmabuf_at(void* target_va, int dmabuf_fd, std::size_t bytes) {
+  // Import a DMA-BUF FD and map it at an explicit VA.
+  //
+  // For symmetric heap imports (rma=false), target_va must be within our reserved range.
+  // For RMA imports (rma=true), target_va can be at arbitrary peer VAs outside our range.
+  void* import_dmabuf_at(void* target_va, int dmabuf_fd, std::size_t bytes, bool rma = false) {
     hip_try(hipSetDevice(device_id_));
     if (!target_va) {
       log_error("Cannot import to null target_va");
@@ -328,15 +329,17 @@ public:
 
     std::size_t aligned_size = align_to_granularity(bytes);
 
-    // Bounds check: must be within reserved VA range.
-    auto base = static_cast<char*>(base_va_);
-    auto end = base + heap_size_;
-    auto t = static_cast<char*>(target_va);
-    if (t < base || (t + aligned_size) > end) {
-      log_error("Target VA {} (size {}) is outside reserved range {} - {}",
-                target_va, aligned_size, base_va_,
-                static_cast<void*>(end));
-      throw std::runtime_error("Target VA outside reserved range");
+    // Bounds check: only for non-RMA imports within our reserved range
+    if (!rma) {
+      auto base = static_cast<char*>(base_va_);
+      auto end = base + heap_size_;
+      auto t = static_cast<char*>(target_va);
+      if (t < base || (t + aligned_size) > end) {
+        log_error("Target VA {} (size {}) is outside reserved range {} - {}",
+                  target_va, aligned_size, base_va_,
+                  static_cast<void*>(end));
+        throw std::runtime_error("Target VA outside reserved range");
+      }
     }
 
     // Alignment check: target VA must be granularity-aligned for hipMemMap.
@@ -358,16 +361,18 @@ public:
       throw std::runtime_error("Target VA already mapped");
     }
 
-    // Disallow overlaps with any tracked allocation range.
-    auto new_begin = reinterpret_cast<std::uintptr_t>(target_va);
-    auto new_end = new_begin + aligned_size;
-    for (const auto& [va, info] : allocations_) {
-      auto begin = reinterpret_cast<std::uintptr_t>(va);
-      auto endp = begin + info.size;
-      if (!(new_end <= begin || new_begin >= endp)) {
-        log_error("Import range [{}..{}) overlaps existing allocation [{}..{})",
-                  (void*)new_begin, (void*)new_end, (void*)begin, (void*)endp);
-        throw std::runtime_error("Import range overlaps existing allocation");
+    // Disallow overlaps with any tracked allocation range (only for non-RMA imports)
+    if (!rma) {
+      auto new_begin = reinterpret_cast<std::uintptr_t>(target_va);
+      auto new_end = new_begin + aligned_size;
+      for (const auto& [va, info] : allocations_) {
+        auto begin = reinterpret_cast<std::uintptr_t>(va);
+        auto endp = begin + info.size;
+        if (!(new_end <= begin || new_begin >= endp)) {
+          log_error("Import range [{}..{}) overlaps existing allocation [{}..{})",
+                    (void*)new_begin, (void*)new_end, (void*)begin, (void*)endp);
+          throw std::runtime_error("Import range overlaps existing allocation");
+        }
       }
     }
 
@@ -381,24 +386,30 @@ public:
     hip_try(hipMemMap(target_va, aligned_size, 0, handle, 0));
     log_debug("Mapped imported handle to VA {}, size {}", target_va, aligned_size);
 
-    // Calculate cumulative size up to and including this import
-    auto target_end = static_cast<char*>(target_va) + aligned_size;
-    auto cumulative_end = static_cast<char*>(base_va_) + cumulative_allocated_;
-    if (target_end > cumulative_end) {
-      cumulative_allocated_ = static_cast<char*>(target_end) - static_cast<char*>(base_va_);
-      log_debug("Updated cumulative allocated to {} bytes (covers import at {})",
-                cumulative_allocated_, target_va);
-    }
-
-    // Always call hipMemSetAccess from base_va with cumulative size
+    // Set access permissions
     hipMemAccessDesc access_desc;
     access_desc.location = alloc_prop_.location;
     access_desc.flags = hipMemAccessFlagsProtReadWrite;
-    hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
-    log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
+
+    if (!rma) {
+      // For non-RMA: Calculate cumulative size and set access from base_va
+      auto target_end = static_cast<char*>(target_va) + aligned_size;
+      auto cumulative_end = static_cast<char*>(base_va_) + cumulative_allocated_;
+      if (target_end > cumulative_end) {
+        cumulative_allocated_ = static_cast<char*>(target_end) - static_cast<char*>(base_va_);
+        log_debug("Updated cumulative allocated to {} bytes (covers import at {})",
+                  cumulative_allocated_, target_va);
+      }
+      hip_try(hipMemSetAccess(base_va_, cumulative_allocated_, &access_desc, 1));
+      log_debug("Set access on base_va {} with cumulative size {}", base_va_, cumulative_allocated_);
+    } else {
+      // For RMA: Set access on the RMA region directly
+      hip_try(hipMemSetAccess(target_va, aligned_size, &access_desc, 1));
+      log_debug("Set access on RMA VA {} with size {}", target_va, aligned_size);
+    }
 
     track_allocation(target_va, aligned_size, handle, true);
-    log_info("Imported dmabuf to {}, size {}", target_va, aligned_size);
+    log_info("Imported dmabuf to {} (rma={}), size {}", target_va, rma, aligned_size);
     return target_va;
   }
 

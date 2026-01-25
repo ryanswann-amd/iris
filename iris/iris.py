@@ -352,8 +352,8 @@ class Iris:
                 # Import peer allocation into our VA at the *peer's* base+offset (remote address model).
                 peer_base = int(self.heap_bases[peer].item())
                 target_va = peer_base + peer_offset
-                # Import into OUR allocator at the corresponding VA in our address space
-                self.vmem_allocator.import_dmabuf_at(int(target_va), int(peer_fd), int(peer_size))
+                # Import with rma=True to skip bounds/overlap checks (peer VA is outside our range)
+                self.vmem_allocator.import_dmabuf_at(int(target_va), int(peer_fd), int(peer_size), rma=True)
 
         except Exception as e:
             self.warning(f"Failed to export/share allocation: {e}")
