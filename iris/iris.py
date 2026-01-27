@@ -66,12 +66,11 @@ class Iris:
         >>> tensor = ctx.zeros(1000, 1000, dtype=torch.float32)
     """
 
-    def __init__(self, heap_size=1 << 30):
+    def __init__(self, heap_size=1 << 30, num_ranks=1):
         # Initialize
         #comm, cur_rank, num_ranks = init_distributed()
         comm = None
         cur_rank = 0
-        num_ranks = 1
 
         num_gpus = count_devices()
 
@@ -88,49 +87,25 @@ class Iris:
         self.alignment = 1024
         #self.device = f"cuda:{gpu_id}"
         self.device = f"cuda"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
-
-        heap_base = self.memory_pool.data_ptr()
+        
+        self.memory_pools = [torch.empty(heap_size, device=self.device, dtype=torch.int8) for _ in range(num_ranks)]
+        
+        heap_base = self.memory_pools[cur_rank].data_ptr()
         heap_base_ptr = ctypes.c_void_p(heap_base)
 
         self.debug(f"Creating heap bases for {num_ranks} ranks on GPU {gpu_id}")
-        #heap_bases = np.zeros(num_ranks, dtype=np.uint64)
-        #heap_bases[cur_rank] = heap_base
-        #ipc_handle_size = get_ipc_handle_size()
-        #ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
-        #ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
-#
-        #distributed_barrier()
-#
-        #all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
-        #heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
-        #all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
-        #all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
-#
-        #distributed_barrier()
 
-        ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
-        self.debug(f"Creating IPC heap bases for {num_ranks} ranks on GPU {gpu_id}")
-        #for rank in range(num_ranks):
-        #    if rank != cur_rank:
-        #        handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
-        #        ipc_heap_bases[rank] = int(handle)
-        #    else:
-        #        ipc_heap_bases[rank] = heap_bases[rank]
-#
-        #for i in range(num_ranks):
-        #    self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
-#
-        #distributed_barrier()
-        # Create heap_bases tensor on CUDA
+
         # Pad to > 16 KB (4097 elements) to avoid __amd_rocclr_copyBuffer.kd kernel
         padded_size = 4097  # > 4096 threshold (16 KB)
         ipc_heap_bases_padded = np.zeros(padded_size, dtype=np.uint64)
-        ipc_heap_bases_padded[:num_ranks] = ipc_heap_bases
         self.heap_bases = torch.tensor(ipc_heap_bases_padded, device=self.device, dtype=torch.uint64)
-        # Only use the first num_ranks elements
-        self.heap_bases = self.heap_bases[:num_ranks]
+        
+        for rank in range(num_ranks):
+            self.heap_bases[rank] = self.memory_pools[rank].data_ptr()
 
+        for rank in range(num_ranks):
+            print(f"Heap base for rank {rank}: {hex(self.heap_bases[rank])}")
         self.debug(f"Barrier after creating heap bases")
         distributed_barrier()
 
@@ -295,7 +270,7 @@ class Iris:
         byte_offset_in_elements = start  # start is already in bytes, memory_pool is int8
         num_bytes = size_in_bytes
 
-        sub_buffer_bytes = self.memory_pool.narrow(0, byte_offset_in_elements, num_bytes)
+        sub_buffer_bytes = self.memory_pools[self.cur_rank].narrow(0, byte_offset_in_elements, num_bytes)
         sub_buffer = sub_buffer_bytes.view(dtype)
         return [sub_buffer]
 
@@ -1195,7 +1170,7 @@ class Iris:
             >>> device = ctx.get_device()
             >>> print(device)  # cuda:0
         """
-        return self.memory_pool.device
+        return self.memory_pools[self.cur_rank].device
 
     def get_cu_count(self):
         """
@@ -2242,7 +2217,7 @@ def atomic_max(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
     return tl.atomic_max(translated_ptr, val, mask=mask, sem=sem, scope=scope)
 
 
-def iris(heap_size=1 << 30):
+def iris(heap_size=1 << 30, num_ranks=1):
     """
     Create and return an Iris instance with the specified heap size.
 
@@ -2257,4 +2232,4 @@ def iris(heap_size=1 << 30):
         >>> iris_ctx = iris.iris(2**30)  # 1GB heap
         >>> tensor = iris_ctx.zeros(1024, 1024)
     """
-    return Iris(heap_size)
+    return Iris(heap_size, num_ranks)

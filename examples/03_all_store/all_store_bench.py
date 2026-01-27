@@ -89,13 +89,13 @@ def parse_args():
         choices=["fp16", "fp32", "int8", "bf16"],
         help="Datatype of computation",
     )
-    parser.add_argument("-m", "--buffer_size_min", type=int, default=1 << 26, help="Minimum buffer size")
-    parser.add_argument("-M", "--buffer_size_max", type=int, default=1 << 26, help="Maximum buffer size")
+    parser.add_argument("-m", "--buffer_size_min", type=int, default=1 << 23, help="Minimum buffer size")
+    parser.add_argument("-M", "--buffer_size_max", type=int, default=1 << 23, help="Maximum buffer size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-d", "--validate", action="store_true", help="Enable validation output")
 
-    parser.add_argument("-p", "--heap_size", type=int, default=1 << 36, help="Iris heap size")
+    parser.add_argument("-p", "--heap_size", type=int, default=1 << 24, help="Iris heap size")
     parser.add_argument("-x", "--num_experiments", type=int, default=20, help="Number of experiments")
     parser.add_argument("-w", "--num_warmup", type=int, default=2, help="Number of warmup experiments")
     parser.add_argument("-a", "--active_ranks", type=int, default=8, help="Number of active ranks")
@@ -284,7 +284,7 @@ def _worker(local_rank: int = None, world_size: int = None, init_url: str = None
 
     # Main benchmark logic
     heap_size = args["heap_size"]
-    shmem = iris.iris(heap_size)
+    shmem = iris.iris(heap_size, num_ranks=args["num_ranks"])
     num_ranks = shmem.get_num_ranks()
 
     dtype = torch_dtype_from_str(args["datatype"])
