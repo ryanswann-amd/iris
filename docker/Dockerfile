@@ -43,7 +43,7 @@ WORKDIR /workspace
 
 # Install anvil
 RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-RUN --mount=type=ssh git clone git@github.com:AARInternal/shader_sdma.git -b muhaawad/fix-dtor
+RUN --mount=type=ssh git clone git@github.com:AARInternal/shader_sdma.git -b dev/dasidler/iris-integration
 RUN cd shader_sdma && git submodule update --init --recursive
 RUN cd shader_sdma/anvil && pip install -e .
 #RUN mkdir build && \
