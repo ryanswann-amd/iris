@@ -44,6 +44,8 @@
         "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock"
     },
     "remoteUser": "root",
-    "postStartCommand": "pip install -e '.[dev]'",
+    "workspaceFolder": "/workspaces/iris",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/iris,type=bind",
+    "postCreateCommand": "cd /workspaces/iris && pip install -e '.[dev]'",
     "updateRemoteUserUID": true
 }
