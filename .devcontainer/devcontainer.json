@@ -32,7 +32,8 @@
     "customizations": {
         "vscode": {
             "extensions": [
-                "TinkerCode.trident"
+                "TinkerCode.trident",
+                "TinkerCode.rightrun"
             ]
         }
     },
