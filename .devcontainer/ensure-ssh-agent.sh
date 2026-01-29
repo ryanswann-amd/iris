@@ -14,15 +14,20 @@ SOCK="${HOME}/.ssh/ssh-agent.sock"
 
 mkdir -p "${HOME}/.ssh"
 
+# Check if socket exists AND agent is responsive AND has keys loaded
 if [[ -S "${SOCK}" ]]; then
-  exit 0
+  if SSH_AUTH_SOCK="${SOCK}" ssh-add -l >/dev/null 2>&1; then
+    # Agent is running and has keys loaded
+    exit 0
+  fi
+  # Socket exists but agent is dead or has no keys - clean it up
+  rm -f "${SOCK}"
 fi
 
-rm -f "${SOCK}"
+# Start new agent
 ssh-agent -a "${SOCK}" -t 8h >/dev/null
 
+# Load SSH key if it exists
 if [[ -f "${HOME}/.ssh/id_rsa" ]]; then
   SSH_AUTH_SOCK="${SOCK}" ssh-add "${HOME}/.ssh/id_rsa" >/dev/null 2>&1 || true
 fi
-
-SSH_AUTH_SOCK="${SOCK}" ssh-add -l >/dev/null 2>&1 || true
