@@ -44,6 +44,6 @@
         "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock"
     },
     "remoteUser": "root",
-    "postStartCommand": "pip install -e . '[dev]'",
+    "postStartCommand": "pip install -e '.[dev]'",
     "updateRemoteUserUID": true
 }
