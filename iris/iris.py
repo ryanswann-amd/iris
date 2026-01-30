@@ -2020,7 +2020,9 @@ def put(
         # tl.device_print("num strides: ", num_strides)
         # tl.device_print("size_bytes per stride", size_bytes)
 
-        command_in_bytes = 28
+        # workaround to avoid padding
+        command_in_bytes_u32 = 32
+        command_in_bytes = command_in_bytes_u32.to(tl.uint64)
         # TODO wrap-around seems broken
         # Overwrite here
         # num_strides = 8
@@ -2039,14 +2041,14 @@ def put(
         for stride in range(0, num_strides):
             # slot_ptr_u32 = queue_ptr_u32 + (base // 4) + (stride * 7)
             offset_bytes = base + (stride * command_in_bytes)
-            # anvil.place_copy_packet(
-            #     queue_ptr_u32,
-            #     offset_bytes,
-            #     size_bytes,
-            #     src_ptr_val0 + (src_stride * stride),
-            #     dst_ptr_val0 + (dst_stride * stride),
-            # )
-            anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
+            anvil.place_copy_packet(
+                queue_ptr_u32,
+                offset_bytes,
+                size_bytes,
+                src_ptr_val0 + (src_stride * stride),
+                dst_ptr_val0 + (dst_stride * stride),
+            )
+            # anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
