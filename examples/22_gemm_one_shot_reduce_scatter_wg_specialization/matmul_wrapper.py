@@ -2,26 +2,36 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 import torch
-import triton
-
-# from streamk_kernel import streamk_gemm
-# from streamk_kernel_atomic import streamk_gemm
-from gemm_all_reduce_atomics import persistent_gemm_all_reduce
-
+from gemm_reduce_scatter import persistent_gemm_reduce_scatter_wg_specialized
 from examples.common.utils import is_triton_interpret_set
 import iris
 
-gemm_kernel = persistent_gemm_all_reduce
+gemm_kernel = persistent_gemm_reduce_scatter_wg_specialized
 
 
-class matmul(torch.autograd.Function):
-    _debug = True
+class MatMulReduceScatterWgSpecialized(torch.autograd.Function):
+    _debug = False
+    _registers = None
+    _spills = None
+    _num_xcds = iris.hip.get_num_xcc()
 
     @staticmethod
     def set_debug(debug: bool):
-        matmul._debug = debug
-        matmul.streamk_registers = 0
-        matmul.streamk_spills = 0
+        MatMulReduceScatterWgSpecialized._debug = debug
+
+    @staticmethod
+    def get_matmul_registers():
+        if MatMulReduceScatterWgSpecialized._debug:
+            return MatMulReduceScatterWgSpecialized._registers
+        else:
+            raise RuntimeError("Debug mode is not enabled. Call set_debug(True) first.")
+
+    @staticmethod
+    def get_matmul_spills():
+        if MatMulReduceScatterWgSpecialized._debug:
+            return MatMulReduceScatterWgSpecialized._spills
+        else:
+            raise RuntimeError("Debug mode is not enabled. Call set_debug(True) first.")
 
     @staticmethod
     def _call(
@@ -29,50 +39,41 @@ class matmul(torch.autograd.Function):
         b: torch.Tensor,
         c: torch.Tensor,
         c_global: torch.Tensor,
-        bias: torch.Tensor,
+        locks: torch.Tensor,
         rank: int,
         world_size: int,
+        gemm_sms: int,
         num_sms: int,
         BLK_M: int,
         BLK_N: int,
         BLK_K: int,
         gsize_m: int,
         num_stages: int,
-        heap_bases_ptr: torch.Tensor = None,
+        heap_bases_ptr: torch.Tensor,
         arch: str = "gfx942",
         COLLECT_TIMESTAMPS: bool = False,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
     ):
-        # assert a.is_contiguous() and b.is_contiguous(), "non-contiguous inputs are not supported"
-        # checks constraints
         assert a.shape[1] == b.shape[0], "incompatible dimensions"
         M, K = a.shape
         _, N = b.shape
 
-        num_xcds = iris.hip.get_num_xcc()
-
-        # TODO: Use arch-specific values.
+        num_xcds = MatMulReduceScatterWgSpecialized._num_xcds
         num_warps = 8
         waves_per_eu = 0
         mfma = 16
         kpack = 1
-
-        total_blocks_M = triton.cdiv(M, BLK_M)
-        total_blocks_N = triton.cdiv(N, BLK_N)
-        iters_per_tile = triton.cdiv(K, BLK_K)
-        total_tiles = total_blocks_M * total_blocks_N
         even_k = K % BLK_K == 0
-        use_bias = False
 
-        # compute grid (work to do per SM on the first wave)
-        stride_bias = bias.stride(0) if use_bias else 0
-        kk = gemm_kernel[(num_sms,)](
+        grid = (num_sms,)
+
+        kk = gemm_kernel[grid](
             a,
             b,
             c,
             c_global,
-            bias,
+            locks,
             M,
             N,
             K,
@@ -84,14 +85,13 @@ class matmul(torch.autograd.Function):
             c.stride(1),
             c_global.stride(0),
             c_global.stride(1),
-            stride_bias,
             BLOCK_SIZE_M=BLK_M,
             BLOCK_SIZE_N=BLK_N,
             BLOCK_SIZE_K=BLK_K,
             GROUP_SIZE_M=gsize_m,
+            GEMM_SMS=gemm_sms,
             NUM_SMS=num_sms,
             NUM_XCDS=num_xcds,
-            BIAS=use_bias,
             EVEN_K=even_k,
             num_stages=num_stages,
             num_warps=num_warps,
@@ -106,11 +106,11 @@ class matmul(torch.autograd.Function):
             mm_end_timestamp_ptr=mm_end_timestamp,
         )
 
-        if matmul._debug and not is_triton_interpret_set():
-            matmul.streamk_registers = kk.n_regs
-            matmul.streamk_spills = kk.n_spills
+        if MatMulReduceScatterWgSpecialized._debug and not is_triton_interpret_set():
+            MatMulReduceScatterWgSpecialized._registers = kk.n_regs
+            MatMulReduceScatterWgSpecialized._spills = kk.n_spills
 
-        return c
+        return c_global
 
     @staticmethod
     def forward(
@@ -119,29 +119,31 @@ class matmul(torch.autograd.Function):
         b: torch.Tensor,
         c: torch.Tensor,
         c_global: torch.Tensor,
-        bias: torch.Tensor,
+        locks: torch.Tensor,
         rank: int,
         world_size: int,
+        gemm_sms: int,
         num_sms: int,
         BLK_M: int,
         BLK_N: int,
         BLK_K: int,
         gsize_m: int,
         num_stages: int,
-        heap_bases_ptr: torch.Tensor = None,
+        heap_bases_ptr: torch.Tensor,
         arch: str = "gfx942",
         COLLECT_TIMESTAMPS: bool = False,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
     ):
-        matmul._call(
+        return MatMulReduceScatterWgSpecialized._call(
             a=a,
             b=b,
             c=c,
             c_global=c_global,
-            bias=bias,
+            locks=locks,
             rank=rank,
             world_size=world_size,
+            gemm_sms=gemm_sms,
             num_sms=num_sms,
             BLK_M=BLK_M,
             BLK_N=BLK_N,
@@ -154,4 +156,3 @@ class matmul(torch.autograd.Function):
             mm_begin_timestamp=mm_begin_timestamp,
             mm_end_timestamp=mm_end_timestamp,
         )
-        return c

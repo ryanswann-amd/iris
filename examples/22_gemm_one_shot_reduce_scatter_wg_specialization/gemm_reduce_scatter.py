@@ -5,17 +5,15 @@ import triton
 import triton.language as tl
 from examples.common.utils import read_realtime
 
-
 import iris
 
 
 @triton.jit()
-def persistent_gemm_all_scatter_wg_specialization(
+def persistent_gemm_reduce_scatter_wg_specialized(
     A,
     B,
-    C,
-    c_global,
-    bias_ptr,
+    C,  # local buffer [M, N]
+    C_global,  # global output buffer [M, N] on each rank
     locks,
     M,
     N,
@@ -26,9 +24,8 @@ def persistent_gemm_all_scatter_wg_specialization(
     stride_bn,
     stride_cm,
     stride_cn,
-    stride_cm_global,
-    stride_cn_global,
-    stride_bias,
+    stride_cg_m,
+    stride_cg_n,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -36,7 +33,6 @@ def persistent_gemm_all_scatter_wg_specialization(
     GEMM_SMS: tl.constexpr,
     NUM_SMS: tl.constexpr,
     NUM_XCDS: tl.constexpr,
-    BIAS: tl.constexpr,
     EVEN_K: tl.constexpr,
     heap_bases: tl.tensor,
     cur_rank: tl.constexpr,
@@ -45,13 +41,32 @@ def persistent_gemm_all_scatter_wg_specialization(
     mm_begin_timestamp_ptr: tl.tensor = None,
     mm_end_timestamp_ptr: tl.tensor = None,
 ):
+    """
+    GEMM + ReduceScatter with Workgroup Specialization
+
+    Split SMs into two groups:
+    - GEMM SMs: Perform matrix multiplication computation
+    - Communication SMs: Handle data communication (scatter to target ranks)
+
+    This approach enables overlapping computation and communication.
+
+    Data partitioning (ReduceScatter):
+    - A: [M, local_K] - Each rank has a portion of K dimension
+    - B: [local_K, N] - Each rank has a portion of K dimension
+    - Each rank computes partial C = A @ B of shape [M, N]
+    - ReduceScatter: Split C along M dimension into world_size chunks,
+      send chunk i to rank i, accumulate with atomic_add
+    - Output: Each rank ends up with [M/world_size, N]
+    """
     pid = tl.program_id(0)
 
     if NUM_XCDS != 1:
         pid = (pid % NUM_XCDS) * (NUM_SMS // NUM_XCDS) + (pid // NUM_XCDS)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
+    M_per_rank = M // world_size
 
     tl.assume(stride_am > 0)
     tl.assume(stride_ak > 0)
@@ -62,10 +77,6 @@ def persistent_gemm_all_scatter_wg_specialization(
 
     acc_dtype = tl.float32 if C.type.element_ty != tl.int8 else tl.int32
 
-    # Workgroup specialization:
-    # Split the kernel into two paths, one that performs the GEMM
-    # and another that performs the communication. Uses persistent-
-    # kernel.
     if pid < GEMM_SMS:
         for tile_id in range(pid, total_tiles, GEMM_SMS):
             if COLLECT_TIMESTAMPS:
@@ -79,6 +90,9 @@ def persistent_gemm_all_scatter_wg_specialization(
             pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
             pid_n = (tile_id % num_pid_in_group) // group_size_m
 
+            tl.assume(pid_m >= 0)
+            tl.assume(pid_n >= 0)
+
             rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
             rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
 
@@ -87,9 +101,6 @@ def persistent_gemm_all_scatter_wg_specialization(
             rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
             A_BASE = A + rm[:, None] * stride_am + rk[None, :] * stride_ak
             B_BASE = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-
-            tl.assume(pid_m >= 0)
-            tl.assume(pid_n >= 0)
 
             loop_k = tl.cdiv(K, BLOCK_SIZE_K)
             if not EVEN_K:
@@ -114,39 +125,25 @@ def persistent_gemm_all_scatter_wg_specialization(
                 b = tl.load(B_BASE, mask=rk[:, None] < K, other=0.0)
                 acc += tl.dot(a, b)
 
-            # Accumulator registers with C results
             c = acc.to(C.type.element_ty)
 
-            rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
-            rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-
-            # Add compiler hints
-            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
-            rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
-
-            # Define the C-mask (BLOCK_SIZE_M, 1) x (1, BLOCK_SIZE_N)
             sub_mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            # Calculate the "global" offset of C based on the rank.
-            # Note how the N-dimension is being multiplied by current rank.
-            # This is because each rank is computing a portion of the N-dimension
-            # locally and then scattering it to all other ranks to complete
-            # the global N-dimension.
-            global_offset = rm[:, None] * stride_cm_global + (rn[None, :] + cur_rank * N) * stride_cn_global
+            # Store to local buffer
+            local_offset = rm[:, None] * stride_cm + rn[None, :] * stride_cn
 
-            # Timestamp for GEMM before store
             if COLLECT_TIMESTAMPS:
                 timestamp = read_realtime()
                 tl.atomic_max(mm_end_timestamp_ptr + tile_id, timestamp)
 
-            tl.store(c_global + global_offset, c, mask=sub_mask, cache_modifier=".wt")
-            tl.debug_barrier()
-            tl.store(locks + tile_id, 1, cache_modifier=".wt")
+            tl.store(C + local_offset, c, mask=sub_mask, cache_modifier=".wt")
+            iris.atomic_cas(locks + tile_id, 0, 1, cur_rank, cur_rank, heap_bases, sem="release", scope="sys")
 
-    else:  # pid >= GEMM_SMS
+    else:
         COMM_SMS = NUM_SMS - GEMM_SMS
-        pid = pid - GEMM_SMS
-        for tile_id in range(pid, total_tiles, COMM_SMS):
+        comm_pid = pid - GEMM_SMS
+
+        for tile_id in range(comm_pid, total_tiles, COMM_SMS):
             num_pid_in_group = GROUP_SIZE_M * num_pid_n
             group_id = tile_id // num_pid_in_group
             first_pid_m = group_id * GROUP_SIZE_M
@@ -154,25 +151,47 @@ def persistent_gemm_all_scatter_wg_specialization(
             pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
             pid_n = (tile_id % num_pid_in_group) // group_size_m
 
-            # Begin: See the if segment for explanation:
+            tl.assume(pid_m >= 0)
+            tl.assume(pid_n >= 0)
+
             rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
             rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
             rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
             rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
             sub_mask = (rm[:, None] < M) & (rn[None, :] < N)
-            global_offset = rm[:, None] * stride_cm_global + (rn[None, :] + cur_rank * N) * stride_cn_global
-            # End: masks/offset calculations.
 
-            while tl.load(locks + tile_id, cache_modifier=".cv", volatile=True) != 1:
-                pass
+            local_offset = rm[:, None] * stride_cm + rn[None, :] * stride_cn
 
-            for remote_rank in range(world_size):
-                if remote_rank != cur_rank:
-                    iris.put(
-                        c_global + global_offset,
-                        c_global + global_offset,
-                        cur_rank,
-                        remote_rank,
-                        heap_bases,
-                        mask=sub_mask,
-                    )
+            done = 0
+            while done == 0:
+                done = iris.atomic_cas(
+                    locks + tile_id, 1, 0, cur_rank, cur_rank, heap_bases, sem="acquire", scope="sys"
+                )
+
+            c = tl.load(C + local_offset, mask=sub_mask)
+
+            # chunk i of M dimension goes to rank i
+            tile_m_start = pid_m * BLOCK_SIZE_M
+            target_rank = tile_m_start // M_per_rank
+
+            # offset within target rank's output
+            target_m = tile_m_start % M_per_rank
+            offs_cm = target_m + tl.arange(0, BLOCK_SIZE_M)
+            offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+            global_offset = offs_cm[:, None] * stride_cg_m + offs_cn[None, :] * stride_cg_n
+
+            global_mask = (offs_cm[:, None] < M_per_rank) & (offs_cn[None, :] < N)
+
+            if target_rank == cur_rank:
+                tl.atomic_add(C_global + global_offset, c, mask=global_mask)
+            else:
+                iris.atomic_add(
+                    C_global + global_offset,
+                    c,
+                    cur_rank,
+                    target_rank,
+                    heap_bases,
+                    mask=global_mask,
+                    sem="relaxed",
+                    scope="sys",
+                )
