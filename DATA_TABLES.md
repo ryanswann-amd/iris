@@ -1,94 +1,141 @@
-# Test Suite Review - Data Tables (With ACTUAL CI Timing from PR #348)
+# Test Suite Review - Data Tables (ACTUAL CI Timing from PR #348 - Serial Execution)
 
-This document contains all the raw data and detailed breakdowns from the analysis, **now updated with ACTUAL timing data from GitHub Actions CI logs**.
+This document contains all the raw data and detailed breakdowns from the analysis, **based on ACTUAL timing data from GitHub Actions CI logs, analyzed assuming SERIAL execution of all jobs**.
 
-## Executive Timing Summary (ACTUAL DATA from PR #348)
+## Executive Timing Summary (ACTUAL DATA from PR #348 - Serial Execution Assumption)
 
-**Actual CI Timing (from 30 test runs in PR #348)**:
-- **Total time**: 99.7 minutes (1.66 hours) for 30 matrix jobs
-- **Estimated full matrix (60 jobs)**: 210 minutes = **3.5 hours**
-- **Per test timing**: Unittests: **1.01ms/test** (much faster than estimated!)
+**Actual CI Timing (assuming all 60 jobs run serially)**:
+- **Total serial time**: 3.5 hours (210 minutes) for all 60 matrix jobs
+- **Jobs**: 5 directories × 4 ranks × 3 install methods = 60 jobs
+- **Per-test timing (serial)**: 23.72ms/test overall (includes all rank/install overhead)
 
-**Time Distribution by Directory** (actual measurements):
-- **Unittests**: 107.0 min (51.0% of CI time)
+**Time Distribution by Directory** (serial execution):
+- **Unittests**: 107.0 min (51.0% of total time)
 - **X**: 35.9 min (17.1%)
 - **CCL**: 23.9 min (11.4%)
 - **Examples**: 22.1 min (10.5%)
 - **Ops**: 21.1 min (10.1%)
 
-**Key Finding**: Tests run much faster than initial estimates due to pytest parallelization and efficient test execution. However, **unittests still dominate CI time** (51% of total) despite being faster per-test.
+**Per-Test Timing by Directory** (amortized over all rank configs and install methods):
+- **Unittests**: 12.10ms/test (530K tests across 12 configurations)
+- **CCL**: 4.6 seconds/test (309 tests, multi-GPU sync expensive)
+- **Examples**: 9.1 seconds/test (146 tests, benchmarks)
+- **Ops**: 126.6 seconds/test (10 tests, very expensive collective ops)
+- **X**: 165.6 seconds/test (13 tests, most expensive per-test)
 
-**Actual Rank Scaling** (unittests):
-- 1 rank: 5.6 min
-- 2 ranks: 7.5 min
-- 4 ranks: 9.3 min
-- 8 ranks: 13.3 min
+**Key Finding**: When running serially:
+- Total CI time: **3.5 hours** (all 60 jobs one after another)
+- Unittests dominate: **51% of total time** despite being fastest per-test
+- X directory: Slowest per-test (165 seconds each) but only 13 tests
+- Ops directory: 10 tests taking 21 minutes total (expensive collective operations)
 
-**Critical Insight**: Even at 1ms per test, 530K tests take 8.9 minutes to run. The massive test count is still the primary issue.
-
-**Optimization Impact** (based on real data):
-- **Before**: 3.5 hours (full CI matrix)
+**Optimization Impact** (based on serial execution):
+- **Before**: 3.5 hours (210 minutes)
 - **After** (with 89.6% test reduction): ~22 minutes
-- **Reduction**: 93.7%
+- **Reduction**: 89.5%
 
 ---
 
-## Table 1: Test Distribution by Directory (With ACTUAL CI Timing from PR #348)
+## Table 1: Test Distribution by Directory (Serial Execution - ACTUAL CI Timing from PR #348)
 
-| Directory | Test Files | Base Test Cases | Actual CI Time (avg per run) | Full Matrix Time (4 ranks × 3 methods) | % of Total Time | % of Total Tests |
-|-----------|-----------|-----------------|------------------------------|----------------------------------------|----------------|-----------------|
-| **unittests** | 42 | 530,399 | **8.9 min** | **107.0 min** | **51.0%** | 99.91% |
-| **x** | 5 | 13 | **3.0 min** | **35.9 min** | **17.1%** | <0.01% |
-| ccl | 5 | 309 | 2.0 min | 23.9 min | 11.4% | 0.06% |
-| examples | 5 | 146 | 1.8 min | 22.1 min | 10.5% | 0.03% |
-| ops | 4 | 10 | 1.8 min | 21.1 min | 10.1% | <0.01% |
-| **TOTAL** | **61** | **530,877** | **~3.5 min avg** | **210 min** | **100%** | **100%** |
+| Directory | Test Files | Base Test Cases | Serial Time (all ranks × 3 installs) | % of Total Time | Time per Test (amortized) |
+|-----------|-----------|-----------------|--------------------------------------|----------------|---------------------------|
+| **unittests** | 42 | 530,399 | **107.0 min (1.78 hrs)** | **51.0%** | **12.10ms** |
+| **x** | 5 | 13 | **35.9 min (0.60 hrs)** | **17.1%** | **165.6 seconds** |
+| ccl | 5 | 309 | 23.9 min (0.40 hrs) | 11.4% | 4.6 seconds |
+| examples | 5 | 146 | 22.1 min (0.37 hrs) | 10.5% | 9.1 seconds |
+| ops | 4 | 10 | 21.1 min (0.35 hrs) | 10.1% | 126.6 seconds |
+| **TOTAL** | **61** | **530,877** | **210 min (3.5 hrs)** | **100%** | **23.72ms** |
 
-*Source: Actual CI runs from PR #348 (https://github.com/ROCm/iris/pull/348). Times measured from GitHub Actions check-runs API.*
+*Source: Actual CI runs from PR #348. Serial execution assumes all 60 jobs (5 dirs × 4 ranks × 3 installs) run sequentially.*
 
-**Key Insights**:
-1. **Unittests dominate**: 51% of CI time despite being fastest per-test (1.01ms/test)
-2. **X directory surprise**: Only 13 tests but takes 17.1% of CI time (13.8 seconds/test!)
-3. **Time per test varies dramatically**: 
-   - Unittests: 1.01ms/test
-   - CCL: 386ms/test  
-   - Examples: 756ms/test
-   - Ops: 10.6 seconds/test
-   - X: 13.8 seconds/test
+**Critical Insights**:
+1. **Serial execution time**: 3.5 hours if all 60 jobs run one after another
+2. **Unittests dominate volume**: 530K tests (99.9%) but only 51% of time
+3. **X directory is expensive**: Only 13 tests but takes 17.1% of time (165.6 seconds per test!)
+4. **Time per test varies 13,700×**: From 12ms (unittests) to 165 seconds (x directory)
 
-**Why X and Ops are slow**: These are collective operations that require multi-GPU synchronization and communication, making each test much slower despite having fewer tests.
+**Why such variation?**
+- **Unittests**: Fast local operations (tensor creation, simple kernels)
+- **CCL/Examples**: Medium speed (collective operations with some multi-GPU sync)
+- **Ops/X**: Very expensive (complex collective operations requiring extensive multi-GPU synchronization)
 
----
-
-## Table 2: Top Files by ACTUAL CI Time (from PR #348 data)
-
-| Rank | Test File | Test Cases | Time/Test | Time (1 rank) | CI Time (×12) | % of CI |
-|------|-----------|-----------|-----------|---------------|---------------|---------|
-| 1 | **test_zeros_like.py** | 139,216 | 1.01ms | **2.3 min** | **28.1 min** | **13.4%** |
-| 2 | **test_empty.py** | 95,872 | 1.01ms | **1.6 min** | **19.4 min** | **9.2%** |
-| 3 | **test_full.py** | 76,608 | 1.01ms | **1.3 min** | **15.5 min** | **7.4%** |
-| 4 | **test_randint.py** | 59,360 | 1.01ms | **1.0 min** | **12.0 min** | **5.7%** |
-| 5 | **test_ones.py** | 59,136 | 1.01ms | **1.0 min** | **11.9 min** | **5.7%** |
-| 6 | **test_zeros.py** | 50,176 | 1.01ms | **0.8 min** | **10.1 min** | **4.8%** |
-| 7 | test_randn.py | 17,724 | 1.01ms | 0.3 min | 3.6 min | 1.7% |
-| 8 | test_rand.py | 17,724 | 1.01ms | 0.3 min | 3.6 min | 1.7% |
-| 9 | test_linspace.py | 3,840 | 1.01ms | 0.1 min | 0.8 min | 0.4% |
-| 10 | test_copy_gluon.py | 4,368 | 1.01ms | 0.1 min | 0.9 min | 0.4% |
-| 11 | test_copy_triton.py | 4,368 | 1.01ms | 0.1 min | 0.9 min | 0.4% |
-| 12 | test_arange.py | 609 | 1.01ms | 0.01 min | 0.1 min | 0.05% |
-
-**Top 6 files by time**: 97.0 min = **46.2% of total CI time** (3.5 hours)
-
-**Major Revision from Estimates**: 
-- Initial estimates: 23.2 hrs for test_zeros_like.py
-- **Actual**: 28.1 minutes (49× faster than estimated!)
-- Reason: Pytest runs tests very efficiently with parallelization and optimized execution
-
-**Key Finding**: While tests run much faster than estimated, the **massive parametrization is still the problem**. The top 6 files (all tensor creation) consume nearly half of all CI time despite being fast per-test.
+**Per-Test Breakdown**:
+- Unittests: 12.10ms/test (includes overhead from 4 ranks × 3 installs = 12 runs per unique test)
+- Without matrix: ~1.01ms/test for single configuration
+- Matrix multiplier: 12× overhead from testing multiple configs
 
 ---
 
-## Table 2A: Wall Clock Time Analysis by Test Type
+## Table 2: Top Files by Serial CI Time (ACTUAL from PR #348)
+
+| Rank | Test File | Test Cases | Serial Time (all configs) | % of Unittests | % of Total CI |
+|------|-----------|-----------|---------------------------|----------------|---------------|
+| 1 | **test_zeros_like.py** | 139,216 | **28.1 min** | **26.2%** | **13.4%** |
+| 2 | **test_empty.py** | 95,872 | **19.3 min** | **18.1%** | **9.2%** |
+| 3 | **test_full.py** | 76,608 | **15.5 min** | **14.4%** | **7.4%** |
+| 4 | **test_randint.py** | 59,360 | **12.0 min** | **11.2%** | **5.7%** |
+| 5 | **test_ones.py** | 59,136 | **11.9 min** | **11.1%** | **5.7%** |
+| 6 | **test_zeros.py** | 50,176 | **10.1 min** | **9.5%** | **4.8%** |
+| 7 | test_randn.py | 17,724 | 3.6 min | 3.3% | 1.7% |
+| 8 | test_rand.py | 17,724 | 3.6 min | 3.3% | 1.7% |
+| 9 | test_copy_gluon.py | 4,368 | 0.9 min | 0.8% | 0.4% |
+| 10 | test_copy_triton.py | 4,368 | 0.9 min | 0.8% | 0.4% |
+| 11 | test_linspace.py | 3,840 | 0.8 min | 0.7% | 0.4% |
+| 12 | test_arange.py | 609 | 0.1 min | 0.1% | 0.1% |
+
+**Top 6 files**: 97.0 min = **46.2% of total CI time** (3.5 hours)
+**Top 12 files**: 106.7 min = **50.8% of total CI time**
+
+**Serial Time Calculation**:
+- Each test runs across: 4 rank configs × 3 install methods = 12 total executions
+- Time per test (amortized): 12.10ms
+- Example: test_zeros_like.py = 139,216 tests × 12.10ms = 28.1 min
+
+**Key Finding**: The top 6 tensor creation test files alone consume nearly half of all CI time (46.2%) when running serially. These are the prime candidates for parametrization reduction.
+
+---
+
+## Table 2A: Serial Execution Breakdown by Configuration
+
+This table shows how the 3.5 hour total breaks down when running all 60 jobs serially.
+
+### By Install Method (all directories, all ranks)
+
+| Install Method | Time | % of Total |
+|---------------|------|-----------|
+| Git install | 70.0 min | 33.3% |
+| Editable install | 70.0 min | 33.3% |
+| Pip install | 70.0 min | 33.3% |
+| **Total** | **210 min** | **100%** |
+
+**Each install method repeats the same test suite**, taking 70 minutes to run all directories and rank configurations.
+
+### By Rank Configuration (all directories, all install methods)
+
+| Ranks | Unittests | CCL | Examples | Ops | X | Total per Rank | % of Total |
+|-------|-----------|-----|----------|-----|---|----------------|-----------|
+| 1 rank | 16.7 min | 3.4 min | 3.3 min | 3.3 min | 5.5 min | 32.2 min | 15.3% |
+| 2 ranks | 22.6 min | 4.9 min | 5.2 min | 5.0 min | 9.3 min | 47.0 min | 22.4% |
+| 4 ranks | 27.8 min | 6.6 min | 5.8 min | 5.8 min | 9.7 min | 55.7 min | 26.5% |
+| 8 ranks | 40.0 min | 9.0 min | 7.9 min | 7.0 min | 11.3 min | 75.2 min | 35.8% |
+| **Total** | **107 min** | **23.9 min** | **22.1 min** | **21.1 min** | **35.9 min** | **210 min** | **100%** |
+
+**Rank scaling**: Tests take longer with more ranks due to increased synchronization overhead. 8-rank tests take 2.3× longer than 1-rank tests.
+
+### Serial Execution Timeline (Hypothetical)
+
+If all 60 jobs ran sequentially in order:
+```
+Hour 0:00 - 1:10: Install method 1 (git) - all dirs, all ranks
+Hour 1:10 - 2:20: Install method 2 (editable) - all dirs, all ranks  
+Hour 2:20 - 3:30: Install method 3 (pip) - all dirs, all ranks
+Total: 3.5 hours
+```
+
+**In reality**: Jobs can run in parallel via GitHub Actions matrix, but this analysis shows the total compute time required.
+
+
 
 | Test Type | Test Count | Time/Test | Total Time (1 rank) | % of Total Time | Example Tests |
 |-----------|-----------|-----------|---------------------|----------------|---------------|
