@@ -31,7 +31,7 @@ def get_kernel(
     # Loop over all ranks, get the stored data.
     # load to local register, accumulate.
     for target_rank in range(num_ranks):
-        iris.get(data + offsets, results + offsets, cur_rank, target_rank, heap_bases, mask=mask)
+        iris.get(data + offsets, results + offsets, target_rank, cur_rank, heap_bases, mask=mask)
         acc += tl.load(results + offsets, mask=mask)
 
     # Store the accumulated value back to the output.

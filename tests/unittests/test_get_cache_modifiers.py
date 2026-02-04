@@ -31,13 +31,13 @@ def get_kernel(
     # We test default values set by the function when parameters are None
     for target_rank in range(num_ranks):
         if load_cache_modifier is None and store_cache_modifier is None:
-            iris.get(data + offsets, results + offsets, cur_rank, target_rank, heap_bases, mask=mask)
+            iris.get(data + offsets, results + offsets, target_rank, cur_rank, heap_bases, mask=mask)
         elif load_cache_modifier is None:
             iris.get(
                 data + offsets,
                 results + offsets,
-                cur_rank,
                 target_rank,
+                cur_rank,
                 heap_bases,
                 mask=mask,
                 store_cache_modifier=store_cache_modifier,
@@ -46,8 +46,8 @@ def get_kernel(
             iris.get(
                 data + offsets,
                 results + offsets,
-                cur_rank,
                 target_rank,
+                cur_rank,
                 heap_bases,
                 mask=mask,
                 load_cache_modifier=load_cache_modifier,
@@ -56,8 +56,8 @@ def get_kernel(
             iris.get(
                 data + offsets,
                 results + offsets,
-                cur_rank,
                 target_rank,
+                cur_rank,
                 heap_bases,
                 mask=mask,
                 load_cache_modifier=load_cache_modifier,
