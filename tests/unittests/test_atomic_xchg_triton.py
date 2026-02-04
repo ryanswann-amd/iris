@@ -7,8 +7,6 @@ import triton.language as tl
 import pytest
 import iris
 
-
-
 @triton.jit
 def atomic_xchg_kernel(
     results,
@@ -24,7 +22,6 @@ def atomic_xchg_kernel(
 
     for target_rank in range(num_ranks):
         iris.atomic_xchg(results, val, cur_rank, target_rank, heap_bases, mask=None, sem=sem, scope=scope)
-
 
 @pytest.mark.parametrize(
     "dtype",

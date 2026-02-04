@@ -20,7 +20,6 @@ try:
 except ImportError:
     GLUON_AVAILABLE = False
 
-
 @pytest.mark.skipif(not GLUON_AVAILABLE, reason="Gluon not available")
 @pytest.mark.parametrize(
     "dtype",

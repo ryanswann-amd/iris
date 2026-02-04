@@ -10,14 +10,12 @@ import iris
 import importlib.util
 from pathlib import Path
 
-
 current_dir = Path(__file__).parent
 file_path = (current_dir / "../../examples/00_load/load_bench.py").resolve()
 module_name = "load_bench"
 spec = importlib.util.spec_from_file_location(module_name, file_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-
 
 @pytest.mark.skip(reason="Test is inconsistent and needs debugging - tracked in issue")
 @pytest.mark.parametrize(

@@ -11,8 +11,6 @@ import torch.distributed as dist
 import iris
 from iris.ccl import Config
 
-
-
 @pytest.mark.parametrize(
     "variant",
     [
@@ -107,7 +105,6 @@ def test_all_reduce(variant, dtype, M, N):
         import gc
 
         gc.collect()
-
 
 @pytest.mark.parametrize(
     "distribution",

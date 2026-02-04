@@ -13,8 +13,6 @@ import triton.language as tl
 import iris
 import iris.x
 
-
-
 @triton.jit
 def x_all_gather_kernel(
     input_ptr,
@@ -62,7 +60,6 @@ def x_all_gather_kernel(
         ctx = iris.x.DeviceContext(cur_rank, world_size, heap_bases)
 
         iris.x.all_gather(tile, dst_view, gather_dim, ctx)
-
 
 @pytest.mark.parametrize(
     "gather_dim",
@@ -200,7 +197,6 @@ def test_all_gather(gather_dim, dtype, atol, rtol, M, N, BLOCK_SIZE_M, BLOCK_SIZ
 
         gc.collect()
 
-
 @triton.jit
 def x_all_gather_ctx_api_kernel(
     input_ptr,
@@ -249,7 +245,6 @@ def x_all_gather_ctx_api_kernel(
 
         # Call primitive directly (ctx methods don't work due to Triton import restrictions)
         iris.x.all_gather(tile, dst_view, gather_dim, ctx)
-
 
 @pytest.mark.parametrize("gather_dim", [0, 1])
 @pytest.mark.parametrize(

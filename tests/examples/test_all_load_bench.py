@@ -9,14 +9,12 @@ import iris
 import importlib.util
 from pathlib import Path
 
-
 current_dir = Path(__file__).parent
 file_path = (current_dir / "../../examples/02_all_load/all_load_bench.py").resolve()
 module_name = "all_load_bench"
 spec = importlib.util.spec_from_file_location(module_name, file_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-
 
 @pytest.mark.parametrize(
     "dtype",
@@ -90,7 +88,6 @@ def test_all_load_bench(dtype, buffer_size, heap_size, block_size):
 
             gc.collect()
 
-
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -148,7 +145,6 @@ def test_all_load_bench_with_validation(dtype):
             import gc
 
             gc.collect()
-
 
 def _torch_dtype_to_str(dtype):
     """Convert torch dtype to string format expected by all_load_bench.py"""

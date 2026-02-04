@@ -7,8 +7,6 @@ import triton.language as tl
 import pytest
 import iris
 
-
-
 @triton.jit
 def store_kernel(
     data,
@@ -32,7 +30,6 @@ def store_kernel(
     # Doesn't matter which rank stores at the end, the data should all be the same at the end.
     for dst_rank in range(num_ranks):
         iris.store(results + offsets, value, destination_rank, dst_rank, heap_bases, mask=mask)
-
 
 @pytest.mark.parametrize(
     "dtype",

@@ -11,8 +11,6 @@ import torch.distributed as dist
 import iris
 from iris.ccl import Config
 
-
-
 @pytest.mark.parametrize(
     "dtype",
     [

@@ -7,8 +7,6 @@ import triton.language as tl
 import pytest
 import iris
 
-
-
 @triton.jit
 def atomic_and_kernel(
     results,
@@ -30,7 +28,6 @@ def atomic_and_kernel(
 
     for target_rank in range(num_ranks):
         iris.atomic_and(results + offsets, acc, cur_rank, target_rank, heap_bases, mask, sem=sem, scope=scope)
-
 
 @pytest.mark.parametrize(
     "dtype",

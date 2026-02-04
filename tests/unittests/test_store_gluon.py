@@ -7,8 +7,6 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
-
-
 @gluon.jit
 def store_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -35,7 +33,6 @@ def store_kernel(
     # Doesn't matter which rank stores at the end, the data should all be the same at the end.
     for dst_rank in range(num_ranks):
         ctx.store(results + offsets, value, dst_rank, mask=mask)
-
 
 @pytest.mark.parametrize(
     "dtype",

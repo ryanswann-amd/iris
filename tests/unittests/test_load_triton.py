@@ -7,8 +7,6 @@ import triton.language as tl
 import pytest
 import iris
 
-
-
 @triton.jit
 def load_kernel(
     data,
@@ -29,7 +27,6 @@ def load_kernel(
     mask = offsets < BLOCK_SIZE
     result = iris.load(data + offsets, source_rank, partner, heap_bases, mask=mask)
     tl.store(results + offsets, result, mask=mask)
-
 
 @pytest.mark.parametrize(
     "dtype",

@@ -13,8 +13,6 @@ import torch
 import torch.distributed as dist
 import iris
 
-
-
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [

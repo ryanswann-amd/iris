@@ -12,8 +12,6 @@ import triton.language as tl
 import iris
 import iris.x
 
-
-
 @triton.jit
 def gather_kernel(
     input_ptr,
@@ -58,7 +56,6 @@ def gather_kernel(
         mask = mask_m[:, None] & mask_n[None, :]
         out_ptr = output_ptr + rm[:, None] * stride_out_m + rn[None, :] * stride_out_n
         tl.store(out_ptr, data, mask=mask)
-
 
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
@@ -125,7 +122,6 @@ def test_gather_from_specific_rank(dtype, atol, rtol, M, N, BLOCK_SIZE_M, BLOCK_
         f"Rank {rank}: gather from rank {source_rank} failed"
     )
 
-
 @triton.jit
 def gather_accumulate_kernel(
     input_ptr,
@@ -172,7 +168,6 @@ def gather_accumulate_kernel(
         out_ptr = output_ptr + rm[:, None] * stride_out_m + rn[None, :] * stride_out_n
         result = acc.to(output_ptr.type.element_ty)
         tl.store(out_ptr, result, mask=mask)
-
 
 @pytest.mark.parametrize(
     "dtype, atol, rtol",

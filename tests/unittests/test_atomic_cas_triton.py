@@ -7,8 +7,6 @@ import triton.language as tl
 import pytest
 import iris
 
-
-
 @triton.jit
 def atomic_cas_kernel(
     results,
@@ -25,7 +23,6 @@ def atomic_cas_kernel(
 
     for target_rank in range(num_ranks):
         iris.atomic_cas(results, cmp, val, cur_rank, target_rank, heap_bases, sem=sem, scope=scope)
-
 
 @pytest.mark.parametrize(
     "dtype",

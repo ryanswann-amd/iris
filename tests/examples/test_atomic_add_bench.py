@@ -10,7 +10,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 current_dir = Path(__file__).parent
 
 # Add examples directory to sys.path so that example files can import from examples.common
@@ -35,7 +34,6 @@ module_name = "atomic_add_bench"
 spec = importlib.util.spec_from_file_location(module_name, file_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-
 
 @pytest.mark.parametrize(
     "dtype",
@@ -103,7 +101,6 @@ def test_atomic_bandwidth(dtype, buffer_size, heap_size, block_size):
             import gc
 
             gc.collect()
-
 
 @pytest.mark.parametrize(
     "dtype",
