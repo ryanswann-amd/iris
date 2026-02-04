@@ -9,8 +9,6 @@ import iris.experimental.iris_gluon as iris_gl
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @gluon.jit
 def load_kernel(
     IrisDeviceCtx: gl.constexpr,

@@ -17,50 +17,31 @@ Analysis revealed that the original test suite was running **every test** on **a
 - **Same CI matrix structure** (no workflow changes)
 - Tests are filtered automatically by pytest markers
 - Single-rank tests skip execution when NUM_RANKS > 1
+- **Default behavior**: All tests run on all ranks unless marked `single_rank`
 - Total multi-rank test runs: **3.98M** (37.5% reduction)
 
 ## Implementation
 
-### 1. Pytest Markers
+### 1. Pytest Marker
 
-Two new markers were added in `pytest.ini`:
+One marker is defined in `pytest.ini`:
 
 - **`@pytest.mark.single_rank`**: Tests that validate tensor properties (shape, dtype, values)
   - These tests only need to run on **1 rank**
   - Examples: `test_zeros`, `test_ones`, `test_rand`, `test_full`, `test_empty`
   
-- **`@pytest.mark.multi_rank_required`**: Tests that validate distributed behavior
-  - These tests must run on **all rank configurations** (1, 2, 4, 8)
-  - Examples: `test_get_*`, `test_put_*`, `test_load_*`, `test_store_*`, `test_all_reduce`, `test_all_gather`
+**Default behavior**: Tests without the `single_rank` marker run on **all rank configurations** (1, 2, 4, 8). This includes all distributed tests (get, put, load, store, atomics, collectives) without requiring explicit marking.
 
 ### 2. Test Classification
 
-Tests were classified into three categories:
+Tests are classified into two categories:
 
 | Category | Count | Runs on Ranks | Examples |
 |----------|-------|---------------|----------|
-| `single_rank` | 10 files | 1 only | zeros, ones, rand, empty, full, arange, linspace, randint, randn, zeros_like |
-| `multi_rank_required` | 47 files | 1, 2, 4, 8 | get, put, load, store, atomic_*, broadcast, copy, all_reduce, all_gather, all_to_all |
-| Unmarked | 4 files | 1, 2, 4, 8 | logging, dmabuf_apis, get_num_xcc, iris_helpers |
+| `single_rank` (marked) | 10 files | 1 only | zeros, ones, rand, empty, full, arange, linspace, randint, randn, zeros_like |
+| Default (unmarked) | 51 files | 1, 2, 4, 8 | get, put, load, store, atomic_*, broadcast, copy, all_reduce, all_gather, all_to_all, logging, dmabuf_apis, get_num_xcc, iris_helpers |
 
-### 3. Automated Marker Assignment
-
-A Python script `scripts/assign_test_markers.py` was created to automate the marker assignment process:
-
-```bash
-# Preview changes (dry run)
-python scripts/assign_test_markers.py --dry-run --test-dir tests
-
-# Apply markers
-python scripts/assign_test_markers.py --test-dir tests
-```
-
-The script:
-- Classifies tests based on their functionality
-- Adds `pytestmark = pytest.mark.<marker>` to test files
-- Preserves backward compatibility for unmarked tests
-
-### 4. Test Filtering
+### 3. Test Filtering
 
 The `.github/scripts/run_tests.sh` script was minimally modified to skip `single_rank` tests when running with multiple ranks:
 
@@ -73,9 +54,10 @@ fi
 ```
 
 This approach:
-- Requires minimal changes to CI infrastructure
+- Requires minimal changes to CI infrastructure (only 6 lines added)
 - Uses pytest's built-in marker filtering
 - Automatically skips single_rank tests on multi-rank configurations
+- Assumes multi-rank by default (simpler, less marking required)
 - Preserves the existing CI workflow structure
 
 ## Adding New Tests
@@ -96,6 +78,24 @@ import iris
 
 pytestmark = pytest.mark.single_rank
 
+## Adding New Tests
+
+When adding new tests, follow these guidelines:
+
+### Single-rank Tests (Minority - Require Marking)
+Use `@pytest.mark.single_rank` **only** for tests that:
+- Validate tensor properties (shape, dtype, values)
+- Test tensor creation functions (zeros, ones, rand, etc.)
+- Don't involve cross-rank communication
+- Can verify correctness on a single rank
+
+Example:
+```python
+import pytest
+import iris
+
+pytestmark = pytest.mark.single_rank
+
 def test_zeros():
     shmem = iris.iris(1 << 20)
     result = shmem.zeros(2, 3, dtype=torch.float32)
@@ -103,20 +103,20 @@ def test_zeros():
     assert result.dtype == torch.float32
 ```
 
-### Multi-rank Tests
-Use `@pytest.mark.multi_rank_required` for tests that:
+### Multi-rank Tests (Majority - Default, No Marking Needed)
+**Do not mark** tests that:
 - Validate distributed behavior
 - Test cross-rank operations (get, put, load, store)
 - Test collective operations (all_reduce, all_gather, all_to_all)
 - Test atomic operations across ranks
 - Require symmetric heap visibility validation
 
-Example:
+Example (no marker needed):
 ```python
 import pytest
 import iris
 
-pytestmark = pytest.mark.multi_rank_required
+# No pytestmark needed - runs on all ranks by default
 
 def test_all_reduce():
     shmem = iris.iris(1 << 20)
@@ -126,11 +126,7 @@ def test_all_reduce():
     # Validation logic...
 ```
 
-### Unmarked Tests
-Leave tests unmarked if:
-- They test infrastructure/utilities (logging, helpers)
-- Classification is unclear
-- Backward compatibility is preferred
+**Key principle**: Assume multi-rank by default. Only mark the small subset of tests that are `single_rank`.
 
 ## Running Tests Locally
 
@@ -144,19 +140,14 @@ pytest tests/
 pytest tests/ -m single_rank
 ```
 
-### Run only multi-rank tests
+### Run only multi-rank tests (unmarked)
 ```bash
-pytest tests/ -m multi_rank_required
-```
-
-### Run unmarked tests
-```bash
-pytest tests/ -m "not single_rank and not multi_rank_required"
+pytest tests/ -m "not single_rank"
 ```
 
 ### Run with specific rank count
 ```bash
-python tests/run_tests_distributed.py --num_ranks 4 tests/ccl/test_all_reduce.py -m multi_rank_required
+python tests/run_tests_distributed.py --num_ranks 4 tests/ccl/test_all_reduce.py
 ```
 
 ## Expected Impact

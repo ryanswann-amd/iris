@@ -9,8 +9,6 @@ import iris
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @triton.jit
 def copy_get_kernel(
     data,

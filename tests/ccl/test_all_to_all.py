@@ -13,8 +13,6 @@ from iris.ccl import Config
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @pytest.mark.parametrize(
     "dtype",
     [

@@ -15,8 +15,6 @@ import iris.x
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @triton.jit
 def x_reduce_scatter_kernel(
     input_ptr,

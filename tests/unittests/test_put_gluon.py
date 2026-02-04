@@ -13,8 +13,6 @@ import iris.experimental.iris_gluon as iris_gl
 # 2. for remote put with one other rank.
 # 3. for remote put with more than one rank (if num_ranks > 2).
 
-pytestmark = pytest.mark.multi_rank_required
-
 @gluon.jit
 def put_kernel(
     IrisDeviceCtx: gl.constexpr,

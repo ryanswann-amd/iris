@@ -13,8 +13,6 @@ import iris.ops as ops
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [

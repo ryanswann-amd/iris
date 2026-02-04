@@ -40,8 +40,6 @@ import torch
 import iris
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 project_root = Path(__file__).resolve()
 while not (project_root / "tests").is_dir() or not (project_root / "examples").is_dir():
     if project_root == project_root.parent:

@@ -15,8 +15,6 @@ import iris.x
 
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 @triton.jit
 def x_all_gather_kernel(
     input_ptr,

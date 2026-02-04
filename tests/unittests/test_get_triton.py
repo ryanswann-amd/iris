@@ -13,8 +13,6 @@ import iris
 # 2. for remote get with one other rank.
 # 3. for remote get with more than one rank (if num_ranks > 2).
 
-pytestmark = pytest.mark.multi_rank_required
-
 @triton.jit
 def get_kernel(
     data,

@@ -11,8 +11,6 @@ import sys
 from pathlib import Path
 
 
-pytestmark = pytest.mark.multi_rank_required
-
 current_dir = Path(__file__).parent
 
 # Add examples directory to sys.path so that example files can import from examples.common
