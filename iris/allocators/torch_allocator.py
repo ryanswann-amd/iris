@@ -41,7 +41,6 @@ class TorchAllocator(BaseAllocator):
 
         self.device = f"cuda:{device_id}"
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
-        self.heap_bases_array = None  # Will be set in establish_peer_access
 
     def get_base_address(self) -> int:
         """Get the base address of the memory pool."""
@@ -148,10 +147,6 @@ class TorchAllocator(BaseAllocator):
     def get_device(self) -> torch.device:
         """Get the torch device."""
         return self.memory_pool.device
-
-    def get_heap_bases(self) -> torch.Tensor:
-        """Get heap base addresses as a tensor."""
-        return torch.from_numpy(self.heap_bases_array).to(device=self.device, dtype=torch.uint64)
 
     def owns_tensor(self, tensor: torch.Tensor) -> bool:
         """

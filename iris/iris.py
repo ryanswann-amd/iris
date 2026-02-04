@@ -55,14 +55,18 @@ class Iris:
 
     Args:
         heap_size (int): Size of the symmetric heap in bytes. Default: 1GB (2^30)
+        allocator_type (str): Type of allocator to use. Options: "torch" (default), "vmem"
 
     Example:
-        >>> ctx = iris.iris(heap_size=2**31)  # 2GB heap
+        >>> ctx = iris.iris(heap_size=2**31)  # 2GB heap with torch allocator
         >>> print(f"Rank {ctx.cur_rank} of {ctx.num_ranks}") # Rank 0 of 1
         >>> tensor = ctx.zeros(1000, 1000, dtype=torch.float32)
+
+        >>> # Use VMem allocator for memory oversubscription
+        >>> ctx = iris.iris(heap_size=2**31, allocator_type="vmem")
     """
 
-    def __init__(self, heap_size=1 << 30):
+    def __init__(self, heap_size=1 << 30, allocator_type="vmem"):
         # Initialize distributed environment
         comm, cur_rank, num_ranks = init_distributed()
         num_gpus = count_devices()
@@ -76,8 +80,8 @@ class Iris:
         self.gpu_id = gpu_id
         self.heap_size = heap_size
 
-        # Initialize symmetric heap
-        self.heap = SymmetricHeap(heap_size, gpu_id, cur_rank, num_ranks)
+        # Initialize symmetric heap with specified allocator
+        self.heap = SymmetricHeap(heap_size, gpu_id, cur_rank, num_ranks, allocator_type)
         self.device = f"cuda:{gpu_id}"
         self.heap_bases = self.heap.get_heap_bases()
 
@@ -91,6 +95,15 @@ class Iris:
 
         # Lazy initialization for ops interface
         self._ops = None
+
+    def __del__(self):
+        """Cleanup resources on deletion."""
+        try:
+            if hasattr(self, "heap") and hasattr(self.heap, "allocator"):
+                if hasattr(self.heap.allocator, "close"):
+                    self.heap.allocator.close()
+        except:
+            pass  # Best effort cleanup
 
     def _log_with_rank(self, level, message):
         """Helper method to log with rank information injected into the record."""
@@ -661,6 +674,41 @@ class Iris:
             tensor.requires_grad_()
 
         return tensor
+    
+    def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Import an external PyTorch tensor into the symmetric heap.
+        
+        This creates a new tensor in the symmetric heap that shares physical memory
+        with the external tensor. Any modifications to either tensor will be visible
+        in both. This is useful for importing pre-allocated tensors (e.g., model weights)
+        into the symmetric heap for RMA operations.
+        
+        Note: This feature requires `allocator_type='vmem'` (default in current version).
+        
+        Args:
+            external_tensor (torch.Tensor): External PyTorch tensor to import.
+                Must be a CUDA tensor.
+        
+        Returns:
+            torch.Tensor: New tensor in symmetric heap sharing memory with external tensor
+        
+        Raises:
+            RuntimeError: If allocator doesn't support imports or import fails
+        
+        Example:
+            >>> ctx = iris.iris(allocator_type='vmem')
+            >>> # Create an external tensor
+            >>> external = torch.randn(1000, 1000, device='cuda')
+            >>> # Import it into symmetric heap
+            >>> symmetric = ctx.as_symmetric(external)
+            >>> # Verify they share memory
+            >>> external[0, 0] = 999.0
+            >>> assert symmetric[0, 0].item() == 999.0
+            >>> # Now you can use symmetric in RMA operations
+            >>> ctx.put(symmetric, peer_rank, remote_buffer)
+        """
+        return self.heap.as_symmetric(external_tensor)
 
     def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -2237,19 +2285,25 @@ def atomic_max(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
     return tl.atomic_max(translated_ptr, val, mask=mask, sem=sem, scope=scope)
 
 
-def iris(heap_size=1 << 30):
+def iris(heap_size=1 << 30, allocator_type="vmem"):
     """
     Create and return an Iris instance with the specified heap size.
 
     Args:
         heap_size (int): Size of the heap in bytes. Defaults to 1GB.
+        allocator_type (str): Type of allocator to use. Options: "vmem" (default), "torch".
+                              Can be overridden with IRIS_ALLOCATOR environment variable.
 
     Returns:
         Iris: An initialized Iris instance.
 
     Example:
         >>> import iris
-        >>> iris_ctx = iris.iris(2**30)  # 1GB heap
+        >>> iris_ctx = iris.iris(2**30)  # 1GB heap with default (vmem) allocator
+        >>> tensor = iris_ctx.zeros(1024, 1024)
+
+        >>> # Use torch allocator
+        >>> iris_ctx = iris.iris(2**30, allocator_type="torch")
         >>> tensor = iris_ctx.zeros(1024, 1024)
     """
-    return Iris(heap_size)
+    return Iris(heap_size, allocator_type)
