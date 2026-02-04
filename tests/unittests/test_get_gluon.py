@@ -7,11 +7,11 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
+
 # TODO: Separate this kernel out in the following categories:
 # 1. for local get.
 # 2. for remote get with one other rank.
 # 3. for remote get with more than one rank (if num_ranks > 2).
-
 @gluon.jit
 def get_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -39,6 +39,7 @@ def get_kernel(
 
     # Store the accumulated value back to the output.
     gl.store(results + offsets, acc, mask=mask)
+
 
 @pytest.mark.parametrize(
     "dtype",

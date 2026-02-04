@@ -7,6 +7,7 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
+
 @gluon.jit
 def atomic_or_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -30,6 +31,7 @@ def atomic_or_kernel(
 
     for target_rank in range(num_ranks):
         ctx.atomic_or(results + offsets, acc, target_rank, mask=mask, sem=sem, scope=scope)
+
 
 @pytest.mark.parametrize(
     "dtype",

@@ -26,9 +26,11 @@ put_spec = importlib.util.spec_from_file_location(put_module_name, put_file_path
 put_module = importlib.util.module_from_spec(put_spec)
 put_spec.loader.exec_module(put_module)
 
+
 def create_test_args(dtype_str, buffer_size, heap_size, block_size):
     """Create args dict that matches what parse_args() returns."""
     return {"datatype": dtype_str, "buffer_size": buffer_size, "heap_size": heap_size, "block_size": block_size}
+
 
 def run_message_passing_kernels(module, args):
     """Run the core message passing logic without command line argument parsing."""
@@ -106,6 +108,7 @@ def run_message_passing_kernels(module, args):
 
             gc.collect()
 
+
 @pytest.mark.parametrize(
     "dtype_str",
     [
@@ -134,6 +137,7 @@ def test_message_passing_load_store(dtype_str, buffer_size, heap_size, block_siz
     args = create_test_args(dtype_str, buffer_size, heap_size, block_size)
     success = run_message_passing_kernels(load_store_module, args)
     assert success, "Message passing load/store validation failed"
+
 
 @pytest.mark.parametrize(
     "dtype_str",

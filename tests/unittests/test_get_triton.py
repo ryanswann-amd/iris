@@ -7,11 +7,11 @@ import triton.language as tl
 import pytest
 import iris
 
+
 # TODO: Separate this kernel out in the following categories:
 # 1. for local get.
 # 2. for remote get with one other rank.
 # 3. for remote get with more than one rank (if num_ranks > 2).
-
 @triton.jit
 def get_kernel(
     data,
@@ -36,6 +36,7 @@ def get_kernel(
 
     # Store the accumulated value back to the output.
     tl.store(results + offsets, acc, mask=mask)
+
 
 @pytest.mark.parametrize(
     "dtype",

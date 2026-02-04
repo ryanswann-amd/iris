@@ -11,6 +11,7 @@ import torch.distributed as dist
 import iris
 import iris.ops as ops
 
+
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
@@ -95,6 +96,7 @@ def test_matmul_reduce_scatter(dtype, atol, rtol, M, N, K):
     import gc
 
     gc.collect()
+
 
 @pytest.mark.parametrize(
     "dtype, atol, rtol",

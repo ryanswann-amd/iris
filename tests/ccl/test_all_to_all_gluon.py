@@ -10,7 +10,6 @@ import torch
 import torch.distributed as dist
 
 # Try to import Gluon, skip tests if not available
-
 try:
     import iris.experimental.iris_gluon as iris_gluon
     from iris.ccl import Config
@@ -19,6 +18,7 @@ try:
     GLUON_AVAILABLE = True
 except ImportError:
     GLUON_AVAILABLE = False
+
 
 @pytest.mark.skipif(not GLUON_AVAILABLE, reason="Gluon not available")
 @pytest.mark.parametrize(

@@ -16,6 +16,7 @@ import torch.distributed as dist
 import iris
 from iris.ccl import Config
 
+
 def _get_world_info():
     """Get world size and rank, skip if not enough ranks."""
     if not dist.is_initialized():
@@ -28,6 +29,7 @@ def _get_world_info():
         pytest.skip(f"Process group tests require at least 4 ranks, got {world_size}")
 
     return world_size, rank
+
 
 def _create_consecutive_groups(world_size, group_size=2):
     """
@@ -52,6 +54,7 @@ def _create_consecutive_groups(world_size, group_size=2):
             groups.append(None)
     return groups
 
+
 def _create_strided_groups(world_size, num_groups=2):
     """
     Create strided (DP-like) groups.
@@ -73,6 +76,7 @@ def _create_strided_groups(world_size, num_groups=2):
 
     return groups
 
+
 def _get_my_group(groups, rank):
     """Find which group the current rank belongs to."""
     for i, group in enumerate(groups):
@@ -82,9 +86,11 @@ def _get_my_group(groups, rank):
                 return i, group
     return None, None
 
+
 # =============================================================================
 # All-Reduce with Process Groups
 # =============================================================================
+
 
 @pytest.mark.parametrize(
     "variant",
@@ -166,9 +172,11 @@ def test_all_reduce_with_groups(variant, group_type, dtype=torch.float32, M=256,
 
         gc.collect()
 
+
 # =============================================================================
 # All-Gather with Process Groups
 # =============================================================================
+
 
 @pytest.mark.parametrize("group_type", ["consecutive", "strided"])
 def test_all_gather_with_groups(group_type, dtype=torch.float32, M=128, N=64):
@@ -226,9 +234,11 @@ def test_all_gather_with_groups(group_type, dtype=torch.float32, M=128, N=64):
 
         gc.collect()
 
+
 # =============================================================================
 # All-to-All with Process Groups
 # =============================================================================
+
 
 @pytest.mark.parametrize("group_type", ["consecutive", "strided"])
 def test_all_to_all_with_groups(group_type, dtype=torch.float32, M=128, N=64):
@@ -294,6 +304,7 @@ def test_all_to_all_with_groups(group_type, dtype=torch.float32, M=128, N=64):
 
         gc.collect()
 
+
 # =============================================================================
 # Reduce-Scatter with Process Groups
 # =============================================================================
@@ -304,6 +315,7 @@ def test_all_to_all_with_groups(group_type, dtype=torch.float32, M=128, N=64):
 #
 # Until semantics are aligned, we test reduce_scatter with groups by verifying
 # that the group operations produce mathematically correct results.
+
 
 @pytest.mark.parametrize("group_type", ["consecutive", "strided"])
 def test_reduce_scatter_with_groups(group_type, dtype=torch.float32, M=256, N=128):
@@ -367,9 +379,11 @@ def test_reduce_scatter_with_groups(group_type, dtype=torch.float32, M=256, N=12
 
         gc.collect()
 
+
 # =============================================================================
 # Edge Cases and Verification Tests
 # =============================================================================
+
 
 def test_group_info_extraction():
     """Test that extract_group_info returns correct values for different groups."""
@@ -416,6 +430,7 @@ def test_group_info_extraction():
     import gc
 
     gc.collect()
+
 
 def test_all_reduce_group_correctness():
     """
@@ -465,6 +480,7 @@ def test_all_reduce_group_correctness():
         import gc
 
         gc.collect()
+
 
 def test_rank_stride_target_rank_calculation():
     """
@@ -548,6 +564,7 @@ def test_rank_stride_target_rank_calculation():
     import gc
 
     gc.collect()
+
 
 def test_all_gather_strided_data_placement():
     """

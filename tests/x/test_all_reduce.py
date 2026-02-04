@@ -13,6 +13,7 @@ import triton.language as tl
 import iris
 import iris.x
 
+
 @triton.jit
 def x_all_reduce_atomic_kernel(
     input_ptr,
@@ -53,6 +54,7 @@ def x_all_reduce_atomic_kernel(
         ctx = iris.x.DeviceContext(cur_rank, world_size, heap_bases)
 
         iris.x.all_reduce_atomic(tile, dst_view, ctx)
+
 
 @triton.jit
 def x_all_reduce_one_shot_kernel(
@@ -104,6 +106,7 @@ def x_all_reduce_one_shot_kernel(
 
         iris.x.all_reduce_one_shot(tile, src_view, dst_view, locks, ctx)
 
+
 @triton.jit
 def x_all_reduce_two_shot_kernel(
     input_ptr,
@@ -154,6 +157,7 @@ def x_all_reduce_two_shot_kernel(
 
         iris.x.all_reduce_two_shot(tile, src_view, dst_view, locks, cur_rank, world_size, ctx)
 
+
 @triton.jit
 def x_all_reduce_spinlock_kernel(
     input_ptr,
@@ -195,6 +199,7 @@ def x_all_reduce_spinlock_kernel(
         ctx = iris.x.DeviceContext(cur_rank, world_size, heap_bases)
 
         iris.x.all_reduce_spinlock(tile, dst_view, locks_ptr, ctx)
+
 
 @pytest.mark.parametrize(
     "variant",

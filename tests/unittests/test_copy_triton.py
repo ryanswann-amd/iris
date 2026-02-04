@@ -7,6 +7,7 @@ import triton.language as tl
 import pytest
 import iris
 
+
 @triton.jit
 def copy_get_kernel(
     data,
@@ -26,6 +27,7 @@ def copy_get_kernel(
         src_data = data + BLOCK_SIZE * cur_rank
         dest_data = results + BLOCK_SIZE * target_rank
         iris.copy(src_data + offsets, dest_data + offsets, target_rank, cur_rank, cur_rank, heap_bases, mask)
+
 
 @triton.jit
 def copy_put_kernel(
@@ -47,6 +49,7 @@ def copy_put_kernel(
         dest_data = results + BLOCK_SIZE * cur_rank
         iris.copy(src_data + offsets, dest_data + offsets, cur_rank, target_rank, cur_rank, heap_bases, mask)
 
+
 @triton.jit
 def copy_local_kernel(
     data,
@@ -66,6 +69,7 @@ def copy_local_kernel(
         src_data = data + BLOCK_SIZE * i
         dest_data = results + BLOCK_SIZE * i
         iris.copy(src_data + offsets, dest_data + offsets, cur_rank, cur_rank, cur_rank, heap_bases, mask)
+
 
 @pytest.mark.parametrize(
     "dtype",
@@ -124,6 +128,7 @@ def test_copy_get(dtype, BLOCK_SIZE):
         import gc
 
         gc.collect()
+
 
 @pytest.mark.parametrize(
     "dtype",
@@ -184,6 +189,7 @@ def test_copy_put(dtype, BLOCK_SIZE):
         import gc
 
         gc.collect()
+
 
 @pytest.mark.parametrize(
     "dtype",

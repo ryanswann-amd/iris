@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import iris
 
+
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -42,6 +43,7 @@ def test_broadcast_scalar(value, expected):
 
         gc.collect()
 
+
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -73,6 +75,7 @@ def test_broadcast_tensor_dtype(dtype):
         import gc
 
         gc.collect()
+
 
 @pytest.mark.parametrize(
     "shape",

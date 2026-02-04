@@ -7,6 +7,7 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
+
 @gluon.jit
 def copy_get_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -29,6 +30,7 @@ def copy_get_kernel(
         src_data = data + BLOCK_SIZE * cur_rank
         dest_data = results + BLOCK_SIZE * target_rank
         ctx.copy(src_data + offsets, dest_data + offsets, target_rank, cur_rank, mask=mask)
+
 
 @gluon.jit
 def copy_put_kernel(
@@ -53,6 +55,7 @@ def copy_put_kernel(
         dest_data = results + BLOCK_SIZE * cur_rank
         ctx.copy(src_data + offsets, dest_data + offsets, cur_rank, target_rank, mask=mask)
 
+
 @gluon.jit
 def copy_local_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -75,6 +78,7 @@ def copy_local_kernel(
         src_data = data + BLOCK_SIZE * i
         dest_data = results + BLOCK_SIZE * i
         ctx.copy(src_data + offsets, dest_data + offsets, cur_rank, cur_rank, mask=mask)
+
 
 @pytest.mark.parametrize(
     "dtype",
@@ -142,6 +146,7 @@ def test_copy_get(dtype, BLOCK_SIZE):
         import gc
 
         gc.collect()
+
 
 @pytest.mark.parametrize(
     "dtype",
@@ -211,6 +216,7 @@ def test_copy_put(dtype, BLOCK_SIZE):
         import gc
 
         gc.collect()
+
 
 @pytest.mark.parametrize(
     "dtype",

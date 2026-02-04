@@ -7,11 +7,11 @@ from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
+
 # TODO: Separate this kernel out in the following categories:
 # 1. for local put.
 # 2. for remote put with one other rank.
 # 3. for remote put with more than one rank (if num_ranks > 2).
-
 @gluon.jit
 def put_kernel(
     IrisDeviceCtx: gl.constexpr,
@@ -33,6 +33,7 @@ def put_kernel(
     # Doesn't matter which rank stores at the end, the data should all be the same at the end.
     for target_rank in range(num_ranks):
         ctx.put(data + offsets, results + offsets, target_rank, mask=mask)
+
 
 @pytest.mark.parametrize(
     "dtype",

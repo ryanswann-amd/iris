@@ -29,6 +29,7 @@
 #
 ################################################################################
 
+
 import sys
 from pathlib import Path
 import pytest
@@ -57,6 +58,7 @@ else:
 
 from flash_decode_fused_layer import flash_decode_fused_layer  # noqa: E402
 from utils import print_correctness_report  # noqa: E402
+
 
 def ref_paged_attn(
     query: torch.Tensor,
@@ -97,6 +99,7 @@ def ref_paged_attn(
         start_idx += query_len
     return torch.cat(outputs, dim=0)
 
+
 def prepare_correctness_data(cfg, args, num_query_heads, num_kv_heads, NUM_BLOCKS):
     head_dim = cfg["head_dim"]
     if args.rank == 0:
@@ -112,6 +115,7 @@ def prepare_correctness_data(cfg, args, num_query_heads, num_kv_heads, NUM_BLOCK
     )
 
     return {"query": query, "key_value_cache": key_value_cache}
+
 
 @pytest.mark.parametrize("head_dim", [128])
 @pytest.mark.parametrize("num_seqs", [1, 8])

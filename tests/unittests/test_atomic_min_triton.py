@@ -7,6 +7,7 @@ import triton.language as tl
 import pytest
 import iris
 
+
 @triton.jit
 def atomic_min_kernel(
     results,
@@ -26,6 +27,7 @@ def atomic_min_kernel(
 
     for target_rank in range(num_ranks):
         iris.atomic_min(results + offsets, acc, cur_rank, target_rank, heap_bases, mask, sem=sem, scope=scope)
+
 
 @pytest.mark.parametrize(
     "dtype",

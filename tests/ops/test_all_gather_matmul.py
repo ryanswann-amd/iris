@@ -14,6 +14,7 @@ import torch.distributed as dist
 
 import iris
 
+
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
@@ -98,6 +99,7 @@ def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N):
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol), (
         f"Rank {rank}: Max diff {max_diff}, expected < {atol}"
     )
+
 
 if __name__ == "__main__":
     # For quick debugging

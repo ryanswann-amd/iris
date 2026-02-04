@@ -13,6 +13,7 @@ import triton.language as tl
 import iris
 import iris.x
 
+
 @triton.jit
 def x_all_to_all_kernel(
     input_ptr,
@@ -48,6 +49,7 @@ def x_all_to_all_kernel(
         ctx = iris.x.DeviceContext(cur_rank, world_size, heap_bases)
 
         iris.x.all_to_all(tile, src_view, dst_view, N_per_rank, ctx)
+
 
 @pytest.mark.parametrize(
     "dtype, atol, rtol",

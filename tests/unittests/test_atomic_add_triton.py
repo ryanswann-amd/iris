@@ -7,6 +7,7 @@ import triton.language as tl
 import pytest
 import iris
 
+
 @triton.jit
 def atomic_add_kernel(
     results,
@@ -37,6 +38,7 @@ def atomic_add_kernel(
             sem=sem,
             scope=scope,
         )
+
 
 @pytest.mark.parametrize(
     "dtype",

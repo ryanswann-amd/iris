@@ -14,6 +14,7 @@ import torch.distributed as dist
 import iris
 import iris.ops as ops
 
+
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [
@@ -100,6 +101,7 @@ def test_matmul_all_reduce(dtype, atol, rtol, M, N, K, variant):
     import gc
 
     gc.collect()
+
 
 def test_matmul_all_reduce_via_shmem_ops():
     """Test accessing matmul_all_reduce via shmem.ops namespace."""

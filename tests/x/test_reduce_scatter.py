@@ -13,6 +13,7 @@ import triton.language as tl
 import iris
 import iris.x
 
+
 @triton.jit
 def x_reduce_scatter_kernel(
     input_ptr,
@@ -61,6 +62,7 @@ def x_reduce_scatter_kernel(
         ctx = iris.x.DeviceContext(cur_rank, world_size, heap_bases)
 
         iris.x.reduce_scatter(tile, src_view, dst_view, locks, ctx)
+
 
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
