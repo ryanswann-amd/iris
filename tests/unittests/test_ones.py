@@ -6,6 +6,9 @@ import pytest
 import iris
 
 
+
+pytestmark = pytest.mark.single_rank
+
 @pytest.mark.parametrize(
     "dtype",
     [

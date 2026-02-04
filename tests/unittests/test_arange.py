@@ -6,6 +6,9 @@ import torch
 import iris
 
 
+
+pytestmark = pytest.mark.single_rank
+
 def test_arange_basic_functionality():
     """Test basic arange functionality with various argument combinations."""
     shmem = iris.iris(1 << 20)

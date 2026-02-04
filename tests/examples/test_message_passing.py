@@ -10,6 +10,9 @@ import iris
 import importlib.util
 from pathlib import Path
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 current_dir = Path(__file__).parent
 
 # Import message_passing_load_store module

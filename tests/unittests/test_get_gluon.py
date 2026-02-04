@@ -12,6 +12,9 @@ import iris.experimental.iris_gluon as iris_gl
 # 1. for local get.
 # 2. for remote get with one other rank.
 # 3. for remote get with more than one rank (if num_ranks > 2).
+
+pytestmark = pytest.mark.multi_rank_required
+
 @gluon.jit
 def get_kernel(
     IrisDeviceCtx: gl.constexpr,

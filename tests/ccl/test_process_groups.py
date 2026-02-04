@@ -17,6 +17,9 @@ import iris
 from iris.ccl import Config
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 def _get_world_info():
     """Get world size and rank, skip if not enough ranks."""
     if not dist.is_initialized():

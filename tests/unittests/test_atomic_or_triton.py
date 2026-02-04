@@ -8,6 +8,9 @@ import pytest
 import iris
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @triton.jit
 def atomic_or_kernel(
     results,

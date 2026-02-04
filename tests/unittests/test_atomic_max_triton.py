@@ -8,6 +8,9 @@ import pytest
 import iris
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @triton.jit
 def atomic_max_kernel(
     results,

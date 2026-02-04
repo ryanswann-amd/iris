@@ -8,6 +8,9 @@ import pytest
 import iris
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @triton.jit
 def load_kernel(
     data,

@@ -10,6 +10,9 @@ import iris
 import importlib.util
 from pathlib import Path
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 current_dir = Path(__file__).parent
 file_path = (current_dir / "../../examples/00_load/load_bench.py").resolve()
 module_name = "load_bench"

@@ -10,6 +10,9 @@ import torch
 import torch.distributed as dist
 
 # Try to import Gluon, skip tests if not available
+
+pytestmark = pytest.mark.multi_rank_required
+
 try:
     import iris.experimental.iris_gluon as iris_gluon
     from iris.ccl import Config

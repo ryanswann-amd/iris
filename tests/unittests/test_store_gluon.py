@@ -8,6 +8,9 @@ from triton.experimental.gluon import language as gl
 import iris.experimental.iris_gluon as iris_gl
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @gluon.jit
 def store_kernel(
     IrisDeviceCtx: gl.constexpr,

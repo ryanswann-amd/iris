@@ -15,6 +15,9 @@ import torch.distributed as dist
 import iris
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @pytest.mark.parametrize(
     "dtype, atol, rtol",
     [

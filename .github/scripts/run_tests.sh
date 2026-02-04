@@ -3,7 +3,7 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Run Iris tests in a container
-# Usage: run_tests.sh <test_dir> <num_ranks> [gpu_devices] [install_method]
+# Usage: run_tests.sh <test_dir> <num_ranks> [gpu_devices] [install_method] [marker]
 #   test_dir: subdirectory under tests/ (e.g., examples, unittests, ccl)
 #   num_ranks: number of GPU ranks (1, 2, 4, or 8)
 #   gpu_devices: comma-separated GPU device IDs (optional)
@@ -11,6 +11,8 @@
 #     - "git": pip install git+https://github.com/${{ github.repository }}.git@${{ github.sha }}
 #     - "editable": pip install -e .
 #     - "install": pip install .
+#   marker: pytest marker expression (optional, e.g., "single_rank", "multi_rank_required")
+#     - If not provided, all tests are run
 
 set -e
 
@@ -18,13 +20,15 @@ TEST_DIR=$1
 NUM_RANKS=$2
 GPU_DEVICES=${3:-""}
 INSTALL_METHOD=${4:-"editable"}
+MARKER=${5:-""}
 
 if [ -z "$TEST_DIR" ] || [ -z "$NUM_RANKS" ]; then
     echo "[ERROR] Missing required arguments"
-    echo "Usage: $0 <test_dir> <num_ranks> [gpu_devices] [install_method]"
+    echo "Usage: $0 <test_dir> <num_ranks> [gpu_devices] [install_method] [marker]"
     echo "  test_dir: examples, unittests, x or ccl"
     echo "  num_ranks: 1, 2, 4, or 8"
     echo "  install_method: git, editable, or install (default: editable)"
+    echo "  marker: pytest marker expression (optional)"
     exit 1
 fi
 
@@ -62,6 +66,12 @@ elif [ "$INSTALL_METHOD" = "install" ]; then
     INSTALL_CMD="pip install ."
 fi
 
+# Build marker argument for pytest
+MARKER_ARG=""
+if [ -n "$MARKER" ]; then
+    MARKER_ARG="-m \"$MARKER\""
+fi
+
 # Run tests in container
 "$SCRIPT_DIR/container_exec.sh" $GPU_ARG "
     set -e
@@ -95,8 +105,8 @@ fi
     # Run tests in the specified directory
     for test_file in tests/$TEST_DIR/test_*.py; do
         if [ -f \"\$test_file\" ]; then
-            echo \"Testing: \$test_file with $NUM_RANKS ranks (install: $INSTALL_METHOD)\"
-            python tests/run_tests_distributed.py --num_ranks $NUM_RANKS \"\$test_file\" -v --tb=short --durations=10
+            echo \"Testing: \$test_file with $NUM_RANKS ranks (install: $INSTALL_METHOD, marker: $MARKER)\"
+            python tests/run_tests_distributed.py --num_ranks $NUM_RANKS \"\$test_file\" $MARKER_ARG -v --tb=short --durations=10
         fi
     done
 "
