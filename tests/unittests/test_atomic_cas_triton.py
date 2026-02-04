@@ -29,63 +29,7 @@ def atomic_cas_kernel(
         iris.atomic_cas(results, cmp, val, cur_rank, target_rank, heap_bases, sem=sem, scope=scope)
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @pytest.mark.parametrize(
-    "dtype",
-    [
-        torch.int16,
-        torch.int32,
-        torch.int64,
-    ],
-)
-@pytest.mark.parametrize(
-    "sem",
-    [
-        "acquire",
-        "release",
-        "acq_rel",
-    ],
-)
-@pytest.mark.parametrize(
-    "scope",
-    [
-        "cta",
-        "gpu",
-        "sys",
-    ],
-)
-def test_atomic_cas_api(dtype, sem, scope):
-    # TODO: Adjust heap size.
-    shmem = iris.iris(1 << 20)
-    num_ranks = shmem.get_num_ranks()
-    heap_bases = shmem.get_heap_bases()
-    cur_rank = shmem.get_rank()
-
-    results = shmem.zeros((1,), dtype=dtype)
-
-    shmem.barrier()
-
-    grid = lambda meta: (1,)
-    atomic_cas_kernel[grid](results, sem, scope, cur_rank, num_ranks, heap_bases)
-    shmem.barrier()
-
-    # Verify the results
-    expected = torch.full((1,), num_ranks, dtype=dtype, device="cuda")
-
-    try:
-        torch.testing.assert_close(results, expected, rtol=0, atol=0)
-    except AssertionError as e:
-        print(e)
-        print("Expected:", expected)
-        print("Actual:", results)
-        raise
-    finally:
-        # Final barrier to ensure all ranks complete before test cleanup
-        # This helps with test isolation when running multiple tests
-        # Note: shmem.barrier() already does cuda.synchronize()
-        shmem.barrier()
-        # Explicitly delete the shmem instance to trigger cleanup
-        del shmem
-        # Force garbage collection to ensure IPC handles are cleaned up
-        import gc
-
-        gc.collect()

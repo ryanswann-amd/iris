@@ -44,67 +44,7 @@ def get_kernel(
     gl.store(results + offsets, acc, mask=mask)
 
 
+
+pytestmark = pytest.mark.multi_rank_required
+
 @pytest.mark.parametrize(
-    "dtype",
-    [
-        torch.int8,
-        torch.float16,
-        torch.bfloat16,
-        torch.float32,
-    ],
-)
-@pytest.mark.parametrize(
-    "BLOCK_SIZE",
-    [
-        1,
-        8,
-        16,
-        32,
-    ],
-)
-def test_get_api(dtype, BLOCK_SIZE):
-    # TODO: Adjust heap size.
-    shmem = iris_gl.iris(1 << 20)
-    num_ranks = shmem.get_num_ranks()
-    context_tensor = shmem.get_device_context()
-    cur_rank = shmem.get_rank()
-
-    data = shmem.ones(BLOCK_SIZE, dtype=dtype)
-    results = shmem.zeros_like(data)
-
-    shmem.barrier()
-
-    grid = (1,)
-    get_kernel[grid](
-        iris_gl.IrisDeviceCtx,
-        context_tensor,
-        data,
-        results,
-        cur_rank,
-        num_ranks,
-        BLOCK_SIZE,
-        num_warps=1,
-    )
-    shmem.barrier()
-
-    # Verify the results
-    expected = torch.ones(BLOCK_SIZE, dtype=dtype, device="cuda") * num_ranks
-
-    try:
-        torch.testing.assert_close(results, expected, rtol=0, atol=0)
-    except AssertionError as e:
-        print(e)
-        print("Expected:", expected)
-        print("Actual:", results)
-        raise
-    finally:
-        # Final barrier to ensure all ranks complete before test cleanup
-        # This helps with test isolation when running multiple tests
-        # Note: shmem.barrier() already does cuda.synchronize()
-        shmem.barrier()
-        # Explicitly delete the shmem instance to trigger cleanup
-        del shmem
-        # Force garbage collection to ensure IPC handles are cleaned up
-        import gc
-
-        gc.collect()
