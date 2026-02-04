@@ -124,7 +124,7 @@ def test_vmem_owns_tensor():
     assert not ctx.heap.allocator.owns_tensor(external_tensor)
 
     print(f"Rank {ctx.cur_rank}: VMem owns_tensor test passed!")
-    
+
     # Cleanup: Delete tensors and sync GPU before test ends
     del heap_tensor, external_tensor
     torch.cuda.synchronize()
@@ -137,7 +137,7 @@ def test_vmem_owns_tensor():
 def test_vmem_rma_compatibility():
     """Test that VMem allocator works with RMA operations."""
     pytest.skip("RMA operations (ctx.get/ctx.put) not yet implemented")
-    
+
     ctx = iris.iris(1 << 20, allocator_type="vmem")
 
     if ctx.num_ranks < 2:
@@ -170,7 +170,7 @@ def test_vmem_rma_compatibility():
 def test_vmem_granularity_alignment():
     """Test that VMem allocations respect granularity."""
     from iris.hip import get_allocation_granularity
-    
+
     # Cleanup GPU state from previous tests
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
@@ -190,64 +190,64 @@ def test_vmem_granularity_alignment():
 def test_vmem_import_external_tensor():
     """
     Test importing external PyTorch tensors via as_symmetric().
-    
+
     This validates the critical lifetime contract:
     1. External tensors can be imported into the symmetric heap
     2. The imported tensor shares memory with the original (while ctx is alive)
     3. When ctx is destroyed, imported_tensor becomes invalid
     4. BUT the original tensor REMAINS VALID and fully usable
-    
+
     This is THE KEY CONTRACT: imported tensors die with ctx, originals survive.
     """
     import gc
-    
+
     # Create Iris context with large enough heap for PyTorch's 2MB allocations
     ctx = iris.iris(4 << 20, allocator_type="vmem")
-    
+
     # Create original PyTorch tensor on the correct device for this rank
     original_tensor = torch.randn(100, dtype=torch.float32, device=ctx.device)
     original_data = original_tensor.clone()
-    
+
     # Import the external tensor
     imported_tensor = ctx.as_symmetric(original_tensor)
-    
+
     # Verify imported tensor has same data
     assert torch.allclose(imported_tensor, original_data), "Imported tensor should match original"
-    
+
     # Modify via imported tensor
     imported_tensor.fill_(42.0)
     assert torch.all(imported_tensor == 42.0), "Imported tensor modifications should work"
-    
+
     # Original tensor should see the change (shared memory)
     assert torch.all(original_tensor == 42.0), "Original tensor should see changes via shared memory"
-    
+
     # Modify via original tensor
     original_tensor.fill_(99.0)
     assert torch.all(original_tensor == 99.0), "Original tensor modifications should work"
     assert torch.all(imported_tensor == 99.0), "Imported tensor should see changes via shared memory"
-    
+
     # NOW THE CRITICAL PART: Destroy ctx
     # This invalidates imported_tensor, but original_tensor should survive!
     del ctx, imported_tensor
     gc.collect()
     torch.cuda.synchronize()
-    
+
     # VERIFY: Original tensor is still valid and fully usable
     assert torch.all(original_tensor == 99.0), "Original tensor should still be valid after ctx destroyed!"
-    
+
     # Can still modify it
     original_tensor.fill_(123.0)
     assert torch.all(original_tensor == 123.0), "Original tensor should still be modifiable!"
-    
+
     # Can do operations on it
     result = original_tensor + 1.0
     assert torch.all(result == 124.0), "Original tensor should still support operations!"
-    
+
     print(f"Rank {torch.distributed.get_rank() if torch.distributed.is_initialized() else 0}: "
           f"VMem import external tensor test passed!")
-    print(f"  ✓ Imported tensor shared memory with original (while ctx alive)")
-    print(f"  ✓ Original tensor survived ctx destruction")
-    print(f"  ✓ Original tensor still fully functional after ctx destroyed")
+    print("  ✓ Imported tensor shared memory with original (while ctx alive)")
+    print("  ✓ Original tensor survived ctx destruction")
+    print("  ✓ Original tensor still fully functional after ctx destroyed")
 
 
 if __name__ == "__main__":

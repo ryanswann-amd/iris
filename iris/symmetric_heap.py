@@ -143,21 +143,21 @@ class SymmetricHeap:
     def get_heap_bases(self) -> torch.Tensor:
         """Get heap base addresses for all ranks as a tensor."""
         return self.heap_bases
-    
+
     def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
         """
         Import an external PyTorch tensor into the symmetric heap.
-        
+
         This creates a new tensor in the symmetric heap that shares physical
         memory with the external tensor. Modifications to either tensor will
         be visible in both.
-        
+
         Args:
             external_tensor: External PyTorch tensor to import
-        
+
         Returns:
             New tensor in symmetric heap sharing memory with external tensor
-        
+
         Raises:
             RuntimeError: If allocator doesn't support imports or import fails
         """
@@ -167,5 +167,5 @@ class SymmetricHeap:
                 f"{type(self.allocator).__name__} does not support as_symmetric(). "
                 "Use allocator_type='vmem' to enable this feature."
             )
-        
+
         return self.allocator.import_external_tensor(external_tensor)

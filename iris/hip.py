@@ -440,22 +440,22 @@ def import_dmabuf_handle(fd, size, original_ptr=None, base_ptr=None):
 def destroy_external_memory(ext_mem_handle):
     """
     Destroy an external memory handle created by hipImportExternalMemory.
-    
+
     Args:
         ext_mem_handle: The external memory handle (hipExternalMemory_t) to destroy
-    
+
     Raises:
         RuntimeError: If destroy fails
     """
     if not _is_amd_backend:
         raise RuntimeError("External memory only supported on AMD/HIP backend")
-    
+
     # hipExternalMemory_t is an opaque handle (pointer)
     hipExternalMemory_t = ctypes.c_void_p
-    
+
     gpu_runtime.hipDestroyExternalMemory.argtypes = [hipExternalMemory_t]
     gpu_runtime.hipDestroyExternalMemory.restype = ctypes.c_int
-    
+
     err = gpu_runtime.hipDestroyExternalMemory(ext_mem_handle)
     if err != 0:
         gpu_try(err)
@@ -464,24 +464,24 @@ def destroy_external_memory(ext_mem_handle):
 def get_address_range(ptr):
     """
     Query the base allocation and size for a given device pointer.
-    
+
     This is critical for handling PyTorch's caching allocator, which may
     return offset pointers into larger allocations.
-    
+
     Args:
         ptr: Device pointer (integer or ctypes pointer)
-    
+
     Returns:
         tuple: (base_ptr, size) - base address and size of the allocation
-    
+
     Raises:
         RuntimeError: If query fails
     """
     ptr_int = ptr if isinstance(ptr, int) else ptr.value
-    
+
     base_ptr = ctypes.c_void_p()
     size = ctypes.c_size_t()
-    
+
     # Set argument types
     gpu_runtime.hipMemGetAddressRange.argtypes = [
         ctypes.POINTER(ctypes.c_void_p),  # void** pbase
@@ -489,13 +489,13 @@ def get_address_range(ptr):
         ctypes.c_void_p,                   # void* dptr
     ]
     gpu_runtime.hipMemGetAddressRange.restype = ctypes.c_int
-    
+
     gpu_try(gpu_runtime.hipMemGetAddressRange(
         ctypes.byref(base_ptr),
         ctypes.byref(size),
         ctypes.c_void_p(ptr_int)
     ))
-    
+
     return base_ptr.value, size.value
 
 

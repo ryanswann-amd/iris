@@ -9,7 +9,7 @@ enabling features like memory oversubscription and on-demand paging.
 """
 
 import torch
-from typing import Dict, Optional
+from typing import Dict
 from threading import Lock
 
 from .base import BaseAllocator
@@ -20,7 +20,6 @@ from ..hip import (
     import_dmabuf_handle,
     destroy_external_memory,
     mem_create,
-    mem_import_from_shareable_handle,
     mem_address_reserve,
     mem_map,
     mem_unmap,
@@ -62,7 +61,7 @@ class VMemAllocator(BaseAllocator):
         super().__init__(heap_size, device_id, rank, world_size)
         self.va_multiplier = va_multiplier
         self.device = torch.device(f"cuda:{device_id}")
-        
+
         # Thread safety
         self.lock = Lock()
 
@@ -88,7 +87,7 @@ class VMemAllocator(BaseAllocator):
         # ROCm bug: must call hipMemSetAccess from base_va with cumulative size
         # See: https://github.com/ROCm/rocm-systems/issues/2667
         self.cumulative_allocated = self.aligned_heap_size
-        
+
         # Set access permissions for current device (initial mapping)
         access_desc = hipMemAccessDesc()
         access_desc.location.type = hipMemLocationTypeDevice
@@ -195,67 +194,66 @@ class VMemAllocator(BaseAllocator):
     def import_external_tensor(self, external_tensor: torch.Tensor) -> torch.Tensor:
         """
         Import an external PyTorch tensor into the symmetric heap (as_symmetric).
-        
+
         This creates a view into the symmetric heap that shares physical memory
         with the external tensor, handling PyTorch caching allocator offsets.
-        
+
         Args:
             external_tensor: External PyTorch tensor to import
-        
+
         Returns:
             New tensor view in symmetric heap that shares memory with external tensor
-        
+
         Raises:
             RuntimeError: If import fails
         """
-        import os
-        
+
         with self.lock:
             if not external_tensor.is_cuda:
                 raise RuntimeError("Can only import CUDA tensors")
-            
+
             external_ptr = external_tensor.data_ptr()
-            
+
             # Query the base allocation to handle PyTorch caching allocator offsets
             alloc_base, alloc_size = get_address_range(external_ptr)
             offset_in_alloc = external_ptr - alloc_base
-            
+
             # Align allocation size to granularity
             aligned_size = (alloc_size + self.granularity - 1) & ~(self.granularity - 1)
-            
+
             # Allocate VA space in our heap (bump allocation)
             aligned_offset = (self.current_offset + self.granularity - 1) & ~(self.granularity - 1)
-            
+
             if aligned_offset + aligned_size > self.aligned_heap_size:
                 raise RuntimeError(
                     f"VMem heap exhausted during import: need {aligned_size} bytes "
                     f"at offset {aligned_offset}, heap size is {self.aligned_heap_size}"
                 )
-            
+
             # Export external allocation as DMA-BUF (using base, not offset pointer)
             dmabuf_fd, export_base, export_size = export_dmabuf_handle(alloc_base, alloc_size)
-            
+
             # Import DMA-BUF with automatic offset correction
             # This handles PyTorch caching allocator offsets correctly
             # Returns (pointer, ext_mem_handle) - we need to track the handle for cleanup
             remapped_ptr, ext_mem_handle = import_dmabuf_handle(dmabuf_fd, export_size, external_ptr, export_base)
-            
+
             # Note: import_dmabuf_handle manages the FD internally, don't close it
-            
+
             # Track this as an imported allocation
             # Store ext_mem_handle so we can destroy it in close()
             self.allocations[aligned_offset] = (aligned_size, True, alloc_base, ext_mem_handle)
             self.current_offset = aligned_offset + aligned_size
-            
+
             # Create tensor using __cuda_array_interface__
             tensor_size = external_tensor.numel() * external_tensor.element_size()
-            
+
             class CUDAArrayInterface:
                 def __init__(self, ptr, size_bytes, device):
                     self.ptr = ptr
                     self.size_bytes = size_bytes
                     self.device = device
-                
+
                 @property
                 def __cuda_array_interface__(self):
                     return {
@@ -264,13 +262,13 @@ class VMemAllocator(BaseAllocator):
                         "data": (self.ptr, False),
                         "version": 3,
                     }
-            
+
             cuda_array = CUDAArrayInterface(remapped_ptr, tensor_size, self.device)
             tensor_bytes = torch.as_tensor(cuda_array, device=self.device)
-            
+
             # View as original dtype and reshape
             imported_tensor = tensor_bytes.view(external_tensor.dtype).reshape(external_tensor.shape)
-            
+
             return imported_tensor
 
     def close(self):
@@ -288,16 +286,16 @@ class VMemAllocator(BaseAllocator):
                 else:
                     size, is_imported, external_ptr = alloc_info
                     ext_mem_handle = None
-                
+
                 if is_imported and ext_mem_handle is not None:
                     # Imported allocation: destroy external memory handle
                     # This unmaps the imported memory
                     destroy_external_memory(ext_mem_handle)
                 # Native allocations: no individual cleanup needed
                 # They're sub-regions of the base mapping which we unmap below
-            
+
             self.allocations.clear()
-            
+
             # Unmap and free the initial local physical allocation
             if hasattr(self, "base_va") and self.base_va:
                 mem_unmap(self.base_va, self.aligned_heap_size)

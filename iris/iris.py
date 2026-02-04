@@ -102,8 +102,8 @@ class Iris:
             if hasattr(self, "heap") and hasattr(self.heap, "allocator"):
                 if hasattr(self.heap.allocator, "close"):
                     self.heap.allocator.close()
-        except:
-            pass  # Best effort cleanup
+        except Exception:
+            pass  # Best effort cleanup in destructor (GC context)
 
     def _log_with_rank(self, level, message):
         """Helper method to log with rank information injected into the record."""
@@ -674,28 +674,28 @@ class Iris:
             tensor.requires_grad_()
 
         return tensor
-    
+
     def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
         """
         Import an external PyTorch tensor into the symmetric heap.
-        
+
         This creates a new tensor in the symmetric heap that shares physical memory
         with the external tensor. Any modifications to either tensor will be visible
         in both. This is useful for importing pre-allocated tensors (e.g., model weights)
         into the symmetric heap for RMA operations.
-        
+
         Note: This feature requires `allocator_type='vmem'` (default in current version).
-        
+
         Args:
             external_tensor (torch.Tensor): External PyTorch tensor to import.
                 Must be a CUDA tensor.
-        
+
         Returns:
             torch.Tensor: New tensor in symmetric heap sharing memory with external tensor
-        
+
         Raises:
             RuntimeError: If allocator doesn't support imports or import fails
-        
+
         Example:
             >>> ctx = iris.iris(allocator_type='vmem')
             >>> # Create an external tensor
