@@ -21,7 +21,7 @@ dependencies = [
     "numpy",
     "requests",
     "ruff",
-    "tritonblas @ git+https://github.com/ROCm/tritonBLAS.git@d0b4a6b24ada6d1e9cf4ec2a1b8d7596e0a9de1d",
+    "tritonblas @ git+https://github.com/ROCm/tritonBLAS.git@f9ce75408bbeef091a7a47c156e15629f4670595",
 ]
 
 [project.urls]
