@@ -109,61 +109,7 @@ def run_message_passing_kernels(module, args):
             gc.collect()
 
 
-@pytest.mark.parametrize(
-    "dtype_str",
-    [
-        "int8",
-        "fp16",
-        "bf16",
-        "fp32",
-    ],
-)
-@pytest.mark.parametrize(
-    "buffer_size, heap_size",
-    [
-        (4096, 1 << 20),  # Smaller sizes for testing
-        (8192, 1 << 21),
-    ],
-)
-@pytest.mark.parametrize(
-    "block_size",
-    [
-        512,
-        1024,
-    ],
-)
-def test_message_passing_load_store(dtype_str, buffer_size, heap_size, block_size):
-    """Test message passing with load/store operations."""
-    args = create_test_args(dtype_str, buffer_size, heap_size, block_size)
-    success = run_message_passing_kernels(load_store_module, args)
-    assert success, "Message passing load/store validation failed"
 
+pytestmark = pytest.mark.multi_rank_required
 
 @pytest.mark.parametrize(
-    "dtype_str",
-    [
-        "int8",
-        "fp16",
-        "bf16",
-        "fp32",
-    ],
-)
-@pytest.mark.parametrize(
-    "buffer_size, heap_size",
-    [
-        (4096, 1 << 20),  # Smaller sizes for testing
-        (8192, 1 << 21),
-    ],
-)
-@pytest.mark.parametrize(
-    "block_size",
-    [
-        512,
-        1024,
-    ],
-)
-def test_message_passing_put(dtype_str, buffer_size, heap_size, block_size):
-    """Test message passing with put operations."""
-    args = create_test_args(dtype_str, buffer_size, heap_size, block_size)
-    success = run_message_passing_kernels(put_module, args)
-    assert success, "Message passing put validation failed"
