@@ -2,7 +2,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+import hip
+hip.hip.hipInit(0)
+
 import argparse
+import os
 import random
 
 import torch
@@ -53,35 +57,54 @@ def parse_args():
     parser.add_argument(
         "--gemm_sms",
         type=int,
-        default=None,
-        help="Number of SMs for persistent GEMM algorithm (default: auto-detected)",
+        default=256,
+        help="Number of SMs for persistent GEMM algorithm (default: 256)",
     )
+    parser.add_argument("--num_experiments", type=int, default=1, help="Number of experiment iterations")
+    parser.add_argument("--num_warmup", type=int, default=0, help="Number of warmup iterations")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
 
     return vars(parser.parse_args())
 
 
-def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
+def _worker(local_rank: int = None, world_size: int = None, init_url: str = None, args: dict = None):
     """Worker function for PyTorch distributed execution."""
-    backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(
-        backend=backend,
-        init_method=init_url,
-        world_size=world_size,
-        rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
-    )
+    # Support torchrun: read from environment variables if available
+    if local_rank is None:
+        local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    if world_size is None:
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if init_url is None:
+        # torchrun sets MASTER_ADDR and MASTER_PORT
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+        init_url = f"tcp://{master_addr}:{master_port}"
+    
+    # Use gloo backend for simulator compatibility (nccl requires GPU kernels)
+    backend = "gloo"
+    if args.get("verbose"):
+        print(f"Using backend: {backend}")
+    
+    # Use environment-based initialization if torchrun is detected
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # For torchrun, init_process_group reads from environment
+        dist.init_process_group(backend=backend, init_method="env://")
+    else:
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_url,
+            world_size=world_size,
+            rank=local_rank,
+            device_id=torch.device(f"cuda:{local_rank}"),
+        )
 
     # Main benchmark logic
     shmem = iris.iris(args["heap_size"])
     rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
 
-    # Set default SM values if not provided
-    if args["gemm_sms"] is None:
-        # For all_scatter: use total CU count
-        cu_count = torch.cuda.get_device_properties(rank).multi_processor_count
-        args["gemm_sms"] = cu_count
+    # gemm_sms is already set from command line args (default: 256)
 
     # GEMM
     datatype = torch.float32
@@ -98,8 +121,14 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     assert args["n"] % world_size == 0, f"N ({args['n']}) must be divisible by world size ({world_size})."
     assert args["k"] % world_size == 0, f"K ({args['k']}) must be divisible by world size ({world_size})."
 
-    A = shmem.randn(args["m"], args["k"], device="cuda", dtype=datatype)
-    B = shmem.randn(args["n"], args["k"], device="cuda", dtype=datatype).T
+    # Use ones() + zeros_like() pattern to work around simulator compatibility issues
+    temp_A_list = shmem.ones(args["m"] * args["k"], device="cuda", dtype=datatype)
+    temp_A = temp_A_list[0]
+    A = shmem.zeros_like(temp_A).reshape(args["m"], args["k"])
+    # Construct B already transposed (k x n) instead of transposing later
+    temp_B_list = shmem.ones(args["k"] * args["n"], device="cuda", dtype=datatype)
+    temp_B = temp_B_list[0]
+    B = shmem.zeros_like(temp_B).reshape(args["k"], args["n"])
 
     args["M"] = args["m"]
     args["N"] = args["n"]
@@ -110,14 +139,21 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
     # Splitting
     args["n"] = args["n"] // world_size
-    local_B = B[:, rank * args["n"] : (rank + 1) * args["n"]].clone()
+    # Use slice directly without clone/contiguous to avoid GPU kernel calls
+    local_B = B[:, rank * args["n"] : (rank + 1) * args["n"]]
     local_A = A
 
     for key, value in args.items():
         json_writer.add_field(key, value)
 
-    global_C = shmem.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
-    local_C = shmem.zeros((args["m"], args["n"]), device="cuda", dtype=A.dtype)
+    # Use ones() + zeros_like() pattern for all allocations
+    temp_global_C_list = shmem.ones(args["M"] * args["N"], device="cuda", dtype=A.dtype)
+    temp_global_C = temp_global_C_list[0]
+    global_C = shmem.zeros_like(temp_global_C).reshape(args["M"], args["N"])
+    
+    temp_local_C_list = shmem.ones(args["m"] * args["n"], device="cuda", dtype=A.dtype)
+    temp_local_C = temp_local_C_list[0]
+    local_C = shmem.zeros_like(temp_local_C).reshape(args["m"], args["n"])
 
     total_blocks_M = triton.cdiv(args["m"], args["BLK_M"])
     total_blocks_N = triton.cdiv(args["n"], args["BLK_N"])
@@ -138,8 +174,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         },
     }
 
-    # Allocate Timestamps
-    timestamps = Timestamps(num_tiles=total_tiles)
+    # Allocate Timestamps only if tracing is enabled
+    timestamps = Timestamps(num_tiles=total_tiles) if args["trace_tiles"] else None
 
     def run_experiment():
         nonlocal local_C
@@ -148,7 +184,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
         shmem.barrier()
 
-        if args["trace_tiles"]:
+        if args["trace_tiles"] and timestamps is not None:
             timestamps.reset()
             shmem.barrier()
 
@@ -173,8 +209,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 shmem.get_heap_bases(),
                 "gfx942",
                 args["trace_tiles"],
-                timestamps.mm_begin_timestamp,
-                timestamps.mm_end_timestamp,
+                timestamps.mm_begin_timestamp if timestamps else None,
+                timestamps.mm_end_timestamp if timestamps else None,
             )
             kernel_timing["gemm"]["end_event"].record()
             kernel_timing["gemm"]["experiments"] += 1
@@ -192,13 +228,23 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     shmem.barrier()
 
     # Warmup
-    run_experiment()
+    if args["verbose"]:
+        shmem.info(f"Running {args['num_warmup']} warmup iterations...")
+    for _ in range(args["num_warmup"]):
+        run_experiment()
 
     shmem.barrier()
 
     for k in ["gemm"]:
         kernel_timing[k]["ms"] = 0
         kernel_timing[k]["experiments"] = 0
+
+    # Run experiments
+    if args["verbose"]:
+        shmem.info(f"Running {args['num_experiments']} experiments...")
+    for _ in range(args["num_experiments"]):
+        run_experiment()
+        shmem.barrier()
 
     if args["validate"]:
         shmem.info("Validating...")
@@ -248,7 +294,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         json_writer.flush()
         json_writer.display()
 
-    if args["trace_tiles"] and rank == 0:
+    if args["trace_tiles"] and rank == 0 and timestamps is not None:
         gpu_freq = iris.hip.get_wall_clock_rate(rank) * 1e-3
         algo_string = "all_scatter"
         filename = f"gemm_tiles_{algo_string}_trace_rank{rank}.json"
@@ -261,18 +307,24 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
 
 def main():
+    print("Starting GEMM all_scatter benchmark...")
     args = parse_args()
 
-    # Use command line argument if provided, otherwise use num_ranks parameter
-    num_ranks = args["num_ranks"]
-
-    init_url = "tcp://127.0.0.1:29500"
-    mp.spawn(
-        fn=_worker,
-        args=(num_ranks, init_url, args),
-        nprocs=num_ranks,
-        join=True,
-    )
+    # Check if running with torchrun (detected by environment variables)
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # torchrun handles process spawning, so call _worker directly
+        print("Detected torchrun execution mode")
+        _worker(args=args)
+    else:
+        # Use multiprocessing spawn for backward compatibility
+        num_ranks = args["num_ranks"]
+        init_url = "tcp://127.0.0.1:29500"
+        mp.spawn(
+            fn=_worker,
+            args=(num_ranks, init_url, args),
+            nprocs=num_ranks,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
