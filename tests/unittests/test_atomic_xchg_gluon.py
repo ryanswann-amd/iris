@@ -32,7 +32,75 @@ def atomic_xchg_kernel(
         ctx.atomic_xchg(results, val, target_rank, mask=None, sem=sem, scope=scope)
 
 
-
-pytestmark = pytest.mark.multi_rank_required
-
 @pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.int32,
+        torch.int64,
+        torch.float32,
+    ],
+)
+@pytest.mark.parametrize(
+    "sem",
+    [
+        "acquire",
+        "release",
+        "acq_rel",
+    ],
+)
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "cta",
+        "gpu",
+        "sys",
+    ],
+)
+def test_atomic_xchg_api(dtype, sem, scope):
+    # TODO: Adjust heap size.
+    shmem = iris_gl.iris(1 << 20)
+    num_ranks = shmem.get_num_ranks()
+    context_tensor = shmem.get_device_context()
+    cur_rank = shmem.get_rank()
+
+    results = shmem.zeros((1,), dtype=dtype)
+    # Create single-element tensor for val value (workaround for 0D tensor limitation)
+    val_tensor = shmem.full((1,), num_ranks, dtype=dtype)
+
+    shmem.barrier()
+
+    grid = (1,)
+    atomic_xchg_kernel[grid](
+        iris_gl.IrisDeviceCtx,
+        context_tensor,
+        results,
+        val_tensor,
+        sem,
+        scope,
+        cur_rank,
+        num_ranks,
+        num_warps=1,
+    )
+    shmem.barrier()
+
+    # Verify the results
+    expected = torch.full((1,), num_ranks, dtype=dtype, device="cuda")
+
+    try:
+        torch.testing.assert_close(results, expected, rtol=0, atol=0)
+    except AssertionError as e:
+        print(e)
+        print("Expected:", expected)
+        print("Actual:", results)
+        raise
+    finally:
+        # Final barrier to ensure all ranks complete before test cleanup
+        # This helps with test isolation when running multiple tests
+        # Note: shmem.barrier() already does cuda.synchronize()
+        shmem.barrier()
+        # Explicitly delete the shmem instance to trigger cleanup
+        del shmem
+        # Force garbage collection to ensure IPC handles are cleaned up
+        import gc
+
+        gc.collect()

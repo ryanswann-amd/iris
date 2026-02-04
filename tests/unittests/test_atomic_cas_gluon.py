@@ -34,7 +34,77 @@ def atomic_cas_kernel(
         ctx.atomic_cas(results, cmp, val, target_rank, sem=sem, scope=scope)
 
 
-
-pytestmark = pytest.mark.multi_rank_required
-
 @pytest.mark.parametrize(
+    "dtype",
+    [
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    ],
+)
+@pytest.mark.parametrize(
+    "sem",
+    [
+        "acquire",
+        "release",
+        "acq_rel",
+    ],
+)
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "cta",
+        "gpu",
+        "sys",
+    ],
+)
+def test_atomic_cas_api(dtype, sem, scope):
+    # TODO: Adjust heap size.
+    shmem = iris_gl.iris(1 << 20)
+    num_ranks = shmem.get_num_ranks()
+    context_tensor = shmem.get_device_context()
+    cur_rank = shmem.get_rank()
+
+    results = shmem.zeros((1,), dtype=dtype)
+    # Create single-element tensors for cmp and val values (workaround for 0D tensor limitation)
+    cmp_val = shmem.zeros((1,), dtype=dtype)  # Will be 0
+    val_tensor = shmem.full((1,), num_ranks, dtype=dtype)
+
+    shmem.barrier()
+
+    grid = (1,)
+    atomic_cas_kernel[grid](
+        iris_gl.IrisDeviceCtx,
+        context_tensor,
+        results,
+        cmp_val,
+        val_tensor,
+        sem,
+        scope,
+        cur_rank,
+        num_ranks,
+        num_warps=1,
+    )
+    shmem.barrier()
+
+    # Verify the results
+    expected = torch.full((1,), num_ranks, dtype=dtype, device="cuda")
+
+    try:
+        torch.testing.assert_close(results, expected, rtol=0, atol=0)
+    except AssertionError as e:
+        print(e)
+        print("Expected:", expected)
+        print("Actual:", results)
+        raise
+    finally:
+        # Final barrier to ensure all ranks complete before test cleanup
+        # This helps with test isolation when running multiple tests
+        # Note: shmem.barrier() already does cuda.synchronize()
+        shmem.barrier()
+        # Explicitly delete the shmem instance to trigger cleanup
+        del shmem
+        # Force garbage collection to ensure IPC handles are cleaned up
+        import gc
+
+        gc.collect()
