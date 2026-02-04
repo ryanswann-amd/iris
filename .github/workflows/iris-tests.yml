@@ -38,196 +38,74 @@ jobs:
           bash .github/scripts/container_build.sh
 
   test-git:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, ${{ matrix.marker }}, git install)
+    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, git install)
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Phase 1: Run single_rank tests only on 1 rank
+          # Test each subdirectory with each rank count using git install
           - test_dir: examples
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          # Phase 2: Run multi_rank_required tests on all rank configs
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
-          # Phase 3: Run unmarked tests on all rank configs (backward compatibility)
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
 
     steps:
       - name: Checkout repository
@@ -243,207 +121,84 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: git, marker: ${{ matrix.marker }})"
+          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: git)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
             "${{ matrix.num_ranks }}" \
             "${{ matrix.gpu_devices }}" \
-            "git" \
-            "${{ matrix.marker }}"
+            "git"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (git, marker: ${{ matrix.marker }}) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (git) passed!"
 
   test-editable:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, ${{ matrix.marker }}, editable install)
+    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, editable install)
     needs: [build-container-image, test-git]
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Phase 1: Run single_rank tests only on 1 rank
+          # Test each subdirectory with each rank count using editable install
           - test_dir: examples
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          # Phase 2: Run multi_rank_required tests on all rank configs
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
-          # Phase 3: Run unmarked tests on all rank configs (backward compatibility)
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
 
     steps:
       - name: Checkout repository
@@ -456,207 +211,84 @@ jobs:
       - name: Run ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (editable install)
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: editable, marker: ${{ matrix.marker }})"
+          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: editable)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
             "${{ matrix.num_ranks }}" \
             "${{ matrix.gpu_devices }}" \
-            "editable" \
-            "${{ matrix.marker }}"
+            "editable"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (editable, marker: ${{ matrix.marker }}) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (editable) passed!"
 
   test-install:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, ${{ matrix.marker }}, pip install)
+    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, pip install)
     needs: [build-container-image, test-editable]
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Phase 1: Run single_rank tests only on 1 rank
+          # Test each subdirectory with each rank count using pip install
           - test_dir: examples
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "single_rank"
-          # Phase 2: Run multi_rank_required tests on all rank configs
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: examples
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: unittests
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ccl
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: x
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 1
             gpu_devices: "0,1"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 2
             gpu_devices: "2,3"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 4
             gpu_devices: "4,5,6,7"
-            marker: "multi_rank_required"
           - test_dir: ops
             num_ranks: 8
             gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "multi_rank_required"
-          # Phase 3: Run unmarked tests on all rank configs (backward compatibility)
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-            marker: "not single_rank and not multi_rank_required"
 
     steps:
       - name: Checkout repository
@@ -669,13 +301,12 @@ jobs:
       - name: Run ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (pip install)
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: install, marker: ${{ matrix.marker }})"
+          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: install)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
             "${{ matrix.num_ranks }}" \
             "${{ matrix.gpu_devices }}" \
-            "install" \
-            "${{ matrix.marker }}"
+            "install"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install, marker: ${{ matrix.marker }}) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install) passed!"
 

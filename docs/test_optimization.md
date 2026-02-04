@@ -8,14 +8,15 @@ This document describes the Phase 1 test suite optimization implemented to reduc
 
 Analysis revealed that the original test suite was running **every test** on **all 4 rank configurations** (1, 2, 4, 8 ranks), which was wasteful. While multi-rank validation is essential for distributed features (symmetric heap allocation, cross-rank operations), many tests only validate tensor properties (shape, dtype, values) and don't require multi-rank execution.
 
-### Original Test Matrix
+### Original Test Execution
 - **3 install methods** × **5 test directories** × **4 rank configs** = **60 CI jobs**
 - Each job runs all tests in a directory
 - Total multi-rank test runs: **6.37M**
 
-### Optimized Test Matrix
-- **3 install methods** × **65 matrix entries** = **195 CI jobs**
-- Tests are filtered by pytest markers
+### Optimized Test Execution
+- **Same CI matrix structure** (no workflow changes)
+- Tests are filtered automatically by pytest markers
+- Single-rank tests skip execution when NUM_RANKS > 1
 - Total multi-rank test runs: **3.98M** (37.5% reduction)
 
 ## Implementation
@@ -59,50 +60,23 @@ The script:
 - Adds `pytestmark = pytest.mark.<marker>` to test files
 - Preserves backward compatibility for unmarked tests
 
-### 4. CI Workflow Updates
+### 4. Test Filtering
 
-The `.github/workflows/iris-tests.yml` file was updated to run tests based on markers:
-
-**Phase 1: Single-rank tests (5 entries per install method)**
-```yaml
-- test_dir: examples
-  num_ranks: 1
-  marker: "single_rank"
-```
-
-**Phase 2: Multi-rank tests (20 entries per install method)**
-```yaml
-- test_dir: examples
-  num_ranks: 1
-  marker: "multi_rank_required"
-- test_dir: examples
-  num_ranks: 2
-  marker: "multi_rank_required"
-# ... continues for 4 and 8 ranks
-```
-
-**Phase 3: Unmarked tests (20 entries per install method for backward compatibility)**
-```yaml
-- test_dir: examples
-  num_ranks: 1
-  marker: "not single_rank and not multi_rank_required"
-# ... continues for all ranks
-```
-
-### 5. Test Script Updates
-
-The `run_tests.sh` script was updated to accept a marker parameter:
+The `.github/scripts/run_tests.sh` script was minimally modified to skip `single_rank` tests when running with multiple ranks:
 
 ```bash
-bash .github/scripts/run_tests.sh \
-  "$test_dir" \
-  "$num_ranks" \
-  "$gpu_devices" \
-  "$install_method" \
-  "$marker"  # New parameter
+# Skip single_rank tests when running with multiple ranks
+MARKER_ARG=""
+if [ "$NUM_RANKS" -gt 1 ]; then
+    MARKER_ARG="-m 'not single_rank'"
+fi
 ```
 
-The marker is passed to pytest using `-m "marker_expression"`.
+This approach:
+- Requires minimal changes to CI infrastructure
+- Uses pytest's built-in marker filtering
+- Automatically skips single_rank tests on multi-rank configurations
+- Preserves the existing CI workflow structure
 
 ## Adding New Tests
 
