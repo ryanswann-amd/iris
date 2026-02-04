@@ -10,7 +10,8 @@ SHELL ["/bin/bash", "-c"]
 ENV TRITON_PATH=/opt/triton \
     ROCM_PATH=/opt/rocm \
     OMPI_MCA_mtl="^ofi" \
-    OMPI_MCA_pml="ob1"
+    OMPI_MCA_pml="ob1" \
+    HSA_NO_SCRATCH_RECLAIM=1
 
 ENV LD_LIBRARY_PATH=$ROCM_PATH/lib:$LD_LIBRARY_PATH \
     PATH="$ROCM_PATH/bin:$PATH"
@@ -34,11 +35,18 @@ RUN pip3 install --upgrade pip && \
 # Clone and install Triton
 WORKDIR $TRITON_PATH
 RUN git clone https://github.com/triton-lang/triton.git $TRITON_PATH
-RUN git checkout 715f6b1d442601436bf8d462db6ff8e17aec8cfb
+RUN git checkout bcbcabdd0cff6539c7168299075992b2a23ff38e
 RUN pip3 install -e .
 ENV PYTHONPATH=$TRITON_PATH
 
-# Install rocprofiler-systems
+# Install tritonBLAS
+WORKDIR /opt
+RUN git clone https://github.com/ROCm/tritonBLAS.git && \
+    cd tritonBLAS && \
+    git checkout 47768c93acb7f89511d797964b84544c30ab81ad && \
+    pip3 install -e .
+
+# Set up workspace
 WORKDIR /workspace
 
 # Create entrypoint script
