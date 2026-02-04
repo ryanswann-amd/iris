@@ -2,13 +2,14 @@
 """
 Minimal roccap wrapper for multi-rank GEMM trace capture.
 
-Usage: torchrun --nproc_per_node=N roccap_wrapper_gemm.py benchmark.py [args...]
+Usage (run from iris directory): 
+  torchrun --nproc_per_node=N examples/07_gemm_all_scatter/roccap_wrapper_gemm.py examples/07_gemm_all_scatter/benchmark.py [args...]
 
 Example (2 ranks):
-  torchrun --nproc_per_node=2 ./roccap_wrapper_gemm.py ./benchmark.py -m 8192 -n 4608 -k 36864 --heap_size 268435456 --gemm_sms 256 --verbose
+  torchrun --nproc_per_node=2 examples/07_gemm_all_scatter/roccap_wrapper_gemm.py examples/07_gemm_all_scatter/benchmark.py -m 512 -n 512 -k 512 --heap_size 268435456 --gemm_sms 256 --verbose
 
 Example (8 ranks):
-  torchrun --nproc_per_node=8 ./roccap_wrapper_gemm.py ./benchmark.py -m 8192 -n 4608 -k 36864 --heap_size 268435456 --gemm_sms 256 --verbose
+  torchrun --nproc_per_node=8 examples/07_gemm_all_scatter/roccap_wrapper_gemm.py examples/07_gemm_all_scatter/benchmark.py -m 512 -n 512 -k 512 --heap_size 268435456 --gemm_sms 256 --verbose
 """
 import os
 import sys
