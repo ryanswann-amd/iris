@@ -127,6 +127,9 @@ class Iris:
         # Only use the first num_ranks elements
         self.heap_bases = self.heap_bases[:num_ranks]
 
+        # Print heap base for this rank (useful for debugging multi-GPU traces)
+        print(f"Heap base for rank {cur_rank}: {hex(heap_base)}")
+
         self.debug(f"Barrier after creating heap bases")
         distributed_barrier()
 
