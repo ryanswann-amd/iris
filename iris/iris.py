@@ -1723,8 +1723,8 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
     # translated_ptr = tl.max_contiguous(translated_ptr, (1, 32))
 
-    # ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
-    # translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
+    ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
+    translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
     return translated_ptr
 
 
