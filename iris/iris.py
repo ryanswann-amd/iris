@@ -84,7 +84,7 @@ class Iris:
         self.alignment = 1024
         #self.device = f"cuda:{gpu_id}"
         self.device = f"cuda"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
+        self.memory_pool = torch.empty(heap_size * num_ranks, device=self.device, dtype=torch.int8)
 
         heap_base = self.memory_pool.data_ptr()
         heap_base_ptr = ctypes.c_void_p(heap_base)
@@ -124,11 +124,15 @@ class Iris:
         ipc_heap_bases_padded = np.zeros(padded_size, dtype=np.uint64)
         ipc_heap_bases_padded[:num_ranks] = ipc_heap_bases
         self.heap_bases = torch.tensor(ipc_heap_bases_padded, device=self.device, dtype=torch.uint64)
-        # Only use the first num_ranks elements
-        self.heap_bases = self.heap_bases[:num_ranks]
+        # Only use the first num_ranks elements and offset by rank * heap_size
+        # Do integer arithmetic on addresses (can't do tensor ops on uint64 CUDA tensors)
+        base_addrs = self.heap_bases[:num_ranks].cpu().tolist()
+        offset = self.cur_rank * self.heap_size
+        self.heap_bases = torch.tensor([addr + offset for addr in base_addrs], dtype=torch.uint64, device=self.device)
 
         # Print heap base for this rank (useful for debugging multi-GPU traces)
-        print(f"Heap base for rank {cur_rank}: {hex(heap_base)}")
+        rank_heap_base = self.heap_bases[self.cur_rank].item()
+        print(f"Heap base for rank {cur_rank}: {hex(rank_heap_base)}")
 
         self.debug(f"Barrier after creating heap bases")
         distributed_barrier()
