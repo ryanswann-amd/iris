@@ -80,7 +80,8 @@ class Iris:
         self.cur_rank = cur_rank
         self.gpu_id = gpu_id
         self.heap_size = heap_size
-        self.heap_offset = 0
+        # Each rank's allocation region starts at rank * heap_size offset in the physical pool
+        self.heap_offset = cur_rank * heap_size
         self.alignment = 1024
         #self.device = f"cuda:{gpu_id}"
         self.device = f"cuda"
@@ -124,11 +125,13 @@ class Iris:
         ipc_heap_bases_padded = np.zeros(padded_size, dtype=np.uint64)
         ipc_heap_bases_padded[:num_ranks] = ipc_heap_bases
         self.heap_bases = torch.tensor(ipc_heap_bases_padded, device=self.device, dtype=torch.uint64)
-        # Only use the first num_ranks elements and offset by rank * heap_size
+        # Offset each rank's heap base by rank * heap_size
+        # Start from the actual allocated heap_base, not ipc_heap_bases (which are zeros)
         # Do integer arithmetic on addresses (can't do tensor ops on uint64 CUDA tensors)
-        base_addrs = self.heap_bases[:num_ranks].cpu().tolist()
-        offset = self.cur_rank * self.heap_size
-        self.heap_bases = torch.tensor([addr + offset for addr in base_addrs], dtype=torch.uint64, device=self.device)
+        heap_bases_list = [heap_base + i * self.heap_size for i in range(num_ranks)]
+        # Pad to padded_size
+        heap_bases_padded = heap_bases_list + [0] * (padded_size - num_ranks)
+        self.heap_bases = torch.tensor(heap_bases_padded, dtype=torch.uint64, device=self.device)
 
         # Print heap base for this rank (useful for debugging multi-GPU traces)
         rank_heap_base = self.heap_bases[self.cur_rank].item()
@@ -288,7 +291,9 @@ class Iris:
         size_in_bytes = num_elements * element_size
         aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
 
-        if self.heap_offset + aligned_size > self.heap_size:
+        # Check if allocation exceeds this rank's region in the physical pool
+        rank_region_end = (self.cur_rank + 1) * self.heap_size
+        if self.heap_offset + aligned_size > rank_region_end:
             raise MemoryError("Heap out of memory")
 
         start = self.heap_offset
