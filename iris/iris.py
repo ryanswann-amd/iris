@@ -80,12 +80,16 @@ class Iris:
         self.cur_rank = cur_rank
         self.gpu_id = gpu_id
         self.heap_size = heap_size
-        # Each rank's allocation region starts at rank * heap_size offset in the physical pool
-        self.heap_offset = cur_rank * heap_size
+        # Each rank allocates from its own pool starting at offset 0
+        self.heap_offset = 0
         self.alignment = 1024
         #self.device = f"cuda:{gpu_id}"
         self.device = f"cuda"
-        self.memory_pool = torch.empty(heap_size * num_ranks, device=self.device, dtype=torch.int8)
+        
+        # Allocate separate memory pools for each rank
+        # Assumption: allocations will be at the same addresses across all ranks
+        self.memory_pools = [torch.empty(heap_size, device=self.device, dtype=torch.int8) for _ in range(num_ranks)]
+        self.memory_pool = self.memory_pools[cur_rank]  # This rank's pool
 
         heap_base = self.memory_pool.data_ptr()
         heap_base_ptr = ctypes.c_void_p(heap_base)
@@ -125,10 +129,9 @@ class Iris:
         ipc_heap_bases_padded = np.zeros(padded_size, dtype=np.uint64)
         ipc_heap_bases_padded[:num_ranks] = ipc_heap_bases
         self.heap_bases = torch.tensor(ipc_heap_bases_padded, device=self.device, dtype=torch.uint64)
-        # Offset each rank's heap base by rank * heap_size
-        # Start from the actual allocated heap_base, not ipc_heap_bases (which are zeros)
-        # Do integer arithmetic on addresses (can't do tensor ops on uint64 CUDA tensors)
-        heap_bases_list = [heap_base + i * self.heap_size for i in range(num_ranks)]
+        # Offset each rank's heap base - use the data_ptr from each memory pool
+        # Assumption: memory_pools allocate at consistent addresses across ranks
+        heap_bases_list = [pool.data_ptr() for pool in self.memory_pools]
         # Pad to padded_size
         heap_bases_padded = heap_bases_list + [0] * (padded_size - num_ranks)
         self.heap_bases = torch.tensor(heap_bases_padded, dtype=torch.uint64, device=self.device)
@@ -291,9 +294,8 @@ class Iris:
         size_in_bytes = num_elements * element_size
         aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
 
-        # Check if allocation exceeds this rank's region in the physical pool
-        rank_region_end = (self.cur_rank + 1) * self.heap_size
-        if self.heap_offset + aligned_size > rank_region_end:
+        # Check if allocation exceeds this rank's pool size
+        if self.heap_offset + aligned_size > self.heap_size:
             raise MemoryError("Heap out of memory")
 
         start = self.heap_offset
