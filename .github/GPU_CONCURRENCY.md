@@ -56,10 +56,10 @@ This means up to 3 jobs can run simultaneously (one using 0,1; one using 2,3; on
 
 | Job | Concurrency Group | GPU Usage |
 |-----|------------------|-----------|
-| `external-validation-test` | `gpu-all` | Unspecified (uses available GPUs) |
+| `external-validation-test` | `gpu-0,1,2,3,4,5,6,7` | All 8 GPUs (no explicit restriction) |
 | `external-gluon-validation-test` | `gpu-0,1` | GPUs 0,1 |
 
-These two jobs can potentially run in parallel since they use different concurrency groups.
+The external-validation-test uses all available GPUs (no HIP_VISIBLE_DEVICES restriction), so it's grouped with other 8-GPU jobs. The external-gluon-validation-test explicitly uses GPUs 0,1 and can run in parallel with tests using GPUs 2,3 or 4,5,6,7.
 
 ### iris-performance-regression-test.yml
 

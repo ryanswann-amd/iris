@@ -43,7 +43,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-all
+      group: gpu-0,1,2,3,4,5,6,7
       cancel-in-progress: false
 
     steps:
