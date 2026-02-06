@@ -42,6 +42,9 @@ jobs:
     name: External Validation Test
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
+    concurrency:
+      group: gpu-all
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
@@ -86,6 +89,9 @@ jobs:
     name: External Gluon Validation Test
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
+    concurrency:
+      group: gpu-0,1
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository

@@ -41,6 +41,9 @@ jobs:
     name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, git install)
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
+    concurrency:
+      group: gpu-${{ matrix.gpu_devices }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -134,6 +137,9 @@ jobs:
     name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, editable install)
     needs: [build-container-image, test-git]
     runs-on: [self-hosted, mi3xx]
+    concurrency:
+      group: gpu-${{ matrix.gpu_devices }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -224,6 +230,9 @@ jobs:
     name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, pip install)
     needs: [build-container-image, test-editable]
     runs-on: [self-hosted, mi3xx]
+    concurrency:
+      group: gpu-${{ matrix.gpu_devices }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
