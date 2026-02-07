@@ -1,85 +1,94 @@
 # iris.bench - Unified Benchmarking Harness
 
-A standardized benchmarking infrastructure for Iris that reduces code duplication and provides consistent performance measurement across examples and benchmarks.
+A standardized benchmarking infrastructure for Iris using a decorator-based approach.
 
 ## Quick Start
 
 ```python
-import iris
 from iris.bench import benchmark
 
-# Simple decorator-based benchmarking
 @benchmark(name="my_kernel", warmup=5, iters=50)
-def run_kernel():
-    kernel[grid](buffer, size)
+def run_benchmark(shmem, size=1024):
+    # shmem is automatically created by the decorator
+    
+    @setup
+    def allocate():
+        buffer = shmem.zeros(size, size)
+        return buffer
+    
+    @measure
+    def kernel_launch(buffer):
+        my_kernel[grid](buffer)
 
-result = run_kernel()
+result = run_benchmark(size=2048)
 result.print_summary()
 ```
 
-## Features
+## Key Features
 
-- ✅ **Automatic warmup and timing** - No more manual warmup loops
-- ✅ **Rich statistics** - mean, median, p50, p99, min, max
-- ✅ **Parameter sweeps** - Easy iteration over configurations
-- ✅ **Multi-GPU support** - Built-in barrier synchronization
+- ✅ **Automatic iris instance creation** - The decorator creates and manages the iris instance
+- ✅ **Code annotation** - Use @setup, @preamble, and @measure to organize your code
+- ✅ **Rich statistics** - mean, median, p50, p99, min, max automatically computed
+- ✅ **Automatic barrier synchronization** - Built-in multi-GPU support
 - ✅ **JSON export** - Structured results for CI/CD integration
 - ✅ **Utility functions** - `torch_dtype_from_str`, `compute_bandwidth_gbps`
 
-## What Problem Does This Solve?
+## Code Annotations
 
-Before `iris.bench`, every benchmark had ~100 lines of duplicated code for:
-- Argument parsing (datatype, warmup, iterations)
-- Dtype string-to-torch conversion
-- Manual warmup loops
-- Timing and synchronization
-- Result formatting and printing
+The benchmarking decorator uses three function annotations:
 
-This led to:
-- 🔴 Copy-pasted code across 20+ benchmark files
-- 🔴 Inconsistent measurement patterns
-- 🔴 No standardized statistics (p50, p99)
-- 🔴 Hard to maintain and extend
+### @setup
+Runs **once** before any timing starts. Use for:
+- Tensor allocation
+- Initial data setup
+- One-time configuration
 
-With `iris.bench`:
-- ✅ ~50% less code per benchmark
-- ✅ Standardized API across all benchmarks
-- ✅ Easy to add new benchmarks
-- ✅ CI-ready JSON export
+Returns values are passed to @preamble and @measure functions.
 
-## Examples
+### @preamble
+Runs **before each timed iteration**. Use for:
+- Resetting output buffers
+- Clearing flags/state
+- Per-iteration setup
 
-### Example 1: Simple Benchmark
+Receives the values returned by @setup.
+
+### @measure
+The code that gets **actually timed**. Use for:
+- Kernel launches
+- The operation you want to benchmark
+
+Receives the values returned by @setup.
+
+## Full Example
+
 ```python
-from iris.bench import BenchmarkRunner
+from iris.bench import benchmark
 
-runner = BenchmarkRunner(name="test", barrier_fn=shmem.barrier)
+@benchmark(name="gemm", warmup=5, iters=50, heap_size=1<<33)
+def run_gemm(shmem, m=8192, n=4608, k=36864):
+    
+    @setup
+    def allocate_matrices():
+        # Runs once - allocate tensors
+        A = shmem.randn(m, k, dtype=torch.float16)
+        B = shmem.randn(k, n, dtype=torch.float16)
+        C = shmem.zeros(m, n, dtype=torch.float16)
+        return A, B, C
+    
+    @preamble
+    def reset_output(A, B, C):
+        # Runs before each iteration - clear output
+        C.zero_()
+    
+    @measure
+    def compute(A, B, C):
+        # This gets timed - run kernel
+        gemm_kernel[grid](A, B, C, m, n, k)
 
-def operation():
-    kernel[grid](buffer)
-
-result = runner.run(fn=operation, warmup=5, iters=50)
+result = run_gemm(m=8192, n=4608, k=36864)
 result.print_summary()
-```
-
-### Example 2: Parameter Sweep
-```python
-from iris.bench import BenchmarkRunner, torch_dtype_from_str
-
-runner = BenchmarkRunner(name="dtype_sweep")
-
-for dtype_str in ["fp16", "fp32"]:
-    for size in [1024, 2048]:
-        dtype = torch_dtype_from_str(dtype_str)
-        
-        def op():
-            tensor = torch.zeros(size, size, dtype=dtype, device="cuda")
-            result = tensor @ tensor
-        
-        runner.run(fn=op, warmup=5, iters=20, 
-                  params={"size": size, "dtype": dtype_str})
-
-runner.save_json("results.json")
+result.to_json("results.json")  # Export to JSON
 ```
 
 ## Documentation
@@ -100,33 +109,27 @@ pytest tests/unittests/test_bench.py
 
 ## API Overview
 
+### @benchmark decorator
+Main decorator for benchmarking with automatic iris instance management.
+
+**Parameters:**
+- `name` - Benchmark name
+- `warmup` - Number of warmup iterations (default: 25)
+- `iters` - Number of timing iterations (default: 100)
+- `heap_size` - Iris heap size (default: 1<<33)
+- `auto_print` - Auto-print results (default: False)
+
 ### BenchmarkResult
-Stores benchmark results with automatic statistics computation.
+Stores benchmark results with automatic statistics.
 
-### BenchmarkRunner
-Main class for running benchmarks with parameter sweeps.
-
-### @benchmark
-Decorator for simple function benchmarking.
+**Methods:**
+- `print_summary()` - Human-readable output
+- `to_dict()` - Convert to dictionary
+- `to_json()` - Convert to JSON string
 
 ### Utilities
 - `torch_dtype_from_str(dtype_str)` - Convert string to torch.dtype
 - `compute_bandwidth_gbps(bytes, time_ms)` - Calculate bandwidth
-
-## Integration
-
-The harness is designed to work alongside existing `iris.do_bench` usage:
-- `BenchmarkRunner` internally uses `iris.do_bench`
-- All existing barrier functions work with `barrier_fn` parameter
-- Gradual migration path - old benchmarks continue to work
-
-## Contributing
-
-When adding new benchmarks:
-1. Use `iris.bench` for all new code
-2. Consider migrating nearby old benchmarks
-3. Export results to JSON for CI integration
-4. Follow examples in `examples/benchmark/`
 
 ## License
 

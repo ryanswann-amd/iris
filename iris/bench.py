@@ -4,38 +4,54 @@
 """
 Unified benchmarking harness for Iris.
 
-This module provides a standardized infrastructure for benchmarking operations:
+This module provides a decorator-based infrastructure for benchmarking operations:
+- Automatic iris instance creation and management
 - Warmup and iteration handling
 - Timing and synchronization
 - Statistics computation (mean, p50, p99)
-- Parameter sweeps
 - Structured result output (JSON or dict)
+
+The harness automatically constructs the iris instance and passes it to your
+benchmark function, allowing you to annotate different parts of your code:
+- @setup: Runs once before any timing (e.g., tensor allocation)
+- @preamble: Runs before each iteration (e.g., resetting flags)
+- @measure: The code to actually benchmark (e.g., kernel launch)
 
 Example usage:
 
     from iris.bench import benchmark
 
-    @benchmark(name="my_kernel", warmup=5, iters=50)
-    def run(size, dtype):
-        # setup tensors
-        # launch kernel
-        kernel(...)
+    @benchmark(name="gemm_kernel", warmup=5, iters=50, heap_size=1<<33)
+    def run_benchmark(shmem, m=8192, n=4608, k=36864):
+        # shmem is automatically created by the decorator
 
-    # Or use BenchmarkRunner for parameter sweeps:
-    runner = BenchmarkRunner(name="gemm_sweep")
-    for size in [1024, 2048, 4096]:
-        with runner.run(warmup=5, iters=50, params={"size": size}):
-            kernel(...)
+        @setup
+        def allocate_tensors():
+            # Runs once before timing starts
+            A = shmem.randn(m, k, dtype=torch.float16)
+            B = shmem.randn(k, n, dtype=torch.float16)
+            C = shmem.zeros(m, n, dtype=torch.float16)
+            return A, B, C
+
+        @preamble
+        def reset_output(C):
+            # Runs before each timed iteration
+            C.zero_()
+
+        @measure
+        def run_kernel(A, B, C):
+            # This is what gets timed
+            gemm_kernel[grid](A, B, C, m, n, k)
+
+    result = run_benchmark(m=8192, n=4608, k=36864)
+    result.print_summary()
 """
 
 import json
-import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 import functools
 import torch
-
-# Import do_bench at runtime in _run_benchmark to avoid circular dependencies
 
 
 def _compute_percentile(values: List[float], percentile: float) -> float:
@@ -135,225 +151,180 @@ class BenchmarkResult:
         print(f"{'=' * 60}\n")
 
 
-class BenchmarkRunner:
-    """
-    Context manager and runner for benchmarks with parameter sweeps.
+class _BenchmarkContext:
+    """Internal context for collecting setup, preamble, and measure functions."""
 
-    Example:
-        runner = BenchmarkRunner(name="my_benchmark")
-        for size in [1024, 2048]:
-            with runner.run(warmup=5, iters=50, params={"size": size}):
-                kernel(...)
+    def __init__(self):
+        self.setup_fn = None
+        self.preamble_fn = None
+        self.measure_fn = None
 
-        # Get all results
-        results = runner.get_results()
-        runner.print_summary()
-        runner.save_json("results.json")
-    """
+    def setup(self, fn):
+        """Mark a function as setup code (runs once before timing)."""
+        self.setup_fn = fn
+        return fn
 
-    def __init__(self, name: str, barrier_fn: Optional[Callable] = None):
-        """
-        Initialize benchmark runner.
+    def preamble(self, fn):
+        """Mark a function as preamble code (runs before each timed iteration)."""
+        self.preamble_fn = fn
+        return fn
 
-        Args:
-            name: Name of the benchmark suite
-            barrier_fn: Optional barrier function for multi-GPU synchronization
-        """
-        self.name = name
-        self.barrier_fn = barrier_fn if barrier_fn is not None else lambda: None
-        self.results: List[BenchmarkResult] = []
-        self._current_fn: Optional[Callable] = None
-        self._current_params: Dict[str, Any] = {}
-        self._current_warmup: int = 25
-        self._current_iters: int = 100
-
-    class _RunContext:
-        """Context manager for a single benchmark run."""
-
-        def __init__(
-            self,
-            runner: "BenchmarkRunner",
-            fn: Optional[Callable],
-            warmup: int,
-            iters: int,
-            params: Dict[str, Any],
-        ):
-            self.runner = runner
-            self.fn = fn
-            self.warmup = warmup
-            self.iters = iters
-            self.params = params
-            self._start_time = None
-
-        def __enter__(self):
-            self._start_time = time.time()
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            if exc_type is not None:
-                # Exception occurred, don't run benchmark
-                return False
-
-            if self.fn is not None:
-                # Function was provided, benchmark it
-                result = self.runner._run_benchmark(
-                    self.fn,
-                    warmup=self.warmup,
-                    iters=self.iters,
-                    params=self.params,
-                )
-                self.runner.results.append(result)
-
-    def run(
-        self,
-        fn: Optional[Callable] = None,
-        warmup: int = 25,
-        iters: int = 100,
-        params: Optional[Dict[str, Any]] = None,
-    ):
-        """
-        Run a benchmark (can be used as context manager or direct call).
-
-        Args:
-            fn: Function to benchmark (optional if using as context manager)
-            warmup: Number of warmup iterations
-            iters: Number of timing iterations
-            params: Additional parameters to store with the result
-
-        Returns:
-            Context manager or BenchmarkResult
-        """
-        params = params or {}
-
-        if fn is None:
-            # Used as context manager
-            return self._RunContext(self, None, warmup, iters, params)
-        else:
-            # Direct function call
-            result = self._run_benchmark(fn, warmup=warmup, iters=iters, params=params)
-            self.results.append(result)
-            return result
-
-    def _run_benchmark(
-        self,
-        fn: Callable,
-        warmup: int,
-        iters: int,
-        params: Dict[str, Any],
-    ) -> BenchmarkResult:
-        """Internal method to run a benchmark and compute statistics."""
-        # Import do_bench at runtime to avoid circular dependencies
-        from .util import do_bench
-
-        # Use iris.do_bench to get all timing measurements
-        raw_times = do_bench(
-            fn,
-            barrier_fn=self.barrier_fn,
-            n_warmup=warmup,
-            n_repeat=iters,
-            return_mode="all",
-        )
-
-        # Compute statistics
-        mean_ms = sum(raw_times) / len(raw_times) if raw_times else 0.0
-        median_ms = _compute_percentile(raw_times, 50)
-        p50_ms = median_ms  # P50 is the same as median
-        p99_ms = _compute_percentile(raw_times, 99)
-        min_ms = min(raw_times) if raw_times else 0.0
-        max_ms = max(raw_times) if raw_times else 0.0
-
-        return BenchmarkResult(
-            name=self.name,
-            mean_ms=mean_ms,
-            median_ms=median_ms,
-            p50_ms=p50_ms,
-            p99_ms=p99_ms,
-            min_ms=min_ms,
-            max_ms=max_ms,
-            n_warmup=warmup,
-            n_repeat=iters,
-            params=params,
-            raw_times=raw_times,
-        )
-
-    def get_results(self) -> List[BenchmarkResult]:
-        """Get all benchmark results."""
-        return self.results
-
-    def print_summary(self):
-        """Print summary of all benchmark results."""
-        print(f"\n{'=' * 70}")
-        print(f"Benchmark Suite: {self.name}")
-        print(f"Total Runs: {len(self.results)}")
-        print(f"{'=' * 70}\n")
-
-        for i, result in enumerate(self.results, 1):
-            print(f"Run #{i}:")
-            result.print_summary()
-
-    def save_json(self, filepath: str, include_raw_times: bool = False):
-        """
-        Save all results to JSON file.
-
-        Args:
-            filepath: Path to output file
-            include_raw_times: Whether to include raw timing measurements
-        """
-        output = {
-            "benchmark_suite": self.name,
-            "total_runs": len(self.results),
-            "results": [r.to_dict(include_raw_times=include_raw_times) for r in self.results],
-        }
-        with open(filepath, "w") as f:
-            json.dump(output, f, indent=2)
+    def measure(self, fn):
+        """Mark a function as the code to measure (gets timed)."""
+        self.measure_fn = fn
+        return fn
 
 
 def benchmark(
     name: str,
     warmup: int = 25,
     iters: int = 100,
-    barrier_fn: Optional[Callable] = None,
+    heap_size: int = 1 << 33,
     auto_print: bool = False,
-    params: Optional[Dict[str, Any]] = None,
 ):
     """
-    Decorator for benchmarking functions.
+    Decorator for benchmarking functions with automatic iris instance management.
+
+    The decorator creates an iris instance and passes it to your benchmark function.
+    Within your function, use @setup, @preamble, and @measure decorators to annotate
+    different parts of your benchmark code.
 
     Args:
         name: Name of the benchmark
         warmup: Number of warmup iterations
         iters: Number of timing iterations
-        barrier_fn: Optional barrier function for multi-GPU synchronization
+        heap_size: Size of iris symmetric heap
         auto_print: Whether to automatically print results
-        params: Additional parameters to store with the result
 
     Returns:
         Decorated function that returns BenchmarkResult
 
     Example:
         @benchmark(name="my_kernel", warmup=5, iters=50)
-        def run_kernel(size):
-            kernel[grid](buffer, size)
+        def run(shmem, size=1024):
+            @setup
+            def allocate():
+                buffer = shmem.zeros(size, size)
+                return buffer
 
-        result = run_kernel(1024)
+            @measure
+            def kernel_launch(buffer):
+                my_kernel[grid](buffer)
+
+        result = run(size=2048)
         result.print_summary()
     """
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            # Import iris here to avoid circular dependencies
+            from . import iris as iris_module
+
+            # Create iris instance
+            shmem = iris_module.iris(heap_size)
+
+            # Create benchmark context for collecting annotated functions
+            ctx = _BenchmarkContext()
+
+            # Make decorators available in the function scope
+            import builtins
+
+            original_setup = getattr(builtins, "setup", None)
+            original_preamble = getattr(builtins, "preamble", None)
+            original_measure = getattr(builtins, "measure", None)
+
+            try:
+                # Inject decorators into builtins temporarily
+                builtins.setup = ctx.setup
+                builtins.preamble = ctx.preamble
+                builtins.measure = ctx.measure
+
+                # Call user function to collect setup/preamble/measure functions
+                func(shmem, *args, **kwargs)
+
+            finally:
+                # Restore original builtins
+                if original_setup is not None:
+                    builtins.setup = original_setup
+                elif hasattr(builtins, "setup"):
+                    delattr(builtins, "setup")
+
+                if original_preamble is not None:
+                    builtins.preamble = original_preamble
+                elif hasattr(builtins, "preamble"):
+                    delattr(builtins, "preamble")
+
+                if original_measure is not None:
+                    builtins.measure = original_measure
+                elif hasattr(builtins, "measure"):
+                    delattr(builtins, "measure")
+
+            # Validate that measure function was provided
+            if ctx.measure_fn is None:
+                raise ValueError(f"Benchmark '{name}' must have a @measure decorated function")
+
+            # Run setup once if provided
+            setup_results = ()
+            if ctx.setup_fn is not None:
+                result = ctx.setup_fn()
+                # Convert to tuple for consistent handling
+                if result is None:
+                    setup_results = ()
+                elif isinstance(result, tuple):
+                    setup_results = result
+                else:
+                    setup_results = (result,)
+
+            # Define preamble_fn for do_bench
+            def preamble_fn():
+                if ctx.preamble_fn is not None:
+                    ctx.preamble_fn(*setup_results)
+
+            # Define measure_fn for do_bench
+            def measure_fn():
+                ctx.measure_fn(*setup_results)
+
+            # Import do_bench at runtime
+            from .util import do_bench
+
+            # Run benchmark with automatic barrier
+            raw_times = do_bench(
+                measure_fn,
+                barrier_fn=shmem.barrier,
+                preamble_fn=preamble_fn,
+                n_warmup=warmup,
+                n_repeat=iters,
+                return_mode="all",
+            )
+
+            # Compute statistics
+            mean_ms = sum(raw_times) / len(raw_times) if raw_times else 0.0
+            median_ms = _compute_percentile(raw_times, 50)
+            p50_ms = median_ms  # P50 is the same as median
+            p99_ms = _compute_percentile(raw_times, 99)
+            min_ms = min(raw_times) if raw_times else 0.0
+            max_ms = max(raw_times) if raw_times else 0.0
+
             # Extract function parameters for metadata
-            func_params = params.copy() if params else {}
+            func_params = {**kwargs}
+            for i, arg in enumerate(args):
+                if i < len(func.__code__.co_varnames) - 1:  # -1 to skip 'shmem'
+                    param_name = func.__code__.co_varnames[i + 1]  # +1 to skip 'shmem'
+                    func_params[param_name] = arg
 
-            # Create runner
-            runner = BenchmarkRunner(name=name, barrier_fn=barrier_fn)
-
-            # Run benchmark
-            result = runner.run(
-                fn=lambda: func(*args, **kwargs),
-                warmup=warmup,
-                iters=iters,
+            result = BenchmarkResult(
+                name=name,
+                mean_ms=mean_ms,
+                median_ms=median_ms,
+                p50_ms=p50_ms,
+                p99_ms=p99_ms,
+                min_ms=min_ms,
+                max_ms=max_ms,
+                n_warmup=warmup,
+                n_repeat=iters,
                 params=func_params,
+                raw_times=raw_times,
             )
 
             if auto_print:
@@ -413,7 +384,6 @@ def compute_bandwidth_gbps(
 
 __all__ = [
     "BenchmarkResult",
-    "BenchmarkRunner",
     "benchmark",
     "torch_dtype_from_str",
     "compute_bandwidth_gbps",

@@ -1,17 +1,17 @@
-# Benchmark Harness Migration Example
+# Benchmark Harness Migration Guide
 
-This document shows a concrete example of how to migrate an existing Iris benchmark to use the new `iris.bench` module.
+This guide shows how to migrate existing Iris benchmarks to use the new `iris.bench` decorator.
 
-## Before: Original Pattern (Duplicated Code)
+## Key Changes
 
-The original benchmarks had duplicated code across multiple files for:
-- Argument parsing
-- Dtype conversion
-- Warmup and timing loops
-- Statistics computation
-- Result printing
+The new harness:
+1. **Decorator-only** - Uses @benchmark decorator exclusively
+2. **Automatic iris instance** - Creates and passes `shmem` to your function
+3. **Code annotations** - @setup, @preamble, @measure organize your code
 
-Here's a typical example from `examples/00_load/load_bench.py`:
+## Before: Original Pattern
+
+Original benchmarks had ~100 lines of duplicated boilerplate:
 
 ```python
 import argparse
@@ -26,215 +26,209 @@ def torch_dtype_from_str(datatype: str) -> torch.dtype:
         "bf16": torch.bfloat16,
         "fp32": torch.float32,
     }
-    try:
-        return dtype_map[datatype]
-    except KeyError:
-        print(f"Unknown datatype: {datatype}")
-        exit(1)
+    return dtype_map.get(datatype, torch.float16)
 
 def parse_args():
-    """Duplicated argument parsing logic"""
-    parser = argparse.ArgumentParser(
-        description="Parse Message Passing configuration.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("-t", "--datatype", type=str, default="fp16", 
-                       choices=["int8", "fp16", "bf16", "fp32"])
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("-d", "--validate", action="store_true")
-    parser.add_argument("-n", "--num_experiments", type=int, default=10)
+    """Duplicated argument parsing"""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-t", "--datatype", default="fp16")
     parser.add_argument("-w", "--num_warmup", type=int, default=1)
+    parser.add_argument("-n", "--num_experiments", type=int, default=10)
     # ... more arguments
     return vars(parser.parse_args())
 
-def bench_load(shmem, source_rank, dest_rank, source_buffer, result_buffer,
-               BLOCK_SIZE, dtype, verbose=False, validate=False,
-               num_experiments=1, num_warmup=0):
-    """Manual warmup and timing"""
+def bench_load(shmem, source_buffer, result_buffer, dtype,
+               num_experiments=10, num_warmup=1):
+    """Manual timing and statistics"""
     cur_rank = shmem.get_rank()
     n_elements = source_buffer.numel()
     grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
     
-    def run_store():
-        if cur_rank == source_rank:
-            store_kernel[grid](result_buffer, n_elements, BLOCK_SIZE)
+    def run_kernel():
+        if cur_rank == 0:
+            load_kernel[grid](source_buffer, result_buffer, n_elements)
     
-    def run_load():
-        if cur_rank == source_rank:
-            load_kernel[grid](source_buffer, result_buffer, n_elements,
-                            source_rank, dest_rank, BLOCK_SIZE,
-                            shmem.get_heap_bases())
+    # Manual warmup
+    for _ in range(num_warmup):
+        run_kernel()
+        shmem.barrier()
     
-    # Manual warmup and timing
-    store_ms = iris.do_bench(run_store, shmem.barrier, 
-                            n_repeat=num_experiments, 
-                            n_warmup=num_warmup)
-    get_ms = iris.do_bench(run_load, shmem.barrier, 
-                          n_repeat=num_experiments, 
-                          n_warmup=num_warmup)
+    # Manual timing
+    triton_ms = iris.do_bench(run_kernel, shmem.barrier,
+                              n_repeat=num_experiments,
+                              n_warmup=0)  # Already warmed up
     
-    # Manual statistics computation
-    triton_ms = get_ms - store_ms
+    # Manual bandwidth calculation
+    element_size_bytes = torch.tensor([], dtype=dtype).element_size()
+    total_bytes = n_elements * element_size_bytes
+    bandwidth_gbps = total_bytes / (triton_ms * 1e-3) / 2**30
     
-    # Manual bandwidth computation
-    bandwidth_gbps = 0
-    if cur_rank == source_rank:
-        triton_sec = triton_ms * 1e-3
-        element_size_bytes = torch.tensor([], dtype=dtype).element_size()
-        total_bytes = n_elements * element_size_bytes
-        bandwidth_gbps = total_bytes / triton_sec / 2**30
-        
-        # Manual verbose printing
-        if verbose:
-            shmem.info(f"Copied {total_bytes / 2**30:.2f} GiB in {triton_sec:.4f} seconds")
-            shmem.info(f"Bandwidth is {bandwidth_gbps:.4f} GiB/s")
-    
-    # Manual synchronization
-    shmem.barrier()
-    bandwidth_gbps = shmem.broadcast(bandwidth_gbps, source_rank)
-    
-    # Manual validation (another ~50 lines)
-    # ...
+    print(f"Time: {triton_ms:.4f} ms")
+    print(f"Bandwidth: {bandwidth_gbps:.4f} GiB/s")
     
     return bandwidth_gbps
+
+# Main
+args = parse_args()
+shmem = iris.iris(args["heap_size"])
+dtype = torch_dtype_from_str(args["datatype"])
+source_buffer = shmem.ones(args["buffer_size"], dtype=dtype)
+result_buffer = shmem.zeros_like(source_buffer)
+
+bandwidth = bench_load(shmem, source_buffer, result_buffer, dtype,
+                       num_experiments=args["num_experiments"],
+                       num_warmup=args["num_warmup"])
 ```
 
-**Issues with this approach:**
-- ~100 lines of boilerplate per benchmark
-- `torch_dtype_from_str()` duplicated in 10+ files
-- Argument parsing logic duplicated in 20+ files
+**Issues:**
+- ~100+ lines of boilerplate
+- Duplicated utility functions across 10+ files
 - No standardized statistics (p50, p99)
-- No easy JSON export for CI integration
-- Manual bandwidth calculation repeated everywhere
+- Manual warmup and timing
+- No JSON export
 
 ## After: Using iris.bench
 
-The new approach eliminates duplication and provides a clean, reusable interface:
+Clean, focused code:
 
 ```python
-import iris
-from iris.bench import BenchmarkRunner, torch_dtype_from_str, compute_bandwidth_gbps
+import torch
+from iris.bench import benchmark, torch_dtype_from_str, compute_bandwidth_gbps
 
-def bench_load_refactored(shmem, source_rank, dest_rank, source_buffer, 
-                         result_buffer, BLOCK_SIZE, dtype, 
-                         warmup=5, iters=50):
+@benchmark(name="load_operation", warmup=5, iters=50, heap_size=1<<33)
+def bench_load(shmem, buffer_size=1<<32, dtype_str="fp16"):
     """Clean benchmark using iris.bench"""
-    cur_rank = shmem.get_rank()
-    n_elements = source_buffer.numel()
-    grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+    # shmem is automatically created by the decorator
     
-    # Define operations
-    def run_store():
-        if cur_rank == source_rank:
-            store_kernel[grid](result_buffer, n_elements, BLOCK_SIZE)
+    dtype = torch_dtype_from_str(dtype_str)
     
-    def run_load():
-        if cur_rank == source_rank:
-            load_kernel[grid](source_buffer, result_buffer, n_elements,
-                            source_rank, dest_rank, BLOCK_SIZE,
-                            shmem.get_heap_bases())
+    @setup
+    def allocate_buffers():
+        # Runs once before timing
+        source_buffer = shmem.ones(buffer_size, dtype=dtype)
+        result_buffer = shmem.zeros(buffer_size, dtype=dtype)
+        return source_buffer, result_buffer
     
-    # Benchmark with automatic warmup, timing, and statistics
-    runner = BenchmarkRunner(name="load_operation", barrier_fn=shmem.barrier)
+    @preamble
+    def reset_output(source_buffer, result_buffer):
+        # Runs before each timed iteration
+        result_buffer.zero_()
     
-    store_result = runner.run(fn=run_store, warmup=warmup, iters=iters,
-                             params={"operation": "store"})
-    load_result = runner.run(fn=run_load, warmup=warmup, iters=iters,
-                            params={"operation": "load"})
-    
-    # Compute net time (automatic statistics available)
-    net_ms = load_result.mean_ms - store_result.mean_ms
-    
-    # Compute bandwidth using helper function
-    bandwidth_gbps = 0
-    if cur_rank == source_rank:
-        element_size_bytes = torch.tensor([], dtype=dtype).element_size()
-        total_bytes = n_elements * element_size_bytes
-        bandwidth_gbps = compute_bandwidth_gbps(total_bytes, net_ms)
-        
-        # Print structured results
-        load_result.print_summary()
-        print(f"Bandwidth: {bandwidth_gbps:.4f} GiB/s")
-    
-    shmem.barrier()
-    bandwidth_gbps = shmem.broadcast(bandwidth_gbps, source_rank)
-    
-    return bandwidth_gbps, runner.get_results()
+    @measure
+    def run_kernel(source_buffer, result_buffer):
+        # This gets timed
+        n_elements = source_buffer.numel()
+        grid = lambda meta: (triton.cdiv(n_elements, meta["BLOCK_SIZE"]),)
+        load_kernel[grid](source_buffer, result_buffer, n_elements)
+
+# Run benchmark
+result = bench_load(buffer_size=1<<32, dtype_str="fp16")
+
+# Automatic statistics available
+result.print_summary()  # Shows mean, p50, p99, etc.
+
+# Compute bandwidth using helper
+element_size = torch.tensor([], dtype=torch_dtype_from_str("fp16")).element_size()
+bandwidth = compute_bandwidth_gbps(1<<32 * element_size, result.mean_ms)
+print(f"Bandwidth: {bandwidth:.2f} GiB/s")
+
+# Export to JSON
+result.to_json("results.json")
 ```
 
 **Benefits:**
-- ~50% less code (~50 lines vs ~100 lines)
-- No duplicated utility functions (use `iris.bench.torch_dtype_from_str`)
-- Automatic statistics: mean, median, p50, p99, min, max
-- Structured results with `BenchmarkResult` objects
-- Easy JSON export: `runner.save_json("results.json")`
-- Consistent API across all benchmarks
-- Built-in parameter tracking
-
-## Complete Example: Parameter Sweep
-
-Here's how to do a complete parameter sweep with the new harness:
-
-```python
-import iris
-from iris.bench import BenchmarkRunner, torch_dtype_from_str
-
-def benchmark_all_configs(shmem, source_buffer, result_buffer):
-    """Benchmark across multiple configurations"""
-    runner = BenchmarkRunner(name="load_sweep", barrier_fn=shmem.barrier)
-    
-    # Parameter sweep
-    dtypes = ["fp16", "fp32"]
-    block_sizes = [256, 512, 1024]
-    
-    for dtype_str in dtypes:
-        dtype = torch_dtype_from_str(dtype_str)
-        
-        for block_size in block_sizes:
-            def operation():
-                # Your kernel launch
-                load_kernel[grid](source_buffer, result_buffer, 
-                                n_elements, source_rank, dest_rank,
-                                block_size, shmem.get_heap_bases())
-            
-            runner.run(
-                fn=operation,
-                warmup=5,
-                iters=50,
-                params={
-                    "dtype": dtype_str,
-                    "block_size": block_size,
-                }
-            )
-    
-    # Print summary and export
-    runner.print_summary()
-    runner.save_json("sweep_results.json")
-    
-    return runner.get_results()
-```
+- ~50% less code (50 lines vs 100 lines)
+- No duplicated utility functions
+- Automatic statistics (mean, median, p50, p99)
+- No manual warmup/timing logic
+- JSON export included
+- Cleaner code organization with @setup/@preamble/@measure
 
 ## Code Size Comparison
 
-| File | Before (lines) | After (lines) | Reduction |
-|------|----------------|---------------|-----------|
-| Argument parsing | 25-40 | 0 (use standard args) | 100% |
-| Dtype conversion | 15 | 1 (import) | 93% |
-| Warmup/timing | 10-15 | 3 | 70-80% |
-| Statistics | 5-10 (mean only) | 0 (automatic) | 100% |
-| Bandwidth calc | 5 | 1 (helper fn) | 80% |
-| Result printing | 20-50 | 1 (print_summary) | 95-98% |
-| **Total** | **~100-150** | **~50-70** | **~50-60%** |
+| Component | Before (lines) | After (lines) | Reduction |
+|-----------|----------------|---------------|-----------|
+| Utility functions | 15 | 1 (import) | 93% |
+| Argument parsing | 25 | 0 (use params) | 100% |
+| iris setup | 5 | 0 (automatic) | 100% |
+| Warmup/timing | 15 | 0 (automatic) | 100% |
+| Statistics | 5 | 0 (automatic) | 100% |
+| Result output | 10 | 1 (print_summary) | 90% |
+| **Total** | **~100** | **~50** | **~50%** |
 
-## Migration Strategy
+## Migration Steps
 
-1. **Start with new benchmarks**: Use `iris.bench` for all new benchmarks
-2. **Gradual migration**: Refactor existing benchmarks incrementally
-3. **Backward compatibility**: Old benchmarks continue to work
-4. **CI integration**: Use JSON export for automated performance tracking
+1. **Replace manual setup with @benchmark decorator**
+   - Remove manual `iris.iris()` creation
+   - Add `shmem` as first parameter
+   - Add @benchmark decorator with config
 
-## Next Steps
+2. **Organize code with annotations**
+   - Move tensor allocation to @setup
+   - Move per-iteration setup to @preamble
+   - Mark kernel launch with @measure
 
-- See `examples/benchmark/bench_harness_example.py` for complete working examples
-- See `docs/bench_harness.md` for full API documentation
-- Run tests: `pytest tests/unittests/test_bench.py`
+3. **Remove boilerplate**
+   - Delete duplicated utility functions (use `iris.bench.torch_dtype_from_str`)
+   - Remove manual warmup loops
+   - Remove manual timing code
+   - Remove manual statistics computation
+
+4. **Use structured output**
+   - Replace manual printing with `result.print_summary()`
+   - Use `result.to_json()` for CI integration
+
+## Parameter Sweeps
+
+### Before
+```python
+for size in [1024, 2048, 4096]:
+    for dtype_str in ["fp16", "fp32"]:
+        result = bench_func(size, dtype_str)
+        # Manual result tracking
+        results.append({"size": size, "dtype": dtype_str, "time": result})
+```
+
+### After
+```python
+results = []
+for size in [1024, 2048, 4096]:
+    for dtype_str in ["fp16", "fp32"]:
+        result = bench_func(size=size, dtype_str=dtype_str)
+        results.append(result.to_dict())
+
+# Export all results
+import json
+with open("sweep_results.json", "w") as f:
+    json.dump(results, f, indent=2)
+```
+
+## Best Practices
+
+1. **Use @setup for expensive one-time operations**
+   - Tensor allocation
+   - Data initialization
+   - Configuration setup
+
+2. **Use @preamble for state reset**
+   - Zeroing output buffers
+   - Resetting flags
+   - Clearing caches
+
+3. **Keep @measure focused**
+   - Only the kernel launch
+   - The operation being benchmarked
+   - No setup or teardown code
+
+4. **Leverage automatic features**
+   - Let decorator handle iris instance creation
+   - Use automatic barrier synchronization
+   - Trust automatic statistics computation
+
+## Examples
+
+See `examples/benchmark/bench_harness_example.py` for complete working examples.
+
+## License
+
+MIT License - Copyright (c) 2025-2026 Advanced Micro Devices, Inc.

@@ -4,6 +4,7 @@
 
 """
 Basic tests for iris.bench module that don't require GPU or iris runtime.
+Tests the new decorator-only approach.
 """
 
 import json

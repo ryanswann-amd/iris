@@ -5,94 +5,75 @@
 """
 Example demonstrating the unified benchmarking harness (iris.bench).
 
-This example shows different ways to use the benchmarking infrastructure:
-1. Using the @benchmark decorator
-2. Using BenchmarkRunner directly
-3. Using BenchmarkRunner for parameter sweeps
-4. Saving results to JSON
+This example shows how to use the @benchmark decorator with @setup, @preamble,
+and @measure annotations. The decorator automatically creates an iris instance
+and passes it to your function.
+
+Note: setup, preamble, and measure are injected by the @benchmark decorator
+at runtime and are not imported. This is intentional.
 """
 
+# ruff: noqa: F821
+
 import torch
-import iris
-from iris.bench import benchmark, BenchmarkRunner, torch_dtype_from_str, compute_bandwidth_gbps
+from iris.bench import benchmark, torch_dtype_from_str, compute_bandwidth_gbps
 
 
-# Example 1: Using the @benchmark decorator
+# Example 1: Simple benchmark with setup and measure
 @benchmark(name="simple_operation", warmup=2, iters=5, auto_print=True)
-def benchmark_simple_operation():
-    """Simple benchmark using decorator."""
-    tensor = torch.zeros(1024, 1024, dtype=torch.float32, device="cuda")
-    result = tensor + 1.0
-    return result
+def benchmark_simple(shmem, size=1024):
+    """Simple benchmark using decorator with setup and measure."""
+
+    @setup
+    def allocate_tensors():
+        # Runs once before timing starts
+        tensor = shmem.zeros(size, size, dtype=torch.float32)
+        return tensor
+
+    @measure
+    def run_operation(tensor):
+        # This is what gets timed
+        result = tensor + 1.0
 
 
-# Example 2: Using BenchmarkRunner directly
-def benchmark_with_runner():
-    """Benchmark using BenchmarkRunner."""
+# Example 2: Benchmark with preamble for resetting state
+@benchmark(name="with_preamble", warmup=2, iters=5)
+def benchmark_with_preamble(shmem, size=2048):
+    """Benchmark demonstrating preamble usage."""
 
-    def operation():
-        tensor = torch.zeros(2048, 2048, dtype=torch.float16, device="cuda")
-        result = tensor * 2.0
-        return result
+    @setup
+    def allocate():
+        tensor = shmem.ones(size, size, dtype=torch.float16)
+        output = shmem.zeros(size, size, dtype=torch.float16)
+        return tensor, output
 
-    runner = BenchmarkRunner(name="direct_runner_example")
-    result = runner.run(fn=operation, warmup=2, iters=5)
-    result.print_summary()
+    @preamble
+    def reset_output(tensor, output):
+        # Runs before each timed iteration
+        output.zero_()
 
-
-# Example 3: Parameter sweep
-def benchmark_parameter_sweep():
-    """Benchmark with parameter sweep."""
-    runner = BenchmarkRunner(name="parameter_sweep")
-
-    sizes = [512, 1024, 2048]
-    dtypes = ["fp16", "fp32"]
-
-    for size in sizes:
-        for dtype_str in dtypes:
-            dtype = torch_dtype_from_str(dtype_str)
-
-            def operation(s=size, d=dtype):
-                tensor = torch.zeros(s, s, dtype=d, device="cuda")
-                result = tensor + 1.0
-                return result
-
-            runner.run(
-                fn=operation,
-                warmup=2,
-                iters=5,
-                params={"size": size, "dtype": dtype_str},
-            )
-
-    # Print summary and save to JSON
-    runner.print_summary()
-    runner.save_json("benchmark_results.json", include_raw_times=False)
-    print(f"\nResults saved to benchmark_results.json")
+    @measure
+    def compute(tensor, output):
+        # This gets timed
+        output.copy_(tensor * 2.0)
 
 
-# Example 4: Bandwidth calculation
-def benchmark_with_bandwidth():
+# Example 3: Bandwidth calculation
+@benchmark(name="bandwidth_test", warmup=2, iters=5)
+def benchmark_bandwidth(shmem, size=1024 * 1024 * 256, dtype_str="fp16"):
     """Benchmark with bandwidth calculation."""
-    size = 1024 * 1024 * 256  # 256M elements
-    dtype = torch.float16
+    dtype = torch_dtype_from_str(dtype_str)
     element_size = torch.tensor([], dtype=dtype).element_size()
 
-    def operation():
-        tensor = torch.zeros(size, dtype=dtype, device="cuda")
-        result = tensor + 1.0
-        return result
+    @setup
+    def allocate():
+        tensor = shmem.zeros(size, dtype=dtype)
+        result = shmem.zeros(size, dtype=dtype)
+        return tensor, result
 
-    runner = BenchmarkRunner(name="bandwidth_example")
-    result = runner.run(fn=operation, warmup=2, iters=5)
-
-    # Compute bandwidth
-    total_bytes = size * element_size
-    bandwidth = compute_bandwidth_gbps(total_bytes, result.mean_ms)
-
-    print(f"\nBandwidth Calculation:")
-    print(f"Size: {size} elements ({total_bytes / 2**30:.2f} GiB)")
-    print(f"Mean time: {result.mean_ms:.4f} ms")
-    print(f"Bandwidth: {bandwidth:.2f} GiB/s")
+    @measure
+    def copy_data(tensor, result):
+        result.copy_(tensor)
 
 
 if __name__ == "__main__":
@@ -101,20 +82,28 @@ if __name__ == "__main__":
         exit(1)
 
     print("=" * 70)
-    print("Iris Benchmarking Harness Examples")
+    print("Iris Benchmarking Harness Examples (Decorator-Only)")
     print("=" * 70)
 
-    print("\n### Example 1: Using @benchmark decorator ###")
-    result1 = benchmark_simple_operation()
+    print("\n### Example 1: Simple operation ###")
+    result1 = benchmark_simple(size=1024)
+    # Note: auto_print=True so summary is printed automatically
 
-    print("\n### Example 2: Using BenchmarkRunner directly ###")
-    benchmark_with_runner()
+    print("\n### Example 2: With preamble ###")
+    result2 = benchmark_with_preamble(size=2048)
+    result2.print_summary()
 
-    print("\n### Example 3: Parameter sweep ###")
-    benchmark_parameter_sweep()
+    print("\n### Example 3: Bandwidth test ###")
+    result3 = benchmark_bandwidth(size=1024 * 1024 * 256, dtype_str="fp16")
 
-    print("\n### Example 4: Bandwidth calculation ###")
-    benchmark_with_bandwidth()
+    # Compute bandwidth
+    dtype = torch_dtype_from_str("fp16")
+    element_size = torch.tensor([], dtype=dtype).element_size()
+    total_bytes = 1024 * 1024 * 256 * element_size
+    bandwidth = compute_bandwidth_gbps(total_bytes, result3.mean_ms)
+
+    print(f"\nBandwidth: {bandwidth:.2f} GiB/s")
+    print(f"Size: {total_bytes / 2**30:.2f} GiB")
 
     print("\n" + "=" * 70)
     print("All examples completed successfully!")
