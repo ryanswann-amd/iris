@@ -28,7 +28,14 @@ import iris
         (256, 64, 128),
     ],
 )
-def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N):
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "pull",
+        "chunked",
+    ],
+)
+def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N, variant):
     """Test all_gather_matmul against torch all_gather + matmul."""
     if not dist.is_initialized():
         pytest.skip("torch.distributed not initialized")
@@ -77,12 +84,20 @@ def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N):
     # Run fused all_gather + matmul using shmem.ops API
     from iris.ops.config import FusedConfig
 
+    if rank == 0:
+        print(f"\n[Test] Testing variant={variant}, M={M}, K_local={K_local}, N={N}, dtype={dtype}")
+
     # Use appropriate block sizes based on problem size
     # For small problems, use smaller blocks
     if M <= 256 or K_local <= 64 or N <= 128:
-        config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
+        config = FusedConfig(
+            block_size_m=64,
+            block_size_n=64,
+            block_size_k=32,
+            all_gather_matmul_variant=variant,
+        )
     else:
-        config = FusedConfig()
+        config = FusedConfig(all_gather_matmul_variant=variant)
 
     # Validate config against problem size
     assert M >= config.block_size_m, f"M ({M}) must be >= block_size_m ({config.block_size_m})"

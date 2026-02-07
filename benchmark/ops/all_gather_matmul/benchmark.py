@@ -62,6 +62,13 @@ def parse_args():
     parser.add_argument("--num_xcds", type=int, default=None, help="Number of XCDs (auto-detected if not set)")
     parser.add_argument("-r", "--num_ranks", type=int, default=8, help="Number of ranks/processes")
     parser.add_argument(
+        "--variant",
+        type=str,
+        default="pull",
+        choices=["pull", "chunked"],
+        help="All-gather matmul variant (pull or chunked)",
+    )
+    parser.add_argument(
         "--init_url", type=str, default="tcp://127.0.0.1:29530", help="Initialization URL for distributed setup"
     )
 
@@ -106,6 +113,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         "block_size_n": args["block_size_n"],
         "block_size_k": args["block_size_k"],
         "group_size_m": args["group_size_m"],
+        "all_gather_matmul_variant": args["variant"],
     }
     if args["comm_sms"] is not None:
         config_kwargs["num_sms"] = args["comm_sms"]
