@@ -31,12 +31,11 @@ Example usage:
 import json
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional
 import functools
 import torch
 
-if TYPE_CHECKING:
-    from .util import do_bench
+# Import do_bench at runtime in _run_benchmark to avoid circular dependencies
 
 
 def _compute_percentile(values: List[float], percentile: float) -> float:
