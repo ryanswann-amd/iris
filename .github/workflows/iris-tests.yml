@@ -42,7 +42,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-${{ matrix.gpu_devices }}
+      group: gpu-${{ matrix.gpu_devices }}-${{ github.run_id }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
@@ -138,7 +138,7 @@ jobs:
     needs: [build-container-image, test-git]
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-${{ matrix.gpu_devices }}
+      group: gpu-${{ matrix.gpu_devices }}-${{ github.run_id }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
@@ -231,7 +231,7 @@ jobs:
     needs: [build-container-image, test-editable]
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-${{ matrix.gpu_devices }}
+      group: gpu-${{ matrix.gpu_devices }}-${{ github.run_id }}
       cancel-in-progress: false
     strategy:
       fail-fast: false

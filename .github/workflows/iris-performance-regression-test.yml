@@ -45,7 +45,7 @@ jobs:
     runs-on: [self-hosted, mi3xx]
     timeout-minutes: 30
     concurrency:
-      group: gpu-0,1,2,3,4,5,6,7
+      group: gpu-0,1,2,3,4,5,6,7-${{ github.run_id }}
       cancel-in-progress: false
     strategy:
       fail-fast: false

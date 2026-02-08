@@ -43,7 +43,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-0,1,2,3,4,5,6,7
+      group: gpu-0,1,2,3,4,5,6,7-${{ github.run_id }}
       cancel-in-progress: false
 
     steps:
@@ -90,7 +90,7 @@ jobs:
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     concurrency:
-      group: gpu-0,1
+      group: gpu-0,1-${{ github.run_id }}
       cancel-in-progress: false
 
     steps:
