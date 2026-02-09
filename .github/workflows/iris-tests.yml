@@ -37,76 +37,15 @@ jobs:
         run: |
           bash .github/scripts/container_build.sh
 
-  test-git:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, git install)
+  # Jobs grouped by GPU allocation - can run in parallel
+  test-git-gpu-0-1:
+    name: Test GPU 0,1 (git install)
     needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Test each subdirectory with each rank count using git install
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-
+        test_dir: [examples, unittests, ccl, x, ops]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -115,91 +54,29 @@ jobs:
         run: |
           bash .github/scripts/cleanup_ports.sh
 
-      - name: Run ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (git install)
+      - name: Run ${{ matrix.test_dir }} tests with 1 ranks (git install)
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: git)"
+          echo "::group::Running ${{ matrix.test_dir }} tests with 1 ranks (install: git)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
-            "${{ matrix.num_ranks }}" \
-            "${{ matrix.gpu_devices }}" \
+            "1" \
+            "0,1" \
             "git"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (git) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with 1 ranks (git) passed!"
 
-  test-editable:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, editable install)
-    needs: [build-container-image, test-git]
+  test-git-gpu-2-3:
+    name: Test GPU 2,3 (git install)
+    needs: build-container-image
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Test each subdirectory with each rank count using editable install
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-
+        test_dir: [examples, unittests, ccl, x, ops]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -208,88 +85,120 @@ jobs:
         run: |
           bash .github/scripts/cleanup_ports.sh
 
-      - name: Run ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (editable install)
+      - name: Run ${{ matrix.test_dir }} tests with 2 ranks (git install)
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: editable)"
+          echo "::group::Running ${{ matrix.test_dir }} tests with 2 ranks (install: git)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
-            "${{ matrix.num_ranks }}" \
-            "${{ matrix.gpu_devices }}" \
+            "2" \
+            "2,3" \
+            "git"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 2 ranks (git) passed!"
+
+  test-git-gpu-4-7:
+    name: Test GPU 4-7 (git install)
+    needs: build-container-image
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 4 ranks (git install)
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 4 ranks (install: git)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "4" \
+            "4,5,6,7" \
+            "git"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 4 ranks (git) passed!"
+
+  test-git-gpu-all:
+    name: Test All GPUs (git install)
+    needs: build-container-image
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 8 ranks (git install)
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 8 ranks (install: git)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "8" \
+            "0,1,2,3,4,5,6,7" \
+            "git"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 8 ranks (git) passed!"
+
+  # Editable install tests - same structure
+  test-editable-gpu-0-1:
+    name: Test GPU 0,1 (editable install)
+    needs: [build-container-image, test-git-gpu-0-1, test-git-gpu-2-3, test-git-gpu-4-7, test-git-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 1 ranks (editable install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 1 ranks (install: editable)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "1" \
+            "0,1" \
             "editable"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (editable) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with 1 ranks (editable) passed!"
 
-  test-install:
-    name: Test ${{ matrix.test_dir }} (${{ matrix.num_ranks }} ranks, pip install)
-    needs: [build-container-image, test-editable]
+  test-editable-gpu-2-3:
+    name: Test GPU 2,3 (editable install)
+    needs: [build-container-image, test-git-gpu-0-1, test-git-gpu-2-3, test-git-gpu-4-7, test-git-gpu-all]
     runs-on: [self-hosted, mi3xx]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Test each subdirectory with each rank count using pip install
-          - test_dir: examples
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: examples
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: examples
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: examples
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: unittests
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: unittests
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: unittests
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ccl
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ccl
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ccl
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: x
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: x
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: x
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: x
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-          - test_dir: ops
-            num_ranks: 1
-            gpu_devices: "0,1"
-          - test_dir: ops
-            num_ranks: 2
-            gpu_devices: "2,3"
-          - test_dir: ops
-            num_ranks: 4
-            gpu_devices: "4,5,6,7"
-          - test_dir: ops
-            num_ranks: 8
-            gpu_devices: "0,1,2,3,4,5,6,7"
-
+        test_dir: [examples, unittests, ccl, x, ops]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -298,15 +207,183 @@ jobs:
         run: |
           bash .github/scripts/cleanup_ports.sh
 
-      - name: Run ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (pip install)
+      - name: Run ${{ matrix.test_dir }} tests with 2 ranks (editable install)
         run: |
           set -e
-          echo "::group::Running ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install: install)"
+          echo "::group::Running ${{ matrix.test_dir }} tests with 2 ranks (install: editable)"
           bash .github/scripts/run_tests.sh \
             "${{ matrix.test_dir }}" \
-            "${{ matrix.num_ranks }}" \
-            "${{ matrix.gpu_devices }}" \
+            "2" \
+            "2,3" \
+            "editable"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 2 ranks (editable) passed!"
+
+  test-editable-gpu-4-7:
+    name: Test GPU 4-7 (editable install)
+    needs: [build-container-image, test-git-gpu-0-1, test-git-gpu-2-3, test-git-gpu-4-7, test-git-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 4 ranks (editable install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 4 ranks (install: editable)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "4" \
+            "4,5,6,7" \
+            "editable"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 4 ranks (editable) passed!"
+
+  test-editable-gpu-all:
+    name: Test All GPUs (editable install)
+    needs: [build-container-image, test-git-gpu-0-1, test-git-gpu-2-3, test-git-gpu-4-7, test-git-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 8 ranks (editable install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 8 ranks (install: editable)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "8" \
+            "0,1,2,3,4,5,6,7" \
+            "editable"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 8 ranks (editable) passed!"
+
+  # Pip install tests - same structure
+  test-install-gpu-0-1:
+    name: Test GPU 0,1 (pip install)
+    needs: [build-container-image, test-editable-gpu-0-1, test-editable-gpu-2-3, test-editable-gpu-4-7, test-editable-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 1 ranks (pip install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 1 ranks (install: install)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "1" \
+            "0,1" \
             "install"
           echo "::endgroup::"
-          echo "✅ ${{ matrix.test_dir }} tests with ${{ matrix.num_ranks }} ranks (install) passed!"
+          echo "✅ ${{ matrix.test_dir }} tests with 1 ranks (install) passed!"
 
+  test-install-gpu-2-3:
+    name: Test GPU 2,3 (pip install)
+    needs: [build-container-image, test-editable-gpu-0-1, test-editable-gpu-2-3, test-editable-gpu-4-7, test-editable-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 2 ranks (pip install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 2 ranks (install: install)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "2" \
+            "2,3" \
+            "install"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 2 ranks (install) passed!"
+
+  test-install-gpu-4-7:
+    name: Test GPU 4-7 (pip install)
+    needs: [build-container-image, test-editable-gpu-0-1, test-editable-gpu-2-3, test-editable-gpu-4-7, test-editable-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 4 ranks (pip install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 4 ranks (install: install)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "4" \
+            "4,5,6,7" \
+            "install"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 4 ranks (install) passed!"
+
+  test-install-gpu-all:
+    name: Test All GPUs (pip install)
+    needs: [build-container-image, test-editable-gpu-0-1, test-editable-gpu-2-3, test-editable-gpu-4-7, test-editable-gpu-all]
+    runs-on: [self-hosted, mi3xx]
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [examples, unittests, ccl, x, ops]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cleanup lingering ports before tests
+        run: |
+          bash .github/scripts/cleanup_ports.sh
+
+      - name: Run ${{ matrix.test_dir }} tests with 8 ranks (pip install)
+        run: |
+          set -e
+          echo "::group::Running ${{ matrix.test_dir }} tests with 8 ranks (install: install)"
+          bash .github/scripts/run_tests.sh \
+            "${{ matrix.test_dir }}" \
+            "8" \
+            "0,1,2,3,4,5,6,7" \
+            "install"
+          echo "::endgroup::"
+          echo "✅ ${{ matrix.test_dir }} tests with 8 ranks (install) passed!"
