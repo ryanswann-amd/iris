@@ -1796,8 +1796,8 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # Vectorization hints: must be <= minimum block size used by any caller.
     # (32, 32) is safe since all supported block sizes are multiples of 32.
     # Largest vectorized load instruction is dwordx4 (128-bits = 8 x fp16).
-    translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
-    translated_ptr = tl.max_contiguous(translated_ptr, (32, 32))
+    # translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
+    # translated_ptr = tl.max_contiguous(translated_ptr, (32, 32))
 
     return translated_ptr
 

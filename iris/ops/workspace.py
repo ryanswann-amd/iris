@@ -46,6 +46,10 @@ class FusedWorkspace:
     aux_buffer: Optional[torch.Tensor] = None  # Generic buffer for intermediate results
     locks: Optional[torch.Tensor] = None  # Synchronization primitives
 
+    # Push variant workspace
+    a_inbox: Optional[torch.Tensor] = None  # (world_size, M, K_local) inbox buffer
+    signal_flags: Optional[torch.Tensor] = None  # (world_size, world_size, m_tiles, k_tiles)
+
     prepared: bool = False
 
     def matches(
@@ -86,4 +90,6 @@ class FusedWorkspace:
         """Free all allocated buffers."""
         self.aux_buffer = None
         self.locks = None
+        self.a_inbox = None
+        self.signal_flags = None
         self.prepared = False

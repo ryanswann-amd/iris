@@ -18,6 +18,7 @@ import argparse
 from examples.common.utils import JSONWriter
 
 import iris
+from iris.ops.all_gather_matmul import all_gather_matmul_preamble
 from iris.ops import FusedConfig
 
 torch.manual_seed(123)
@@ -65,8 +66,8 @@ def parse_args():
         "--variant",
         type=str,
         default="pull",
-        choices=["pull", "chunked"],
-        help="All-gather matmul variant (pull or chunked)",
+        choices=["pull", "chunked", "push", "pipelined_pull"],
+        help="All-gather matmul variant",
     )
     parser.add_argument(
         "--init_url", type=str, default="tcp://127.0.0.1:29530", help="Initialization URL for distributed setup"
@@ -181,20 +182,11 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         },
     }
 
-    workspace = None
+    # Pre-allocate workspace once (important for push variant which needs large buffers)
+    workspace = all_gather_matmul_preamble(shmem, A_sharded, B, config)
 
     def run_experiment():
-        nonlocal kernel_timing, workspace
-
-        # Preamble if available
-        if hasattr(shmem.ops, "all_gather_matmul_preamble"):
-            workspace = shmem.ops.all_gather_matmul_preamble(
-                C,
-                A_sharded,
-                B,
-                config=config,
-                workspace=workspace,
-            )
+        nonlocal kernel_timing
 
         shmem.barrier()
 

@@ -17,6 +17,7 @@ import iris
 import iris.x
 
 from tritonblas.kernels.stages import GemmContext, ScheduleContext
+from tritonblas.kernels.stages.indexing.pid_transforms import chiplet_transform_chunked
 
 from .config import FusedConfig
 from .workspace import FusedWorkspace
@@ -164,7 +165,7 @@ def all_gather_matmul_preamble(
     B: torch.Tensor,
     config: Optional[FusedConfig] = None,
 ) -> FusedWorkspace:
-    """Allocate workspace for all_gather_matmul (none needed for pull pattern)."""
+    """Allocate workspace for all_gather_matmul."""
     if config is None:
         config = FusedConfig()
 
@@ -175,13 +176,26 @@ def all_gather_matmul_preamble(
     expected_K = world_size * K_local
     assert K == expected_K, f"K ({K}) must equal world_size ({world_size}) * K_local ({K_local})"
 
-    return FusedWorkspace(
+    ws = FusedWorkspace(
         operation="all_gather_matmul",
         shape=(M, N, K),
         dtype=A_sharded.dtype,
         world_size=world_size,
+        variant=config.all_gather_matmul_variant,
         prepared=True,
     )
+
+    # Allocate push variant workspace
+    if config.all_gather_matmul_variant == "push":
+        num_m_tiles = (M + config.block_size_m - 1) // config.block_size_m
+        num_k_tiles = (K_local + config.block_size_k - 1) // config.block_size_k
+        ws.a_inbox = shmem.zeros((world_size, M, K_local), dtype=A_sharded.dtype)
+        ws.signal_flags = shmem.zeros(
+            (world_size, world_size, num_m_tiles, num_k_tiles), dtype=torch.int32
+        )
+        shmem.barrier()
+
+    return ws
 
 
 def all_gather_matmul(
@@ -245,10 +259,15 @@ def all_gather_matmul(
     even_k = K_local % config.block_size_k == 0
     num_k_blocks_local = (K_local + config.block_size_k - 1) // config.block_size_k
 
-    # Launch single fused kernel
-    grid = (num_sms,)
-    _fused_all_gather_matmul_kernel[grid](
-        A_sharded,
+    variant = config.all_gather_matmul_variant
+
+    if variant == "pull":
+        num_tiles_m = (M + config.block_size_m - 1) // config.block_size_m
+        num_tiles_n = (N + config.block_size_n - 1) // config.block_size_n
+        num_tiles = num_tiles_m * num_tiles_n
+        # grid = (num_tiles,)
+        grid = (num_sms,)
+        _fused_all_gather_matmul_kernel[grid](A_sharded,
         B,
         output_tensor,
         bias_ptr,

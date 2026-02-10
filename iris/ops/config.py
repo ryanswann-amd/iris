@@ -54,9 +54,9 @@ class FusedConfig:
     block_size_m: int = 128
     block_size_n: int = 256
     block_size_k: int = 64
-    group_size_m: int = 4
+    group_size_m: int = 1
     num_sms: Optional[int] = None  # Auto-detect if None
-    num_xcds: int = 1
+    num_xcds: int = 8
     chunk_size: int = 1
     cache_modifier_a: str = ".ca"
     cache_modifier_b: str = ".ca"
@@ -109,7 +109,7 @@ class FusedConfig:
             raise ValueError(f"all_reduce_num_rings must be positive, got {self.all_reduce_num_rings}")
 
         # Validate all_gather_matmul_variant
-        valid_ag_variants = ["pull", "chunked"]
+        valid_ag_variants = ["pull"]
         if self.all_gather_matmul_variant not in valid_ag_variants:
             raise ValueError(
                 f"all_gather_matmul_variant must be one of {valid_ag_variants}, got {self.all_gather_matmul_variant}"
