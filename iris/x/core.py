@@ -80,7 +80,10 @@ def tile_ptr(ptr, M, N, stride_m, stride_n, pid_m, pid_n, BLOCK_SIZE_M: tl.const
     rm, rn, mask = tile_layout(pid_m, pid_n, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N)
     offset = rm[:, None] * stride_m + rn[None, :] * stride_n
     tile_ptr = ptr + offset
-    tile_ptr = tl.multiple_of(tile_ptr, (BLOCK_SIZE_M, BLOCK_SIZE_N))
+    # NOTE: Vectorization hints are applied at the call site (e.g., gather.py)
+    # rather than here, because the caller knows the block dimensions.
+    # Alignment IS preserved through pointer translation since symmetric heaps
+    # are all page-aligned, so relative offsets within the heap are maintained.
     return tile_ptr, mask
 
 

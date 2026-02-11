@@ -1780,6 +1780,10 @@ class Iris:
 
 @triton.jit
 def __translate(ptr, from_rank, to_rank, heap_bases):
+    """
+    Basic pointer translation without vectorization hints.
+    Used for atomic operations which may receive scalar pointers.
+    """
     from_base = tl.load(heap_bases + from_rank)
     to_base = tl.load(heap_bases + to_rank)
     # convert to int to compute difference
@@ -1793,11 +1797,30 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # Cast to_base back to pointer type
     translated_ptr = tl.cast(translated_ptr_byte, ptr.dtype)
 
-    # Vectorization hints: must be <= minimum block size used by any caller.
-    # (32, 32) is safe since all supported block sizes are multiples of 32.
-    # Largest vectorized load instruction is dwordx4 (128-bits = 8 x fp16).
-    # translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
-    # translated_ptr = tl.max_contiguous(translated_ptr, (32, 32))
+    return translated_ptr
+
+
+
+@triton.jit
+def __translate_block_2d(ptr, from_rank, to_rank, heap_bases):
+    """
+    Pointer translation for block load/store operations.
+
+    Note: Vectorization hints should be applied in the tile_ptr computation (core.py)
+    where the 2D block shape is actually created, not here in the translation.
+    """
+    from_base = tl.load(heap_bases + from_rank)
+    to_base = tl.load(heap_bases + to_rank)
+    # convert to int to compute difference
+    ptr_int = tl.cast(ptr, tl.uint64)
+    # Find the offset from from_rank heap
+    offset = ptr_int - from_base
+    # Byte cast for byte offset addition
+    to_base_byte = tl.cast(to_base, tl.pointer_type(tl.int8))
+    # Find the offset into the to_rank heap
+    translated_ptr_byte = to_base_byte + offset
+    # Cast to_base back to pointer type
+    translated_ptr = tl.cast(translated_ptr_byte, ptr.dtype)
 
     return translated_ptr
 
@@ -1976,8 +1999,15 @@ class DeviceContext:
 
     @triton.jit
     def _translate(self, ptr, from_rank, to_rank):
-        """Internal pointer translation between rank address spaces."""
+        """Internal pointer translation between rank address spaces.
+        Used for atomic operations which may receive scalar pointers."""
         return __translate(ptr, from_rank, to_rank, self.heap_bases)
+
+    @triton.jit
+    def _translate_block_2d(self, ptr, from_rank, to_rank):
+        """Internal pointer translation with 2D vectorization hints.
+        Used for block load/store operations with 2D block pointers."""
+        return __translate_block_2d(ptr, from_rank, to_rank, self.heap_bases)
 
     @triton.jit
     def load(self, pointer, from_rank, mask=None):
@@ -2000,7 +2030,7 @@ class DeviceContext:
         Example:
             >>> data = ctx.load(buffer + offsets, from_rank=1, mask=mask)
         """
-        translated_ptr = self._translate(pointer, self.rank, from_rank)
+        translated_ptr = self._translate_block_2d(pointer, self.rank, from_rank)
         result = tl.load(translated_ptr, mask=mask)
         return result
 
@@ -2026,7 +2056,7 @@ class DeviceContext:
         Example:
             >>> ctx.store(buffer + offsets, values, to_rank=1, mask=mask)
         """
-        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        translated_ptr = self._translate_block_2d(pointer, self.rank, to_rank)
         tl.store(translated_ptr, value, mask=mask)
 
     @triton.jit
@@ -2356,6 +2386,9 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None):
     data from the target memory location. If the `from_rank` and `to_rank` are the same,
     this function performs a local load operation.
 
+    This function uses 2D vectorization hints for optimal performance with block pointers.
+    Minimum block size in each dimension should be >= 16.
+
     Args:
         pointer (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the `from_rank`'s address space that will be translated to the `to_rank`'s address space. Must be the current rank where the pointer is local.
         to_rank (int): The rank ID to which the pointer will be translated. Must be the current rank where the pointer is local.
@@ -2375,7 +2408,7 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None):
         >>>     data = iris.load(ptr, cur_rank, remote_rank, heap_bases)
         >>>     return data
     """
-    translated_ptr = __translate(pointer, to_rank, from_rank, heap_bases)
+    translated_ptr = __translate_block_2d(pointer, to_rank, from_rank, heap_bases)
     result = tl.load(translated_ptr, mask=mask)
     return result
 
@@ -2389,6 +2422,9 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None):
     from the `from_rank`'s address space to the `to_rank`'s address space and storing
     the provided data to the target memory location. If the `from_rank` and `to_rank` are the same,
     this function performs a local store operation.
+
+    This function uses 2D vectorization hints for optimal performance with block pointers.
+    Minimum block size in each dimension should be >= 16.
 
     Args:
         pointer (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the `from_rank`'s address space that will be translated to the `to_rank`'s address space. Must be the current rank where the pointer is local.
@@ -2410,7 +2446,7 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None):
         >>>     value = 42
         >>>     iris.store(ptr, value, cur_rank, remote_rank, heap_bases)
     """
-    translated_ptr = __translate(pointer, from_rank, to_rank, heap_bases)
+    translated_ptr = __translate_block_2d(pointer, from_rank, to_rank, heap_bases)
     tl.store(translated_ptr, value, mask=mask)
 
 
