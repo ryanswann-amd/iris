@@ -39,8 +39,8 @@ def _hbm_buffer_all_gather_matmul_kernel(
     B,
     C,
     bias_ptr,
-    staged_a,       # Local HBM buffer: (M, K) fp16
-    flags_ptr,      # int32[NUM_M_TILES * NUM_K_BLOCKS] per-tile ready flags
+    staged_a,  # Local HBM buffer: (M, K) fp16
+    flags_ptr,  # int32[NUM_M_TILES * NUM_K_BLOCKS] per-tile ready flags
     M,
     N,
     K,
@@ -62,8 +62,8 @@ def _hbm_buffer_all_gather_matmul_kernel(
     NUM_SMS: tl.constexpr,
     NUM_XCDS: tl.constexpr,
     NUM_M_TILES: tl.constexpr,
-    NUM_K_BLOCKS: tl.constexpr,         # K // BLOCK_SIZE_K (global)
-    NUM_K_BLOCKS_LOCAL: tl.constexpr,   # K_local // BLOCK_SIZE_K
+    NUM_K_BLOCKS: tl.constexpr,  # K // BLOCK_SIZE_K (global)
+    NUM_K_BLOCKS_LOCAL: tl.constexpr,  # K_local // BLOCK_SIZE_K
     BIAS: tl.constexpr,
     ALLOW_TF32: tl.constexpr,
 ):
@@ -222,12 +222,8 @@ def all_gather_matmul_hbm_buffer_preamble(
     assert K_local % config.block_size_k == 0, (
         f"K_local ({K_local}) must be divisible by block_size_k ({config.block_size_k})"
     )
-    assert K % config.block_size_k == 0, (
-        f"K ({K}) must be divisible by block_size_k ({config.block_size_k})"
-    )
-    assert M % config.block_size_m == 0, (
-        f"M ({M}) must be divisible by block_size_m ({config.block_size_m})"
-    )
+    assert K % config.block_size_k == 0, f"K ({K}) must be divisible by block_size_k ({config.block_size_k})"
+    assert M % config.block_size_m == 0, f"M ({M}) must be divisible by block_size_m ({config.block_size_m})"
 
     num_m_tiles = M // config.block_size_m
     num_k_blocks = K // config.block_size_k
@@ -246,9 +242,11 @@ def all_gather_matmul_hbm_buffer_preamble(
     # Per-tile ready flags
     ws.locks = shmem.zeros((num_m_tiles * num_k_blocks,), dtype=torch.int32)
 
-    buffer_mb = M * K * A_sharded.element_size() / (1024 ** 2)
-    shmem.info(f"HBM buffer workspace: staged_a=({M},{K}) [{buffer_mb:.1f} MB], "
-               f"flags=[{num_m_tiles}x{num_k_blocks}={num_m_tiles * num_k_blocks}]")
+    buffer_mb = M * K * A_sharded.element_size() / (1024**2)
+    shmem.info(
+        f"HBM buffer workspace: staged_a=({M},{K}) [{buffer_mb:.1f} MB], "
+        f"flags=[{num_m_tiles}x{num_k_blocks}={num_m_tiles * num_k_blocks}]"
+    )
 
     shmem.barrier()
     return ws
@@ -284,12 +282,8 @@ def all_gather_matmul_hbm_buffer(
     expected_K = world_size * K_local
     assert K == expected_K, f"K ({K}) must equal world_size ({world_size}) * K_local ({K_local})"
     assert output_tensor.shape == (M, N), f"Output must be ({M}, {N}), got {output_tensor.shape}"
-    assert M % config.block_size_m == 0, (
-        f"M ({M}) must be divisible by block_size_m ({config.block_size_m})"
-    )
-    assert K % config.block_size_k == 0, (
-        f"K ({K}) must be divisible by block_size_k ({config.block_size_k})"
-    )
+    assert M % config.block_size_m == 0, f"M ({M}) must be divisible by block_size_m ({config.block_size_m})"
+    assert K % config.block_size_k == 0, f"K ({K}) must be divisible by block_size_k ({config.block_size_k})"
     assert K_local % config.block_size_k == 0, (
         f"K_local ({K_local}) must be divisible by block_size_k ({config.block_size_k})"
     )
@@ -330,8 +324,8 @@ def all_gather_matmul_hbm_buffer(
         B,
         output_tensor,
         bias_ptr,
-        workspace.aux_buffer,   # staged_a
-        workspace.locks,        # flags
+        workspace.aux_buffer,  # staged_a
+        workspace.locks,  # flags
         M,
         N,
         K,

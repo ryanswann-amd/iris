@@ -47,13 +47,17 @@ def parse_args():
     parser.add_argument("-v", "--validate", action="store_true", help="Validate correctness")
     parser.add_argument("-b", "--benchmark", action="store_true", help="Run benchmark")
     parser.add_argument(
-        "--datatype", type=str, default="fp16",
-        choices=["fp16", "fp32", "bf16"], help="Tensor datatype",
+        "--datatype",
+        type=str,
+        default="fp16",
+        choices=["fp16", "fp32", "bf16"],
+        help="Tensor datatype",
     )
     parser.add_argument("--heap_size", type=int, default=1 << 34, help="Iris heap size")
     parser.add_argument("--comm_sms", type=int, default=None, help="Number of SMs (auto if None)")
     parser.add_argument(
-        "--benchmark_pytorch", action="store_true",
+        "--benchmark_pytorch",
+        action="store_true",
         help="Also benchmark PyTorch (all_gather_into_tensor + matmul)",
     )
     parser.add_argument("--block_size_m", type=int, default=256, help="Block size M")
@@ -76,13 +80,16 @@ def _worker(args):
 
     if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
         dist.init_process_group(
-            backend=backend, init_method="env://",
+            backend=backend,
+            init_method="env://",
             device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
         )
     else:
         dist.init_process_group(
-            backend=backend, init_method="tcp://127.0.0.1:29530",
-            world_size=world_size_env, rank=local_rank,
+            backend=backend,
+            init_method="tcp://127.0.0.1:29530",
+            world_size=world_size_env,
+            rank=local_rank,
             device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
         )
 
@@ -110,7 +117,7 @@ def _worker(args):
         config_kwargs["num_xcds"] = args["num_xcds"]
     config = FusedConfig(**config_kwargs)
 
-    buffer_mb = M * K * torch.tensor([], dtype=datatype).element_size() / (1024 ** 2)
+    buffer_mb = M * K * torch.tensor([], dtype=datatype).element_size() / (1024**2)
     num_m_tiles = M // config.block_size_m
     num_k_blocks = K // config.block_size_k
     shmem.info(
@@ -170,8 +177,13 @@ def _worker(args):
         with torch.cuda.stream(comm_stream):
             start_ev.record()
             all_gather_matmul_hbm_buffer(
-                shmem, C, A_sharded, B,
-                config=config, async_op=False, workspace=workspace,
+                shmem,
+                C,
+                A_sharded,
+                B,
+                config=config,
+                async_op=False,
+                workspace=workspace,
             )
             end_ev.record()
             num_experiments += 1
@@ -223,7 +235,7 @@ def _worker(args):
         tflops = (total_flops * 1e-12) / (avg_ms * 1e-3) if avg_ms > 0 else 0
         element_size = torch.tensor([], dtype=datatype).element_size()
         total_bytes = M * K_local * element_size * (world_size - 1)
-        bw_gbps = (total_bytes / (1024 ** 3)) / (avg_ms * 1e-3) if avg_ms > 0 else 0
+        bw_gbps = (total_bytes / (1024**3)) / (avg_ms * 1e-3) if avg_ms > 0 else 0
 
         shmem.info(
             f"HBM-Buffer (M={M}, K_local={K_local}, K={K}, N={N}, "
@@ -244,8 +256,13 @@ def _worker(args):
         t_start = time.perf_counter()
 
         all_gather_matmul_hbm_buffer(
-            shmem, C, A_sharded, B,
-            config=config, async_op=False, workspace=workspace,
+            shmem,
+            C,
+            A_sharded,
+            B,
+            config=config,
+            async_op=False,
+            workspace=workspace,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()
@@ -261,7 +278,7 @@ def _worker(args):
             times = [t.item() for t in all_finish]
             min_t = min(times)
             max_t = max(times)
-            print(f"\n  Per-rank finish times (single run):")
+            print("\n  Per-rank finish times (single run):")
             print(f"  {'Rank':>6}  {'Finish ms':>10}  {'Delta ms':>10}")
             print(f"  {'-' * 30}")
             for r, t in enumerate(times):
@@ -297,7 +314,7 @@ def _worker(args):
 
         pt_ms = iris.do_bench(run_pt, dist.barrier)
         pt_tflops = (total_flops * 1e-12) / (pt_ms * 1e-3) if pt_ms > 0 else 0
-        pt_bw = (total_bytes / (1024 ** 3)) / (pt_ms * 1e-3) if pt_ms > 0 else 0
+        pt_bw = (total_bytes / (1024**3)) / (pt_ms * 1e-3) if pt_ms > 0 else 0
 
         shmem.info(
             f"PyTorch (M={M}, K_local={K_local}, K={K}, N={N}, ws={world_size}, "
