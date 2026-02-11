@@ -1800,7 +1800,6 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     return translated_ptr
 
 
-
 @triton.jit
 def __translate_block_2d(ptr, from_rank, to_rank, heap_bases):
     """
