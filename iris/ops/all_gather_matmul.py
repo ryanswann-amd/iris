@@ -17,7 +17,6 @@ import iris
 import iris.x
 
 from tritonblas.kernels.stages import GemmContext, ScheduleContext
-from tritonblas.kernels.stages.indexing.pid_transforms import chiplet_transform_chunked
 
 from .config import FusedConfig
 from .workspace import FusedWorkspace
@@ -190,9 +189,7 @@ def all_gather_matmul_preamble(
         num_m_tiles = (M + config.block_size_m - 1) // config.block_size_m
         num_k_tiles = (K_local + config.block_size_k - 1) // config.block_size_k
         ws.a_inbox = shmem.zeros((world_size, M, K_local), dtype=A_sharded.dtype)
-        ws.signal_flags = shmem.zeros(
-            (world_size, world_size, num_m_tiles, num_k_tiles), dtype=torch.int32
-        )
+        ws.signal_flags = shmem.zeros((world_size, world_size, num_m_tiles, num_k_tiles), dtype=torch.int32)
         shmem.barrier()
 
     return ws
@@ -267,36 +264,37 @@ def all_gather_matmul(
         num_tiles = num_tiles_m * num_tiles_n
         # grid = (num_tiles,)
         grid = (num_sms,)
-        _fused_all_gather_matmul_kernel[grid](A_sharded,
-        B,
-        output_tensor,
-        bias_ptr,
-        M,
-        N,
-        K,
-        K_local,
-        stride_am,
-        stride_ak,
-        stride_bk,
-        stride_bn,
-        stride_cm,
-        stride_cn,
-        stride_bias,
-        shmem.get_device_context(),
-        rank,
-        world_size,
-        config.block_size_m,
-        config.block_size_n,
-        config.block_size_k,
-        config.group_size_m,
-        num_sms,
-        config.num_xcds,
-        num_k_blocks_local,
-        use_bias,
-        even_k,
-        config.allow_tf32,
-        matrix_instr_nonkdim=16,
-    )
+        _fused_all_gather_matmul_kernel[grid](
+            A_sharded,
+            B,
+            output_tensor,
+            bias_ptr,
+            M,
+            N,
+            K,
+            K_local,
+            stride_am,
+            stride_ak,
+            stride_bk,
+            stride_bn,
+            stride_cm,
+            stride_cn,
+            stride_bias,
+            shmem.get_device_context(),
+            rank,
+            world_size,
+            config.block_size_m,
+            config.block_size_n,
+            config.block_size_k,
+            config.group_size_m,
+            num_sms,
+            config.num_xcds,
+            num_k_blocks_local,
+            use_bias,
+            even_k,
+            config.allow_tf32,
+            matrix_instr_nonkdim=16,
+        )
 
     if not async_op:
         shmem.barrier()
