@@ -11,17 +11,17 @@ import iris
 import torch
 
 # Initialize Iris context
-shmem = iris.iris(heap_size=2**30)  # 1GB heap
+ctx = iris.iris(heap_size=2**30)  # 1GB heap
 
 # Create tensors
-input_tensor = shmem.randn((1024, 2048), dtype=torch.float16)
-output_tensor = shmem.zeros((1024, 2048), dtype=torch.float16)
+input_tensor = ctx.randn((1024, 2048), dtype=torch.float16)
+output_tensor = ctx.zeros((1024, 2048), dtype=torch.float16)
 
 # Perform collective operations
-shmem.ccl.all_reduce(output_tensor, input_tensor)
-shmem.ccl.all_gather(output_tensor, input_tensor)
-shmem.ccl.all_to_all(output_tensor, input_tensor)
-shmem.ccl.reduce_scatter(output_tensor, input_tensor)
+ctx.ccl.all_reduce(output_tensor, input_tensor)
+ctx.ccl.all_gather(output_tensor, input_tensor)
+ctx.ccl.all_to_all(output_tensor, input_tensor)
+ctx.ccl.reduce_scatter(output_tensor, input_tensor)
 ```
 
 ## Available Operations
@@ -45,7 +45,7 @@ config = Config(
     use_gluon=False
 )
 
-shmem.ccl.all_reduce(output_tensor, input_tensor, config=config)
+ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
 ```
 
 ## Asynchronous Operations
@@ -54,12 +54,12 @@ All collective operations support asynchronous execution:
 
 ```python
 # Launch operation asynchronously
-shmem.ccl.all_reduce(output_tensor, input_tensor, async_op=True)
+ctx.ccl.all_reduce(output_tensor, input_tensor, async_op=True)
 
 # Do other work here...
 
 # Synchronize
-shmem.barrier()
+ctx.barrier()
 ```
 
 ## API Reference
