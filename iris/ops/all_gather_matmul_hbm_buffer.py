@@ -38,8 +38,8 @@ def _hbm_buffer_all_gather_matmul_kernel(
     stride_bn,
     stride_cm,
     stride_cn,
-    stride_sa_m,    # staged_a stride in M dim
-    stride_sa_k,    # staged_a stride in K dim
+    stride_sa_m,  # staged_a stride in M dim
+    stride_sa_k,  # staged_a stride in K dim
     stride_bias,
     context_tensor: tl.tensor,
     cur_rank: tl.constexpr,
@@ -216,7 +216,7 @@ def all_gather_matmul_hbm_buffer_preamble(
 
     ws.locks = shmem.zeros((num_m_tiles * num_flag_groups_k,), dtype=torch.int32)
 
-    buffer_mb = M * K * A_sharded.element_size() / (1024 ** 2)
+    buffer_mb = M * K * A_sharded.element_size() / (1024**2)
     sa_stride_m, sa_stride_k = ws.aux_buffer.stride()
     shmem.info(
         f"HBM buffer: staged_a=({M},{K}) [{buffer_mb:.1f} MB] "
@@ -274,9 +274,7 @@ def all_gather_matmul_hbm_buffer(
     assert num_k_blocks % k_per_flag == 0
 
     if workspace is None:
-        workspace = all_gather_matmul_hbm_buffer_preamble(
-            shmem, A_sharded, B, config, k_per_flag, staged_a_layout
-        )
+        workspace = all_gather_matmul_hbm_buffer_preamble(shmem, A_sharded, B, config, k_per_flag, staged_a_layout)
 
     workspace.locks.zero_()
 
@@ -315,16 +313,28 @@ def all_gather_matmul_hbm_buffer(
     grid_size = num_fetch_sms + total_gemm_tiles
 
     _hbm_buffer_all_gather_matmul_kernel[(grid_size,)](
-        A_sharded, B, output_tensor, bias_ptr,
-        workspace.aux_buffer, workspace.locks,
-        M, N, K, K_local,
-        stride_am, stride_ak,
-        stride_bk, stride_bn,
-        stride_cm, stride_cn,
-        stride_sa_m, stride_sa_k,
+        A_sharded,
+        B,
+        output_tensor,
+        bias_ptr,
+        workspace.aux_buffer,
+        workspace.locks,
+        M,
+        N,
+        K,
+        K_local,
+        stride_am,
+        stride_ak,
+        stride_bk,
+        stride_bn,
+        stride_cm,
+        stride_cn,
+        stride_sa_m,
+        stride_sa_k,
         stride_bias,
         shmem.get_device_context(),
-        rank, world_size,
+        rank,
+        world_size,
         config.block_size_m,
         config.block_size_n,
         config.block_size_k,
