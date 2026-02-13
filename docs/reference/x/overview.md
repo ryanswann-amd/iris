@@ -63,7 +63,7 @@ def kernel(input_ptr, output_ptr, context_tensor: tl.tensor,
     
     # Call collectives directly
     iris.x.all_reduce_atomic(tile, dst_view, ctx)
-    iris.x.all_gather(tile, dst_view, dst_view, dim=0, ctx)
+    iris.x.all_gather(tile, dst_view, dim=0, ctx=ctx)
     iris.x.all_to_all(tile, dst_view, dst_view, N_per_rank, ctx)
 ```
 
