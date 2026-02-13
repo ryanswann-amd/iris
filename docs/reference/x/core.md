@@ -2,6 +2,8 @@
 
 Core classes and functions for iris.x tile-level primitives.
 
+**Note:** `iris.DeviceContext` (from the main iris module) should be used for device-side context, not documented here as it's part of the main iris API.
+
 ## TileView
 
 Represents a tile's position and size in a 2D grid.
@@ -26,18 +28,10 @@ Legacy tile representation. Use TileView instead.
 
 Represents a tensor's memory layout (pointer, shape, strides).
 
+**Note:** Use `iris.x.make_tensor_view()` factory function to create TensorView instances in JIT context.
+
 ```{eval-rst}
 .. autoclass:: iris.x.TensorView
-   :members:
-   :undoc-members:
-```
-
-## DeviceContext
-
-Holds rank, world size, and heap bases for communication.
-
-```{eval-rst}
-.. autoclass:: iris.x.DeviceContext
    :members:
    :undoc-members:
 ```
@@ -46,6 +40,8 @@ Holds rank, world size, and heap bases for communication.
 
 Configuration for selecting all-reduce algorithms.
 
+Takes an integer variant code (0=atomic, 1=ring, 2=one_shot, 3=two_shot, 4=spinlock) and a locks pointer.
+
 ```{eval-rst}
 .. autoclass:: iris.x.AllReduceConfig
    :members:
@@ -53,6 +49,14 @@ Configuration for selecting all-reduce algorithms.
 ```
 
 ## Helper Functions
+
+### make_tensor_view
+
+Factory function to create TensorView in JIT context.
+
+```{eval-rst}
+.. autofunction:: iris.x.make_tensor_view
+```
 
 ### tile_layout
 

@@ -35,7 +35,7 @@ shmem.ops.matmul_all_reduce(output, A, B)
 ### Via shmem.ops namespace (recommended)
 
 ```python
-shmem = iris.iris(heap_size)
+shmem = iris.iris(heap_size=2**30)  # 1GB heap
 A = shmem.randn((M, K), dtype=torch.float16)
 B = shmem.randn((K, N), dtype=torch.float16)
 output = shmem.zeros((M, N), dtype=torch.float16)
@@ -49,7 +49,7 @@ shmem.ops.matmul_all_reduce(output, A, B)
 ```python
 import iris.ops as ops
 
-shmem = iris.iris(heap_size)
+shmem = iris.iris(heap_size=2**30)  # 1GB heap
 A = shmem.randn((M, K), dtype=torch.float16)
 B = shmem.randn((K, N), dtype=torch.float16)
 output = shmem.zeros((M, N), dtype=torch.float16)

@@ -13,8 +13,10 @@ import triton
 import triton.language as tl
 
 @triton.jit
-def my_kernel(input_ptr, output_ptr, M, N, 
-              rank, world_size, heap_bases,
+def my_kernel(input_ptr, output_ptr, context_tensor: tl.tensor,
+              M: tl.constexpr, N: tl.constexpr,
+              stride_m: tl.constexpr, stride_n: tl.constexpr,
+              rank: tl.constexpr, world_size: tl.constexpr,
               BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     # Get tile coordinates
     pid_m = tl.program_id(0)
@@ -22,75 +24,85 @@ def my_kernel(input_ptr, output_ptr, M, N,
     
     # Create views
     tile = iris.x.TileView(pid_m, pid_n, BLOCK_M, BLOCK_N)
-    src_view = iris.x.TensorView(input_ptr, M, N, stride_m=N, stride_n=1)
-    dst_view = iris.x.TensorView(output_ptr, M, N, stride_m=N, stride_n=1)
-    ctx = iris.x.DeviceContext(rank, world_size, heap_bases)
+    src_view = iris.x.make_tensor_view(input_ptr, M, N, stride_m, stride_n)
+    dst_view = iris.x.make_tensor_view(output_ptr, M, N, stride_m, stride_n)
+    ctx = iris.DeviceContext.initialize(context_tensor, rank, world_size)
     
     # Perform tile-level collective operation
-    ctx.all_reduce(tile, src_view, dst_view)
+    iris.x.all_reduce_atomic(tile, dst_view, ctx)
 ```
 
 ## Core Abstractions
 
 - **TileView**: Represents a tile's position and size in a 2D grid
 - **TensorView**: Represents a tensor's memory layout (pointer, shape, strides)
-- **DeviceContext**: Holds rank, world size, and heap bases for communication
+- **make_tensor_view**: Factory function to create TensorView in JIT context
 - **AllReduceConfig**: Configuration for selecting all-reduce algorithms
+
+**Note:** `iris.DeviceContext` (from the main iris module) is used for device-side context, not `iris.x.DeviceContext`.
 
 ## Usage Patterns
 
-### Using DeviceContext (Recommended)
+### Standalone Functions (Recommended)
 
-The `DeviceContext` provides a clean API for calling collectives:
+The recommended approach is to call collective operations directly as standalone functions:
 
 ```python
 @triton.jit
-def kernel(input_ptr, output_ptr, ...):
-    tile = iris.x.TileView(pid_m, pid_n, BLOCK_M, BLOCK_N)
-    src_view = iris.x.TensorView(input_ptr, M, N, stride_m, stride_n)
-    dst_view = iris.x.TensorView(output_ptr, M, N, stride_m, stride_n)
-    ctx = iris.x.DeviceContext(rank, world_size, heap_bases)
+def kernel(input_ptr, output_ptr, context_tensor: tl.tensor,
+           M: tl.constexpr, N: tl.constexpr,
+           stride_m: tl.constexpr, stride_n: tl.constexpr,
+           rank: tl.constexpr, world_size: tl.constexpr,
+           BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
     
-    # Call collectives with default algorithms
-    ctx.all_reduce(tile, src_view, dst_view)
-    ctx.all_gather(tile, src_view, dst_view, dim=0)
-    ctx.all_to_all(tile, src_view, dst_view, N_per_rank)
-    ctx.reduce_scatter(tile, src_view, dst_view)
+    tile = iris.x.TileView(pid_m, pid_n, BLOCK_M, BLOCK_N)
+    dst_view = iris.x.make_tensor_view(output_ptr, M, N, stride_m, stride_n)
+    ctx = iris.DeviceContext.initialize(context_tensor, rank, world_size)
+    
+    # Call collectives directly
+    iris.x.all_reduce_atomic(tile, dst_view, ctx)
+    iris.x.all_gather(tile, dst_view, dst_view, dim=0, ctx)
+    iris.x.all_to_all(tile, dst_view, dst_view, N_per_rank, ctx)
 ```
 
 ### Algorithm Selection
 
-Use `AllReduceConfig` to select specific all-reduce algorithms:
+Use `AllReduceConfig` to select specific all-reduce algorithms. The config takes an integer variant code (0-4) and a locks pointer:
 
 ```python
 @triton.jit
-def kernel(input_ptr, output_ptr, locks_ptr, ...):
-    ctx = iris.x.DeviceContext(rank, world_size, heap_bases)
+def kernel(input_ptr, output_ptr, locks_ptr, context_tensor: tl.tensor,
+           M: tl.constexpr, N: tl.constexpr,
+           stride_m: tl.constexpr, stride_n: tl.constexpr,
+           rank: tl.constexpr, world_size: tl.constexpr,
+           BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
     
-    # Use ring algorithm
-    config = iris.x.AllReduceConfig("ring")
-    ctx.all_reduce(tile, src_view, dst_view, config=config)
+    tile = iris.x.TileView(pid_m, pid_n, BLOCK_M, BLOCK_N)
+    dst_view = iris.x.make_tensor_view(output_ptr, M, N, stride_m, stride_n)
+    ctx = iris.DeviceContext.initialize(context_tensor, rank, world_size)
     
-    # Use spinlock algorithm with locks
-    config = iris.x.AllReduceConfig("spinlock", locks_ptr)
+    # Use ring algorithm (variant_code = 1)
+    # For variants that don't need locks, pass a dummy tensor
+    dummy_locks = tl.zeros((1,), dtype=tl.int32)
+    config = iris.x.AllReduceConfig(1, dummy_locks)
+    iris.x.all_reduce_ring(tile, dst_view, ctx)
+    
+    # Use spinlock algorithm with locks (variant_code = 4)
+    config = iris.x.AllReduceConfig(4, locks_ptr)
     tile_id = pid_m * num_tiles_n + pid_n
-    ctx.all_reduce(tile, src_view, dst_view, config=config, tile_id=tile_id)
+    iris.x.all_reduce_spinlock(tile, dst_view, locks_ptr, ctx)
 ```
 
-### Standalone Functions
-
-You can also call operations directly without `DeviceContext`:
-
-```python
-@triton.jit
-def kernel(input_ptr, output_ptr, ...):
-    ctx = iris.x.DeviceContext(rank, world_size, heap_bases)
-    
-    # Call operations directly
-    iris.x.all_reduce_atomic(tile, src_view, dst_view, ctx)
-    iris.x.all_reduce_ring(tile, src_view, dst_view, ctx)
-    iris.x.all_gather(tile, src_view, dst_view, dim, ctx)
-```
+**Variant codes:**
+- 0 = atomic
+- 1 = ring
+- 2 = one_shot
+- 3 = two_shot
+- 4 = spinlock
 
 ## Available Operations
 
@@ -114,6 +126,7 @@ def kernel(input_ptr, output_ptr, ...):
 - **tile_layout**: Compute memory layout for a tile
 - **tile_ptr**: Compute pointer to tile data
 - **offset_ptr**: Offset a pointer by tile coordinates
+- **make_tensor_view**: Factory function to create TensorView in JIT context
 
 ## API Reference
 
