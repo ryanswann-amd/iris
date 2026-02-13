@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
-import triton
 import triton.language as tl
 import torch
 
@@ -86,7 +85,7 @@ class Timestamps:
         self.comm_end_timestamp.fill_(self.min_ts)
 
     def to_json(self, filename, gpu_freq):
-        cycles_to_us = lambda cycles: (cycles / gpu_freq)
+        cycles_to_us = lambda cycles: cycles / gpu_freq
 
         gemm_begin_us = cycles_to_us(self.mm_begin_timestamp.cpu().numpy())
         gemm_end_us = cycles_to_us(self.mm_end_timestamp.cpu().numpy())
@@ -154,16 +153,5 @@ def is_triton_interpret_set():
     return "TRITON_INTERPRET" in os.environ
 
 
-@triton.jit
-def read_realtime():
-    tmp = tl.inline_asm_elementwise(
-        asm="""s_waitcnt vmcnt(0)
-        s_memrealtime $0
-        s_waitcnt lgkmcnt(0)""",
-        constraints=("=s"),
-        args=[],
-        dtype=tl.int64,
-        is_pure=False,
-        pack=1,
-    )
-    return tmp
+# Re-export device utility functions from iris module
+# These are kept here for backward compatibility with existing examples
