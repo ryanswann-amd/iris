@@ -19,6 +19,18 @@ subtrees:
         - file: reference/triton/class.md
         - file: reference/triton/tensor-creation.md
         - file: reference/triton/device-functions.md
+      - file: reference/ccl/overview.md
+        entries:
+        - file: reference/ccl/operations.md
+        - file: reference/ccl/config.md
+      - file: reference/ops/overview.md
+        entries:
+        - file: reference/ops/operations.md
+        - file: reference/ops/config.md
+      - file: reference/x/overview.md
+        entries:
+        - file: reference/x/core.md
+        - file: reference/x/operations.md
       - file: reference/gluon/overview.md
         entries:
         - file: reference/gluon/class.md
