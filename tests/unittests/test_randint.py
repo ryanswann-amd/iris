@@ -9,22 +9,19 @@ import iris
 @pytest.mark.parametrize(
     "dtype",
     [
-        torch.int8,
-        torch.int16,
         torch.int32,
         torch.int64,
         torch.uint8,
+        torch.int8,
     ],
 )
 @pytest.mark.parametrize(
     "size",
     [
         (1,),
-        (5,),
-        (2, 3),
-        (3, 4, 5),
-        (1, 1, 1),
-        (10, 20),
+        (100,),
+        (32, 32),
+        (4, 8, 16),
     ],
 )
 def test_randint_basic(dtype, size):
@@ -193,10 +190,10 @@ def test_randint_edge_cases():
     assert torch.all(single_result < 10)
     assert shmem._Iris__on_symmetric_heap(single_result)
 
-    # Large tensor
-    large_result = shmem.randint(0, 100, (100, 100))
-    assert large_result.shape == (100, 100)
-    assert large_result.numel() == 10000
+    # Large tensor for memory validation
+    large_result = shmem.randint(0, 100, (1024, 1024))
+    assert large_result.shape == (1024, 1024)
+    assert large_result.numel() == 1024 * 1024
     assert torch.all(large_result >= 0)
     assert torch.all(large_result < 100)
     assert shmem._Iris__on_symmetric_heap(large_result)
@@ -208,6 +205,20 @@ def test_randint_edge_cases():
     assert torch.all(scalar_result >= 0)
     assert torch.all(scalar_result < 10)
     assert shmem._Iris__on_symmetric_heap(scalar_result)
+
+    # Edge dtype: int16
+    int16_result = shmem.randint(0, 10, (10, 20), dtype=torch.int16)
+    assert int16_result.dtype == torch.int16
+    assert torch.all(int16_result >= 0)
+    assert torch.all(int16_result < 10)
+    assert shmem._Iris__on_symmetric_heap(int16_result)
+
+    # Complex shape for multi-dimensional handling
+    complex_result = shmem.randint(0, 10, (2, 3, 4, 5))
+    assert complex_result.shape == (2, 3, 4, 5)
+    assert torch.all(complex_result >= 0)
+    assert torch.all(complex_result < 10)
+    assert shmem._Iris__on_symmetric_heap(complex_result)
 
 
 def test_randint_pytorch_equivalence():

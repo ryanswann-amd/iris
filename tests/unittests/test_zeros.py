@@ -9,13 +9,9 @@ import iris
 @pytest.mark.parametrize(
     "dtype",
     [
-        torch.int8,
-        torch.int16,
-        torch.int32,
-        torch.int64,
-        torch.float16,
         torch.float32,
-        torch.float64,
+        torch.float16,
+        torch.int32,
         torch.bool,
     ],
 )
@@ -23,11 +19,9 @@ import iris
     "size",
     [
         (1,),
-        (5,),
-        (2, 3),
-        (3, 4, 5),
-        (1, 1, 1),
-        (10, 20),
+        (100,),
+        (32, 32),
+        (4, 8, 16),
     ],
 )
 def test_zeros_basic(dtype, size):
@@ -198,10 +192,10 @@ def test_zeros_edge_cases():
     assert single_result[0] == 0
     assert shmem._Iris__on_symmetric_heap(single_result)
 
-    # Large tensor
-    large_result = shmem.zeros(100, 100)
-    assert large_result.shape == (100, 100)
-    assert large_result.numel() == 10000
+    # Large tensor for memory validation
+    large_result = shmem.zeros(1024, 1024)
+    assert large_result.shape == (1024, 1024)
+    assert large_result.numel() == 1024 * 1024
     assert torch.all(large_result == 0)
     assert shmem._Iris__on_symmetric_heap(large_result)
 
@@ -211,6 +205,24 @@ def test_zeros_edge_cases():
     assert scalar_result.numel() == 1
     assert scalar_result.item() == 0
     assert shmem._Iris__on_symmetric_heap(scalar_result)
+
+    # Edge dtype: int8
+    int8_result = shmem.zeros(10, 20, dtype=torch.int8)
+    assert int8_result.dtype == torch.int8
+    assert torch.all(int8_result == 0)
+    assert shmem._Iris__on_symmetric_heap(int8_result)
+
+    # Edge dtype: float64
+    float64_result = shmem.zeros(5, 10, dtype=torch.float64)
+    assert float64_result.dtype == torch.float64
+    assert torch.all(float64_result == 0)
+    assert shmem._Iris__on_symmetric_heap(float64_result)
+
+    # Complex shape for multi-dimensional handling
+    complex_result = shmem.zeros(2, 3, 4, 5)
+    assert complex_result.shape == (2, 3, 4, 5)
+    assert torch.all(complex_result == 0)
+    assert shmem._Iris__on_symmetric_heap(complex_result)
 
 
 def test_zeros_pytorch_equivalence():

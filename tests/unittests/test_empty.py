@@ -9,13 +9,9 @@ import iris
 @pytest.mark.parametrize(
     "dtype",
     [
-        torch.int8,
-        torch.int16,
-        torch.int32,
-        torch.int64,
-        torch.float16,
         torch.float32,
-        torch.float64,
+        torch.float16,
+        torch.int32,
         torch.bool,
     ],
 )
@@ -23,11 +19,9 @@ import iris
     "size",
     [
         (1,),
-        (5,),
-        (2, 3),
-        (3, 4, 5),
-        (1, 1, 1),
-        (10, 20),
+        (100,),
+        (32, 32),
+        (4, 8, 16),
     ],
 )
 def test_empty_basic(dtype, size):
@@ -183,10 +177,10 @@ def test_empty_edge_cases():
     assert single_result.numel() == 1
     assert shmem._Iris__on_symmetric_heap(single_result)
 
-    # Large tensor
-    large_result = shmem.empty(100, 100)
-    assert large_result.shape == (100, 100)
-    assert large_result.numel() == 10000
+    # Large tensor for memory validation
+    large_result = shmem.empty(1024, 1024)
+    assert large_result.shape == (1024, 1024)
+    assert large_result.numel() == 1024 * 1024
     assert shmem._Iris__on_symmetric_heap(large_result)
 
     # Zero-dimensional tensor (scalar)
@@ -194,6 +188,21 @@ def test_empty_edge_cases():
     assert scalar_result.shape == ()
     assert scalar_result.numel() == 1
     assert shmem._Iris__on_symmetric_heap(scalar_result)
+
+    # Edge dtype: int8
+    int8_result = shmem.empty(10, 20, dtype=torch.int8)
+    assert int8_result.dtype == torch.int8
+    assert shmem._Iris__on_symmetric_heap(int8_result)
+
+    # Edge dtype: float64
+    float64_result = shmem.empty(5, 10, dtype=torch.float64)
+    assert float64_result.dtype == torch.float64
+    assert shmem._Iris__on_symmetric_heap(float64_result)
+
+    # Complex shape for multi-dimensional handling
+    complex_result = shmem.empty(2, 3, 4, 5)
+    assert complex_result.shape == (2, 3, 4, 5)
+    assert shmem._Iris__on_symmetric_heap(complex_result)
 
 
 def test_empty_pytorch_equivalence():

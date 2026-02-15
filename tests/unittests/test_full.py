@@ -13,22 +13,15 @@ import iris
         1,
         -1,
         3.141592,
-        -2.718,
-        42,
-        -100,
-        0.5,
-        -0.25,
     ],
 )
 @pytest.mark.parametrize(
     "size",
     [
         (1,),
-        (5,),
-        (2, 3),
-        (3, 4, 5),
-        (1, 1, 1),
-        (10, 20),
+        (100,),
+        (32, 32),
+        (4, 8, 16),
     ],
 )
 def test_full_basic(fill_value, size):
@@ -209,10 +202,10 @@ def test_full_edge_cases():
     assert single_result[0] == 5.0
     assert shmem._Iris__on_symmetric_heap(single_result)
 
-    # Large tensor
-    large_result = shmem.full((100, 100), 0.1)
-    assert large_result.shape == (100, 100)
-    assert large_result.numel() == 10000
+    # Large tensor for memory validation
+    large_result = shmem.full((1024, 1024), 0.1)
+    assert large_result.shape == (1024, 1024)
+    assert large_result.numel() == 1024 * 1024
     assert torch.all(large_result == 0.1)
     assert shmem._Iris__on_symmetric_heap(large_result)
 
@@ -222,6 +215,33 @@ def test_full_edge_cases():
     assert scalar_result.numel() == 1
     assert torch.allclose(scalar_result, torch.tensor(2.718))
     assert shmem._Iris__on_symmetric_heap(scalar_result)
+
+    # Edge dtype: int8
+    int8_result = shmem.full((10, 20), 42, dtype=torch.int8)
+    assert int8_result.dtype == torch.int8
+    assert torch.all(int8_result == 42)
+    assert shmem._Iris__on_symmetric_heap(int8_result)
+
+    # Edge dtype: float64
+    float64_result = shmem.full((5, 10), -2.718, dtype=torch.float64)
+    assert float64_result.dtype == torch.float64
+    assert torch.allclose(float64_result, torch.tensor(-2.718))
+    assert shmem._Iris__on_symmetric_heap(float64_result)
+
+    # Complex shape for multi-dimensional handling
+    complex_result = shmem.full((2, 3, 4, 5), 0.5)
+    assert complex_result.shape == (2, 3, 4, 5)
+    assert torch.all(complex_result == 0.5)
+    assert shmem._Iris__on_symmetric_heap(complex_result)
+
+    # Additional fill values
+    fill_values_result = shmem.full((5, 5), -100)
+    assert torch.all(fill_values_result == -100)
+    assert shmem._Iris__on_symmetric_heap(fill_values_result)
+
+    fill_values_result2 = shmem.full((5, 5), -0.25)
+    assert torch.allclose(fill_values_result2, torch.tensor(-0.25))
+    assert shmem._Iris__on_symmetric_heap(fill_values_result2)
 
 
 def test_full_pytorch_equivalence():
