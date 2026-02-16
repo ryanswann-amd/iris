@@ -316,7 +316,7 @@ def test_zeros_like_pytorch_equivalence():
 
 
 def test_zeros_like_edge_cases():
-    shmem = iris.iris(1 << 20)
+    shmem = iris.iris(1 << 24)
 
     # Empty tensor
     empty_tensor = shmem.full((0,), 1, dtype=torch.float32)

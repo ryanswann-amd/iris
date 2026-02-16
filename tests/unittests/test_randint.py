@@ -174,7 +174,7 @@ def test_randint_size_variations():
 
 
 def test_randint_edge_cases():
-    shmem = iris.iris(1 << 20)
+    shmem = iris.iris(1 << 24)
 
     # Empty tensor
     empty_result = shmem.randint(0, 5, (0,))

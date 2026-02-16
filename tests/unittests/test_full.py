@@ -187,7 +187,7 @@ def test_full_size_variations():
 
 
 def test_full_edge_cases():
-    shmem = iris.iris(1 << 20)
+    shmem = iris.iris(1 << 24)
 
     # Empty tensor
     empty_result = shmem.full((0,), 1.0)

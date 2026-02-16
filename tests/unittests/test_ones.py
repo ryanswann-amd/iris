@@ -177,7 +177,7 @@ def test_ones_size_variations():
 
 
 def test_ones_edge_cases():
-    shmem = iris.iris(1 << 20)
+    shmem = iris.iris(1 << 24)
 
     # Empty tensor
     empty_result = shmem.ones(0)

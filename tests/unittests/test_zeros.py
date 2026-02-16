@@ -177,7 +177,7 @@ def test_zeros_size_variations():
 
 
 def test_zeros_edge_cases():
-    shmem = iris.iris(1 << 20)
+    shmem = iris.iris(1 << 24)
 
     # Empty tensor
     empty_result = shmem.zeros(0)
