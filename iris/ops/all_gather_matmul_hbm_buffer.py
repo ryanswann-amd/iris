@@ -16,6 +16,7 @@ import triton.language as tl
 import iris
 import iris.x
 
+from iris.device_utils import read_realtime, get_xcc_id
 from .config import FusedConfig
 from .workspace import FusedWorkspace
 
@@ -58,10 +59,19 @@ def _hbm_buffer_all_gather_matmul_kernel(
     TOTAL_GATHER_TILES: tl.constexpr,
     BIAS: tl.constexpr,
     ALLOW_TF32: tl.constexpr,
+    trace_start_ptr,
+    trace_end_ptr,
+    trace_wait_ptr,
+    trace_xcd_ptr,
+    TRACE: tl.constexpr,
 ):
     pid = tl.program_id(0)
     acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
     zero = tl.program_id(0) * 0
+
+    if TRACE:
+        tl.store(trace_start_ptr + pid, read_realtime())
+        tl.store(trace_xcd_ptr + pid, get_xcc_id())
 
     if pid < NUM_FETCH_SMS:
         # ==============================================================
@@ -102,11 +112,15 @@ def _hbm_buffer_all_gather_matmul_kernel(
                 for compile_rank in range(world_size):
                     if src_rank_idx == compile_rank:
                         a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
-                        tl.store(staged_ptrs, a_tile,cache_modifier=".wt")   
+                        tl.store(staged_ptrs, a_tile,cache_modifier=".cg")   
 
             flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-            #tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-            tl.store(flags_ptr + flag_idx, 1)
+            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+            #tl.store(flags_ptr + flag_idx, 1,cache_modifier=".wt")
+
+        if TRACE:
+            tl.store(trace_wait_ptr + pid, zero.to(tl.int64),cache_modifier=".wt")
+            tl.store(trace_end_ptr + pid, read_realtime(),cache_modifier=".wt")
 
     else:
         # ==============================================================
@@ -128,10 +142,19 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
+        if TRACE:
+            _wt = zero.to(tl.int64)
+
         for k_fg in range(NUM_FLAG_GROUPS_K):
+            if TRACE:
+                _ws = read_realtime()
+
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
                 pass
+
+            if TRACE:
+                _wt = _wt + (read_realtime() - _ws)
 
             k_block_base = k_fg * K_PER_FLAG
             for k_off in range(K_PER_FLAG):
@@ -158,7 +181,11 @@ def _hbm_buffer_all_gather_matmul_kernel(
         c = acc.to(C.type.element_ty)
         C_ptrs = C + rm[:, None] * stride_cm + rn[None, :] * stride_cn
         c_mask = (rm[:, None] < M) & (rn[None, :] < N)
-        tl.store(C_ptrs, c, mask=c_mask)
+        tl.store(C_ptrs, c, mask=c_mask,cache_modifier=".wt")
+
+        if TRACE:
+            tl.store(trace_wait_ptr + pid, _wt)
+            tl.store(trace_end_ptr + pid, read_realtime(),cache_modifier=".wt")
 
 
 # ==========================================================================
@@ -245,6 +272,7 @@ def all_gather_matmul_hbm_buffer(
     staged_a_layout: str = "k_contiguous",
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
+    trace: bool = False,
 ) -> FusedWorkspace:
     """
     All-gather + matmul with dedicated fetcher/GEMM workgroups.
@@ -315,6 +343,18 @@ def all_gather_matmul_hbm_buffer(
 
     grid_size = num_fetch_sms + total_gemm_tiles
 
+    # Trace buffers
+    if trace:
+        trace_start = torch.zeros(grid_size, dtype=torch.int64, device=device)
+        trace_end = torch.zeros(grid_size, dtype=torch.int64, device=device)
+        trace_wait = torch.zeros(grid_size, dtype=torch.int64, device=device)
+        trace_xcd = torch.zeros(grid_size, dtype=torch.int32, device=device)
+    else:
+        trace_start = torch.empty(1, dtype=torch.int64, device=device)
+        trace_end = torch.empty(1, dtype=torch.int64, device=device)
+        trace_wait = torch.empty(1, dtype=torch.int64, device=device)
+        trace_xcd = torch.empty(1, dtype=torch.int32, device=device)
+
     launch_kwargs = {"matrix_instr_nonkdim": 16}
     if num_warps is not None:
         launch_kwargs["num_warps"] = num_warps
@@ -358,10 +398,28 @@ def all_gather_matmul_hbm_buffer(
         total_gather_tiles,
         use_bias,
         config.allow_tf32,
+        trace_start,
+        trace_end,
+        trace_wait,
+        trace_xcd,
+        trace,
         **launch_kwargs,
     )
 
     if not async_op:
         shmem.barrier()
+
+    if trace:
+        torch.cuda.synchronize()
+        workspace.trace_data = {
+            "start": trace_start.cpu(),
+            "end": trace_end.cpu(),
+            "wait": trace_wait.cpu(),
+            "xcd": trace_xcd.cpu(),
+            "grid_size": grid_size,
+            "num_fetch_sms": num_fetch_sms,
+            "num_m_tiles": num_m_tiles,
+            "num_tiles_n": num_tiles_n,
+        }
 
     return workspace

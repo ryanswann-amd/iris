@@ -24,6 +24,7 @@ import torch
 import torch.distributed as dist
 import random
 import argparse
+import numpy as np
 
 import iris
 from iris.ops.all_gather_matmul_hbm_buffer import (
@@ -34,6 +35,135 @@ from iris.ops import FusedConfig
 
 torch.manual_seed(123)
 random.seed(123)
+
+TICKS_PER_US = 100  # s_memrealtime runs at 100 MHz: 1 tick = 10 ns = 0.01 us
+
+
+def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
+    """Generate a tall Gantt chart showing per-workgroup activity over time.
+
+    Y-axis: workgroup (sorted by start time)
+    X-axis: time in microseconds
+    Colors: fetcher (blue), GEMM wait (red), GEMM compute (green)
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    from matplotlib.lines import Line2D
+
+    starts = trace_data["start"].numpy().astype(np.int64)
+    ends = trace_data["end"].numpy().astype(np.int64)
+    waits = trace_data["wait"].numpy().astype(np.int64)
+    xcds = trace_data["xcd"].numpy().astype(np.int32)
+    grid_size = trace_data["grid_size"]
+    n_fetch = trace_data["num_fetch_sms"]
+
+    # Convert to microseconds relative to earliest start
+    t_min = starts.min()
+    starts_us = (starts - t_min) / TICKS_PER_US
+    ends_us = (ends - t_min) / TICKS_PER_US
+    waits_us = waits / TICKS_PER_US
+
+    # Build role array: 0=fetcher, 1=GEMM
+    roles = np.array([0 if i < n_fetch else 1 for i in range(grid_size)])
+
+    # Sort by start time
+    order = np.argsort(starts_us)
+
+    # Compute figure height: ~0.012 inches per row, min 12 inches
+    row_h = 0.012
+    fig_h = max(12, grid_size * row_h + 2)
+    fig, ax = plt.subplots(figsize=(18, fig_h))
+
+    fetch_color = "#2196F3"   # blue
+    wait_color = "#F44336"    # red
+    compute_color = "#4CAF50" # green
+
+    for y_idx, wg_idx in enumerate(order):
+        s = starts_us[wg_idx]
+        e = ends_us[wg_idx]
+        dur = e - s
+        role = roles[wg_idx]
+
+        if role == 0:
+            # Fetcher: solid blue bar
+            ax.barh(y_idx, dur, left=s, height=0.8, color=fetch_color,
+                    edgecolor="none", linewidth=0)
+        else:
+            # GEMM: split into wait (red) and compute (green)
+            w = waits_us[wg_idx]
+            c = max(0, dur - w)
+            # Show wait portion first, then compute
+            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color,
+                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, c, left=s + w, height=0.8, color=compute_color,
+                    edgecolor="none", linewidth=0)
+
+    # XCD annotations on the right margin
+    xcd_set = sorted(set(xcds.tolist()))
+    xcd_cmap = {}
+    if len(xcd_set) > 1:
+        cmap = matplotlib.colormaps.get_cmap("tab10").resampled(len(xcd_set))
+        for i, x in enumerate(xcd_set):
+            xcd_cmap[x] = cmap(i)
+
+    x_max = ends_us.max() * 1.02
+    for y_idx, wg_idx in enumerate(order):
+        xcd_id = xcds[wg_idx]
+        if xcd_id in xcd_cmap:
+            ax.plot(x_max, y_idx, marker="s", markersize=1.5,
+                    color=xcd_cmap[xcd_id], clip_on=False)
+
+    ax.set_xlabel("Time (us)", fontsize=12)
+    ax.set_ylabel("Workgroup (sorted by start time)", fontsize=12)
+    ax.set_title(
+        f"Rank {rank}  |  All-Gather GEMM Trace  |  "
+        f"M={M} N={N} K={K}  |  "
+        f"{n_fetch} fetchers + {grid_size - n_fetch} GEMM workgroups",
+        fontsize=13,
+    )
+    ax.set_ylim(-1, grid_size + 1)
+    ax.set_xlim(0, x_max)
+
+    # Invert y so earliest-starting workgroups are at top
+    ax.invert_yaxis()
+
+    # Legend
+    legend_elements = [
+        Line2D([0], [0], color=fetch_color, lw=6, label="Fetcher (all-gather)"),
+        Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"),
+        Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"),
+    ]
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
+
+    # Summary stats
+    fetch_mask = roles == 0
+    gemm_mask = roles == 1
+    fetch_dur = (ends_us - starts_us)[fetch_mask]
+    gemm_dur = (ends_us - starts_us)[gemm_mask]
+    gemm_wait = waits_us[gemm_mask]
+    gemm_compute = gemm_dur - gemm_wait
+
+    stats_text = (
+        f"Fetcher: {fetch_dur.mean():.1f} us avg  ({fetch_dur.min():.1f}-{fetch_dur.max():.1f})\n"
+        f"GEMM total: {gemm_dur.mean():.1f} us avg  ({gemm_dur.min():.1f}-{gemm_dur.max():.1f})\n"
+        f"  wait: {gemm_wait.mean():.1f} us avg  ({gemm_wait.min():.1f}-{gemm_wait.max():.1f})\n"
+        f"  compute: {gemm_compute.mean():.1f} us avg  ({gemm_compute.min():.1f}-{gemm_compute.max():.1f})\n"
+        f"  wait%: {100 * gemm_wait.sum() / gemm_dur.sum():.1f}%\n"
+        f"Wall time: {ends_us.max():.1f} us"
+    )
+    ax.text(
+        0.01, 0.99, stats_text, transform=ax.transAxes,
+        fontsize=9, verticalalignment="top", fontfamily="monospace",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
+    )
+
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [Rank {rank}] Trace plot saved to: {output_path}")
+    print(f"  {stats_text}")
 
 
 def parse_args():
@@ -72,6 +202,8 @@ def parse_args():
     parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
+    parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
+    parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
     return vars(parser.parse_args())
 
 
@@ -79,6 +211,8 @@ def _worker(args):
     """Worker function for torchrun."""
     local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
     world_size_env = int(os.environ.get("WORLD_SIZE", 1))
+
+    t0 = time.perf_counter()
 
     backend = "nccl" if torch.cuda.is_available() else "gloo"
 
@@ -97,9 +231,17 @@ def _worker(args):
             device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
         )
 
+    t1 = time.perf_counter()
+
     shmem = iris.iris(args["heap_size"])
     rank = shmem.get_rank()
     world_size = shmem.get_num_ranks()
+
+    t2 = time.perf_counter()
+    shmem.info(
+        f"Startup: dist.init={t1 - t0:.1f}s, iris.init={t2 - t1:.1f}s, "
+        f"total={t2 - t0:.1f}s"
+    )
 
     datatype_map = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}
     datatype = datatype_map.get(args["datatype"], torch.float16)
@@ -307,6 +449,56 @@ def _worker(args):
             print(f"  Spread (max - min): {max_t - min_t:.3f} ms")
             print()
 
+        shmem.barrier()
+
+    # ── Trace ────────────────────────────────────────────────────────────
+    if args["trace"]:
+        # Warmup: compile the TRACE=True kernel variant before the real run
+        shmem.info("Trace warmup (compiling traced kernel variant)...")
+        C.zero_()
+        workspace.locks.zero_()
+        shmem.barrier()
+        all_gather_matmul_hbm_buffer(
+            shmem, C, A_sharded, B,
+            config=config, async_op=False, workspace=workspace,
+            num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
+            num_warps=num_warps, num_stages=num_stages,
+            trace=True,
+        )
+        torch.cuda.synchronize()
+        shmem.barrier()
+
+        # Actual traced run (post-compilation, clean state)
+        shmem.info("Running single traced iteration...")
+        C.zero_()
+        workspace.locks.zero_()
+        shmem.barrier()
+
+        all_gather_matmul_hbm_buffer(
+            shmem,
+            C,
+            A_sharded,
+            B,
+            config=config,
+            async_op=False,
+            workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            trace=True,
+        )
+        torch.cuda.synchronize()
+        shmem.barrier()
+
+        if rank == 0 and hasattr(workspace, "trace_data"):
+            trace_out = args.get("trace_output", "trace_gantt.png")
+            try:
+                _plot_trace(workspace.trace_data, trace_out, rank, M, N, K, num_fetch_sms)
+            except ImportError:
+                print("  (matplotlib not available -- skipping trace plot)")
+            except Exception as e:
+                print(f"  (Trace plot failed: {e})")
         shmem.barrier()
 
     # ── PyTorch baseline ─────────────────────────────────────────────────
