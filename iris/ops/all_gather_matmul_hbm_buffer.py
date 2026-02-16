@@ -102,10 +102,11 @@ def _hbm_buffer_all_gather_matmul_kernel(
                 for compile_rank in range(world_size):
                     if src_rank_idx == compile_rank:
                         a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
-                        tl.store(staged_ptrs, a_tile)
+                        tl.store(staged_ptrs, a_tile,cache_modifier=".wt")   
 
             flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+            #tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+            tl.store(flags_ptr + flag_idx, 1)
 
     else:
         # ==============================================================
@@ -242,6 +243,8 @@ def all_gather_matmul_hbm_buffer(
     fetch_block_m: Optional[int] = None,
     fetch_block_k: Optional[int] = None,
     staged_a_layout: str = "k_contiguous",
+    num_warps: Optional[int] = None,
+    num_stages: Optional[int] = None,
 ) -> FusedWorkspace:
     """
     All-gather + matmul with dedicated fetcher/GEMM workgroups.
@@ -314,6 +317,12 @@ def all_gather_matmul_hbm_buffer(
 
     grid_size = num_fetch_sms + total_gemm_tiles
 
+    launch_kwargs = {"matrix_instr_nonkdim": 16}
+    if num_warps is not None:
+        launch_kwargs["num_warps"] = num_warps
+    if num_stages is not None:
+        launch_kwargs["num_stages"] = num_stages
+
     _hbm_buffer_all_gather_matmul_kernel[(grid_size,)](
         A_sharded, B, output_tensor, bias_ptr,
         workspace.aux_buffer, workspace.locks,
@@ -339,7 +348,7 @@ def all_gather_matmul_hbm_buffer(
         total_gather_tiles,
         use_bias,
         config.allow_tf32,
-        matrix_instr_nonkdim=16,
+        **launch_kwargs,
     )
 
     if not async_op:

@@ -68,6 +68,10 @@ def parse_args():
     parser.add_argument("--b_col_major", action="store_true", help="B col-major (K-contiguous)")
     parser.add_argument("--a_col_major", action="store_true", help="A col-major (M-contiguous)")
     parser.add_argument("--single-run", action="store_true", help="1 iteration (for profiling)")
+    parser.add_argument("--num_fetch_sms", type=int, default=None, help="Fetcher SMs (auto if None)")
+    parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
+    parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
+    parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
     return vars(parser.parse_args())
 
 
@@ -162,7 +166,10 @@ def _worker(args):
         expected_tensor.copy_(torch.matmul(A_gathered, B_data))
 
     # Pre-allocate workspace
-    workspace = all_gather_matmul_hbm_buffer_preamble(shmem, A_sharded, B, config)
+    k_per_flag = args["k_per_flag"]
+    workspace = all_gather_matmul_hbm_buffer_preamble(
+        shmem, A_sharded, B, config, k_per_flag=k_per_flag
+    )
 
     # ── Timing ───────────────────────────────────────────────────────────
     comm_stream = torch.cuda.Stream()
@@ -170,6 +177,10 @@ def _worker(args):
     end_ev = torch.cuda.Event(enable_timing=True)
     total_ms = 0.0
     num_experiments = 0
+
+    num_fetch_sms = args["num_fetch_sms"]
+    num_warps = args["num_warps"]
+    num_stages = args["num_stages"]
 
     def run_experiment():
         nonlocal total_ms, num_experiments
@@ -184,6 +195,10 @@ def _worker(args):
                 config=config,
                 async_op=False,
                 workspace=workspace,
+                num_fetch_sms=num_fetch_sms,
+                k_per_flag=k_per_flag,
+                num_warps=num_warps,
+                num_stages=num_stages,
             )
             end_ev.record()
             num_experiments += 1
@@ -263,6 +278,10 @@ def _worker(args):
             config=config,
             async_op=False,
             workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()
