@@ -102,10 +102,10 @@ def _hbm_buffer_all_gather_matmul_kernel(
                 for compile_rank in range(world_size):
                     if src_rank_idx == compile_rank:
                         a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
-                        tl.store(staged_ptrs, a_tile,cache_modifier=".wt")   
+                        tl.store(staged_ptrs, a_tile, cache_modifier=".wt")
 
             flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-            #tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+            # tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
             tl.store(flags_ptr + flag_idx, 1)
 
     else:

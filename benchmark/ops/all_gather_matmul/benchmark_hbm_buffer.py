@@ -167,9 +167,7 @@ def _worker(args):
 
     # Pre-allocate workspace
     k_per_flag = args["k_per_flag"]
-    workspace = all_gather_matmul_hbm_buffer_preamble(
-        shmem, A_sharded, B, config, k_per_flag=k_per_flag
-    )
+    workspace = all_gather_matmul_hbm_buffer_preamble(shmem, A_sharded, B, config, k_per_flag=k_per_flag)
 
     # ── Timing ───────────────────────────────────────────────────────────
     comm_stream = torch.cuda.Stream()
