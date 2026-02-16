@@ -225,7 +225,7 @@ def test_full_edge_cases():
     # Edge dtype: float64
     float64_result = shmem.full((5, 10), -2.718, dtype=torch.float64)
     assert float64_result.dtype == torch.float64
-    assert torch.allclose(float64_result, torch.tensor(-2.718))
+    assert torch.allclose(float64_result, torch.tensor(-2.718, dtype=torch.float64))
     assert shmem._Iris__on_symmetric_heap(float64_result)
 
     # Complex shape for multi-dimensional handling
