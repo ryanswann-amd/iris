@@ -9,9 +9,11 @@ import iris
 @pytest.mark.parametrize(
     "dtype",
     [
-        torch.float32,
-        torch.float16,
+        torch.int8,
+        torch.int16,
         torch.int32,
+        torch.float16,
+        torch.float32,
         torch.bool,
     ],
 )

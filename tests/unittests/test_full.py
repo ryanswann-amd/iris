@@ -13,6 +13,8 @@ import iris
         1,
         -1,
         3.141592,
+        -2.718,
+        42,
     ],
 )
 @pytest.mark.parametrize(
