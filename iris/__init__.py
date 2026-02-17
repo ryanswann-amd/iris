@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 """
 Iris: Multi-GPU Communication and Memory Management Framework
@@ -44,6 +44,8 @@ Quick Start (Gluon API - Experimental):
 from .iris import (
     Iris,
     iris,
+    DeviceContext,
+    TraceEvent,
     load,
     store,
     copy,
@@ -83,6 +85,8 @@ from .logging import (
 __all__ = [
     "Iris",
     "iris",
+    "DeviceContext",
+    "TraceEvent",
     "load",
     "store",
     "copy",

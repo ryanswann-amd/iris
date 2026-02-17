@@ -3,22 +3,17 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 import argparse
-import math
-import os
 import random
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import triton
-
-from examples.common.utils import JSONWriter, Timestamps, is_triton_interpret_set
-from examples.common.validation import validate_gemm
+from matmul_wrapper import matmul
 
 import iris
-
-from matmul_wrapper import matmul
-from gemm_all_scatter_bulk_synchronous import persistent_all_scatter
+from examples.common.utils import JSONWriter, Timestamps, is_triton_interpret_set
+from examples.common.validation import validate_gemm
 
 torch.manual_seed(123)
 random.seed(123)
@@ -35,6 +30,7 @@ def parse_args():
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("-v", "--validate", action="store_true", help="Enable validation mode")
     parser.add_argument("-t", "--trace_tiles", action="store_true", help="Enable tile-tracing mode")
+    parser.add_argument("--trace", action="store_true", help="Enable device tracing")
     parser.add_argument("-b", "--benchmark", action="store_true", help="Enable benchmarking mode")
     parser.add_argument(
         "--datatype",
@@ -59,10 +55,7 @@ def parse_args():
         "--gemm_sms",
         type=int,
         default=None,
-        help="Number of SMs for workgroup-specialized GEMM algorithm (default: auto-detected)",
-    )
-    parser.add_argument(
-        "--comm_sms", type=int, default=None, help="Number of SMs for All-Scatter kernel (default: auto-detected)"
+        help="Number of SMs for persistent GEMM algorithm (default: auto-detected)",
     )
     parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
 
@@ -80,20 +73,24 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         device_id=torch.device(f"cuda:{local_rank}"),
     )
 
-    shmem = iris.iris(args["heap_size"])
-    rank = shmem.get_rank()
-    world_size = shmem.get_num_ranks()
+    # Main benchmark logic
+    ctx = iris.iris(args["heap_size"])
+    rank = ctx.get_rank()
+    world_size = ctx.get_num_ranks()
+
+    # Enable device tracing if requested
+    if args["trace"]:
+        ctx.tracing.enable(max_events=1_000_000)
+        ctx.info("Device tracing enabled")
+
+    # Get device context
+    context_tensor = ctx.get_device_context()
 
     # Set default SM values if not provided
-    cu_count = torch.cuda.get_device_properties(rank).multi_processor_count
-    next_pow2 = 2 ** int(math.log2(cu_count)) if cu_count > 0 else 1
-
     if args["gemm_sms"] is None:
-        # For wg_specialized: use next smaller power of 2
-        args["gemm_sms"] = next_pow2
-    if args["comm_sms"] is None:
-        # For bulk synchronous, use same as gemm_sms
-        args["comm_sms"] = next_pow2
+        # For all_scatter: use total CU count
+        cu_count = torch.cuda.get_device_properties(rank).multi_processor_count
+        args["gemm_sms"] = cu_count
 
     # GEMM
     datatype = torch.float32
@@ -110,8 +107,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     assert args["n"] % world_size == 0, f"N ({args['n']}) must be divisible by world size ({world_size})."
     assert args["k"] % world_size == 0, f"K ({args['k']}) must be divisible by world size ({world_size})."
 
-    A = shmem.randn(args["m"], args["k"], device="cuda", dtype=datatype)
-    B = shmem.randn(args["n"], args["k"], device="cuda", dtype=datatype).T
+    A = ctx.randn(args["m"], args["k"], device="cuda", dtype=datatype)
+    B = ctx.randn(args["n"], args["k"], device="cuda", dtype=datatype).T
 
     args["M"] = args["m"]
     args["N"] = args["n"]
@@ -119,6 +116,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
     json_writer = JSONWriter(args["output_file"])
     json_writer.add_field("world_size", world_size)
+    json_writer.add_field("enable_tracing", args["trace"])
 
     # Splitting
     args["n"] = args["n"] // world_size
@@ -128,7 +126,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     for key, value in args.items():
         json_writer.add_field(key, value)
 
-    C = shmem.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
+    global_C = ctx.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
+    local_C = ctx.zeros((args["m"], args["n"]), device="cuda", dtype=A.dtype)
 
     total_blocks_M = triton.cdiv(args["m"], args["BLK_M"])
     total_blocks_N = triton.cdiv(args["n"], args["BLK_N"])
@@ -136,22 +135,12 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
     bias = None
 
-    num_xcds = iris.hip.get_num_xcc()
-
-    # This is one after another.
-    main_stream = torch.cuda.Stream()
+    gemm_stream = torch.cuda.Stream()
 
     json_writer.add_field("gemm_sms", args["gemm_sms"])
-    json_writer.add_field("comm_sms", args["comm_sms"])
 
     kernel_timing = {
         "gemm": {
-            "start_event": torch.cuda.Event(enable_timing=True),
-            "end_event": torch.cuda.Event(enable_timing=True),
-            "ms": 0,
-            "experiments": 0,
-        },
-        "communication": {
             "start_event": torch.cuda.Event(enable_timing=True),
             "end_event": torch.cuda.Event(enable_timing=True),
             "ms": 0,
@@ -162,24 +151,26 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     # Allocate Timestamps
     timestamps = Timestamps(num_tiles=total_tiles)
 
-    def run_experiment():
-        nonlocal C
+    def run_experiment(enable_tracing=False):
+        nonlocal local_C
+        nonlocal global_C
         nonlocal kernel_timing
 
-        shmem.barrier()
+        ctx.barrier()
 
         if args["trace_tiles"]:
             timestamps.reset()
-            shmem.barrier()
+            ctx.barrier()
 
         torch.cuda.nvtx.range_push("GEMM + Communication")
         torch.cuda.nvtx.range_push("GEMM")
-        with torch.cuda.stream(main_stream):
+        with torch.cuda.stream(gemm_stream):
             kernel_timing["gemm"]["start_event"].record()
-            C = matmul.apply(
+            local_C = matmul.apply(
                 local_A,
                 local_B,
-                C,
+                local_C,
+                global_C,
                 bias,
                 rank,
                 world_size,
@@ -189,8 +180,9 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
                 args["BLK_K"],
                 args["gsize_m"],
                 args["num_stages"],
-                shmem.get_heap_bases(),
+                context_tensor,
                 "gfx942",
+                enable_tracing,
                 args["trace_tiles"],
                 timestamps.mm_begin_timestamp,
                 timestamps.mm_end_timestamp,
@@ -199,61 +191,46 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             kernel_timing["gemm"]["experiments"] += 1
 
         torch.cuda.nvtx.range_pop()
-        torch.cuda.nvtx.range_push("Communication")
-        with torch.cuda.stream(main_stream):
-            kernel_timing["communication"]["start_event"].record()
-            persistent_all_scatter[(args["comm_sms"],)](
-                C,
-                args["M"],
-                args["n"],
-                C.stride(0),
-                C.stride(1),
-                args["BLK_M"],
-                args["BLK_N"],
-                args["gsize_m"],
-                args["comm_sms"],
-                num_xcds,
-                shmem.get_heap_bases(),
-                rank,
-                world_size,
-                args["trace_tiles"],
-                timestamps.mm_begin_timestamp,
-                timestamps.mm_end_timestamp,
-            )
-            kernel_timing["communication"]["end_event"].record()
-            kernel_timing["communication"]["experiments"] += 1
-        torch.cuda.nvtx.range_pop()
-        shmem.barrier()
+        ctx.barrier()
 
-        for k in ["gemm", "communication"]:
+        for k in ["gemm"]:
             ms = kernel_timing[k]["start_event"].elapsed_time(kernel_timing[k]["end_event"])
             kernel_timing[k]["ms"] += ms
 
         torch.cuda.nvtx.range_pop()
 
     # Synchronize across all GPUs
-    shmem.barrier()
+    ctx.barrier()
 
     # Warmup
-    run_experiment()
+    num_warmup_iters = 10
+    for i in range(num_warmup_iters):
+        run_experiment(enable_tracing=False)
+        ctx.barrier()
 
-    shmem.barrier()
+    # If tracing enabled, reset and run one clean iteration
+    if args["trace"]:
+        ctx.tracing.reset()
+        ctx.barrier()
+        run_experiment(enable_tracing=True)
+        ctx.barrier()
+        ctx.info(f"Captured clean trace after {num_warmup_iters} warmup iterations")
 
-    for k in ["gemm", "communication"]:
+    for k in ["gemm"]:
         kernel_timing[k]["ms"] = 0
         kernel_timing[k]["experiments"] = 0
 
     if args["validate"]:
-        shmem.info("Validating...")
+        ctx.info("Validating...")
         matmul.set_debug(True)
         # Validate global result
-        success = validate_gemm(A, B, C, shmem)
+        success = validate_gemm(A, B, global_C, ctx)
         passed_str = "passed" if success else "failed"
-        shmem.info(f"Final C validation {passed_str}.")
+        ctx.info(f"Final C validation {passed_str}.")
 
         # Wait for all to finish validation
-        shmem.barrier()
-        shmem.info("Validating local C...")
+        ctx.barrier()
+        ctx.info("Validating local C...")
 
         json_writer.add_field("success", success)
 
@@ -264,28 +241,29 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
             json_writer.add_field("gemm_registers", gemm_registers)
             json_writer.add_field("gemm_spills", gemm_spills)
 
-        shmem.info("Validation completed")
+        ctx.info("Validation completed")
 
     if args["benchmark"]:
         matmul.set_debug(False)
-        shmem.info("Benchmarking...")
+        ctx.info("Benchmarking...")
         perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
-        triton_ms = iris.do_bench(run_experiment, shmem.barrier)
+        triton_ms = iris.do_bench(lambda: run_experiment(enable_tracing=args["trace"]), ctx.barrier)
         triton_tflops = perf(triton_ms)
         algo_string = "all_scatter"
-        shmem.info(
-            f"tile matmul + {algo_string} (total_tiles={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
+        tracing_str = " (with tracing)" if args["trace"] else ""
+        ctx.info(
+            f"tile matmul + {algo_string}{tracing_str} (total_tiles={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
         )
 
         json_writer.add_field("tflops", triton_tflops)
         json_writer.add_field("total_ms", triton_ms)
 
-        for k in ["gemm", "communication"]:
+        for k in ["gemm"]:
             json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
             json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
 
         # Wait for all to finish benchmarking
-        shmem.barrier()
+        ctx.barrier()
 
     if rank == 0:
         json_writer.flush()
@@ -297,32 +275,31 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         filename = f"gemm_tiles_{algo_string}_trace_rank{rank}.json"
         timestamps.to_json(filename, gpu_freq)
 
-    shmem.barrier()
+    # Export device traces if enabled
+    if args["trace"]:
+        ctx.barrier()  # Ensure all kernels finished
+        # Export per-rank and merged trace
+        ctx.tracing.export("device_trace.json", merge=True)
+
+    ctx.barrier()
+
+    dist.barrier()
     dist.destroy_process_group()
 
 
 def main():
-    print("Starting GEMM all_scatter bulk synchronous benchmark...")
     args = parse_args()
 
-    # Check if running with torchrun (detected by environment variables)
-    if "RANK" in os.environ and "LOCAL_RANK" in os.environ:
-        # torchrun handles process spawning, so call _worker directly
-        print("Detected torchrun execution mode")
-        rank = int(os.environ.get("RANK", 0))
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-        init_url = os.environ.get("MASTER_ADDR", "127.0.0.1") + ":" + os.environ.get("MASTER_PORT", "29500")
-        _worker(rank, world_size, f"tcp://{init_url}", args)
-    else:
-        # Use multiprocessing spawn for backward compatibility
-        num_ranks = args["num_ranks"]
-        init_url = "tcp://127.0.0.1:29500"
-        mp.spawn(
-            fn=_worker,
-            args=(num_ranks, init_url, args),
-            nprocs=num_ranks,
-            join=True,
-        )
+    # Use command line argument if provided, otherwise use num_ranks parameter
+    num_ranks = args["num_ranks"]
+
+    init_url = "tcp://127.0.0.1:29500"
+    mp.spawn(
+        fn=_worker,
+        args=(num_ranks, init_url, args),
+        nprocs=num_ranks,
+        join=True,
+    )
 
 
 if __name__ == "__main__":
