@@ -72,7 +72,6 @@ def _hbm_buffer_all_gather_matmul_kernel(
     acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
     zero = tl.program_id(0) * 0
 
-
     if TRACE:
         tl.store(trace_start_ptr + pid, read_realtime())
         tl.store(trace_xcd_ptr + pid, get_xcc_id())
@@ -144,7 +143,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                                 tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
                     flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-                    #tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                    # tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
                     tl.store(flags_ptr + flag_idx, 1, cache_modifier=".wt")
 
         if TRACE:

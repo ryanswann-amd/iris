@@ -242,8 +242,18 @@ def parse_args():
     parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
-    parser.add_argument("--num_fetch_stages", type=int, default=1, help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)")
-    parser.add_argument("--first_stage_fetch_sms", type=int, default=None, help="Fetcher WGs for stage 0 (fills first GPU wave; defaults to num_fetch_sms)")
+    parser.add_argument(
+        "--num_fetch_stages",
+        type=int,
+        default=1,
+        help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)",
+    )
+    parser.add_argument(
+        "--first_stage_fetch_sms",
+        type=int,
+        default=None,
+        help="Fetcher WGs for stage 0 (fills first GPU wave; defaults to num_fetch_sms)",
+    )
     parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
     parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
     return vars(parser.parse_args())
@@ -502,12 +512,20 @@ def _worker(args):
         workspace.locks.zero_()
         shmem.barrier()
         all_gather_matmul_hbm_buffer(
-            shmem, C, A_sharded, B,
-            config=config, async_op=False, workspace=workspace,
-            num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
-            num_warps=num_warps, num_stages=num_stages,
+            shmem,
+            C,
+            A_sharded,
+            B,
+            config=config,
+            async_op=False,
+            workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
             num_fetch_stages=num_fetch_stages,
-            first_stage_fetch_sms=first_stage_fetch_sms, trace=True,
+            first_stage_fetch_sms=first_stage_fetch_sms,
+            trace=True,
         )
         torch.cuda.synchronize()
         shmem.barrier()
