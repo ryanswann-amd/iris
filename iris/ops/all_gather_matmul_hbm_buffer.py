@@ -59,6 +59,8 @@ def _hbm_buffer_all_gather_matmul_kernel(
     TOTAL_GATHER_TILES: tl.constexpr,
     BIAS: tl.constexpr,
     ALLOW_TF32: tl.constexpr,
+    NUM_FETCH_STAGES: tl.constexpr,
+    GEMM_TILES_PER_STAGE: tl.constexpr,
     trace_start_ptr,
     trace_end_ptr,
     trace_wait_ptr,
@@ -73,67 +75,83 @@ def _hbm_buffer_all_gather_matmul_kernel(
         tl.store(trace_start_ptr + pid, read_realtime())
         tl.store(trace_xcd_ptr + pid, get_xcc_id())
 
-    if pid < NUM_FETCH_SMS:
+    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
+    WGS_PER_STAGE: tl.constexpr = NUM_FETCH_SMS + GEMM_TILES_PER_STAGE
+    M_PER_STAGE: tl.constexpr = (NUM_M_TILES + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
+
+    local_pid = pid % WGS_PER_STAGE
+
+    if local_pid < NUM_FETCH_SMS:
         # ==============================================================
-        # FETCHER
+        # FETCHER  — interleaved: stage determined by pid // WGS_PER_STAGE
         # ==============================================================
+        my_stage = pid // WGS_PER_STAGE
+        stage_pid = local_pid
+
         ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size)
         src_view = iris.x.make_tensor_view(A_sharded, M, K_local, stride_am, stride_ak)
 
-        num_m_groups = (NUM_M_TILES + GROUP_SIZE_M - 1) // GROUP_SIZE_M
         tiles_per_m_group = NUM_FLAG_GROUPS_K * GROUP_SIZE_M
-        total_flag_groups = NUM_FLAG_GROUPS_K * NUM_M_TILES
 
-        for fg_idx in range(pid, total_flag_groups, NUM_FETCH_SMS):
-            m_group = fg_idx // tiles_per_m_group
-            within_group = fg_idx % tiles_per_m_group
-            k_flag_group = within_group // GROUP_SIZE_M
-            m_in_group = within_group % GROUP_SIZE_M
-            m_tile = m_group * GROUP_SIZE_M + m_in_group
-            m_tile = min(m_tile, NUM_M_TILES - 1)
-            k_block_start = k_flag_group * K_PER_FLAG
+        for const_stage in range(NUM_FETCH_STAGES):
+            if my_stage == const_stage:
+                stage_m_start = const_stage * M_PER_STAGE
+                stage_m_count = min(M_PER_STAGE, NUM_M_TILES - stage_m_start)
+                total_fg_stage = NUM_FLAG_GROUPS_K * stage_m_count
 
-            rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+                for fg_idx in range(stage_pid, total_fg_stage, NUM_FETCH_SMS):
+                    m_group = fg_idx // tiles_per_m_group
+                    within_group = fg_idx % tiles_per_m_group
+                    k_flag_group = within_group // GROUP_SIZE_M
+                    m_in_group = within_group % GROUP_SIZE_M
+                    m_tile = stage_m_start + m_group * GROUP_SIZE_M + m_in_group
+                    m_tile = min(m_tile, NUM_M_TILES - 1)
+                    k_block_start = k_flag_group * K_PER_FLAG
 
-            for k_off in range(K_PER_FLAG):
-                k_block_global = k_block_start + k_off
+                    rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
 
-                src_rank_idx = k_block_global // NUM_K_BLOCKS_LOCAL
-                k_block_local = k_block_global % NUM_K_BLOCKS_LOCAL
+                    for k_off in range(K_PER_FLAG):
+                        k_block_global = k_block_start + k_off
 
-                pid_m_t = zero + m_tile
-                tile_k_t = zero + k_block_local
-                k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
+                        src_rank_idx = k_block_global // NUM_K_BLOCKS_LOCAL
+                        k_block_local = k_block_global % NUM_K_BLOCKS_LOCAL
 
-                rk = k_block_global * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-                # Use parameterized strides for staged_a
-                staged_ptrs = staged_a + rm[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                        pid_m_t = zero + m_tile
+                        tile_k_t = zero + k_block_local
+                        k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
 
-                for compile_rank in range(world_size):
-                    if src_rank_idx == compile_rank:
-                        a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
-                        tl.store(staged_ptrs, a_tile,cache_modifier=".cg")   
+                        rk = k_block_global * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+                        staged_ptrs = staged_a + rm[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-            flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-            #tl.store(flags_ptr + flag_idx, 1,cache_modifier=".wt")
+                        for compile_rank in range(world_size):
+                            if src_rank_idx == compile_rank:
+                                a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
+                                tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
+
+                    flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
+                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
 
         if TRACE:
-            tl.store(trace_wait_ptr + pid, zero.to(tl.int64),cache_modifier=".wt")
-            tl.store(trace_end_ptr + pid, read_realtime(),cache_modifier=".wt")
+            tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
+            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
 
     else:
         # ==============================================================
-        # GEMM
+        # GEMM  — interleaved: stage determined by pid // WGS_PER_STAGE
+        #   gemm_local_id indexes into this stage's M-tile range
         # ==============================================================
-        gemm_tile_id = pid - NUM_FETCH_SMS
+        my_stage = pid // WGS_PER_STAGE
+        gemm_local_id = local_pid - NUM_FETCH_SMS
+        stage_m_start = my_stage * M_PER_STAGE
 
         num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
-        group_id = gemm_tile_id // num_pid_in_group
-        first_pid_m = group_id * GROUP_SIZE_M
+        group_id = gemm_local_id // num_pid_in_group
+        first_pid_m = stage_m_start + group_id * GROUP_SIZE_M
+        first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
         group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((gemm_tile_id % num_pid_in_group) % group_sz)
-        pid_n = (gemm_tile_id % num_pid_in_group) // group_sz
+        pid_m = first_pid_m + ((gemm_local_id % num_pid_in_group) % group_sz)
+        pid_n = (gemm_local_id % num_pid_in_group) // group_sz
+        pid_m = min(pid_m, NUM_M_TILES - 1)
 
         rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
         rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
@@ -272,6 +290,7 @@ def all_gather_matmul_hbm_buffer(
     staged_a_layout: str = "k_contiguous",
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
+    num_fetch_stages: int = 1,
     trace: bool = False,
 ) -> FusedWorkspace:
     """
@@ -340,8 +359,14 @@ def all_gather_matmul_hbm_buffer(
     if num_fetch_sms is None:
         num_fetch_sms = max(1, num_sms // 10)
     assert 0 < num_fetch_sms
+    assert num_fetch_stages >= 1
 
-    grid_size = num_fetch_sms + total_gemm_tiles
+    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
+    m_per_stage = (num_m_tiles + num_fetch_stages - 1) // num_fetch_stages
+    gemm_tiles_per_stage = m_per_stage * num_tiles_n
+    wgs_per_stage = num_fetch_sms + gemm_tiles_per_stage
+    total_fetch_wgs = num_fetch_sms * num_fetch_stages
+    grid_size = wgs_per_stage * num_fetch_stages
 
     # Trace buffers
     if trace:
@@ -398,6 +423,8 @@ def all_gather_matmul_hbm_buffer(
         total_gather_tiles,
         use_bias,
         config.allow_tf32,
+        num_fetch_stages,
+        gemm_tiles_per_stage,
         trace_start,
         trace_end,
         trace_wait,
@@ -418,8 +445,12 @@ def all_gather_matmul_hbm_buffer(
             "xcd": trace_xcd.cpu(),
             "grid_size": grid_size,
             "num_fetch_sms": num_fetch_sms,
+            "num_fetch_stages": num_fetch_stages,
+            "total_fetch_wgs": total_fetch_wgs,
             "num_m_tiles": num_m_tiles,
             "num_tiles_n": num_tiles_n,
+            "wgs_per_stage": wgs_per_stage,
+            "gemm_tiles_per_stage": gemm_tiles_per_stage,
         }
 
     return workspace

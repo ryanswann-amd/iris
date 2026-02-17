@@ -44,12 +44,11 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
 
     Y-axis: workgroup (sorted by start time)
     X-axis: time in microseconds
-    Colors: fetcher (blue), GEMM wait (red), GEMM compute (green)
+    Colors: fetcher stages (blue shades), GEMM wait (red), GEMM compute (green)
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
     from matplotlib.lines import Line2D
 
     starts = trace_data["start"].numpy().astype(np.int64)
@@ -57,7 +56,10 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     waits = trace_data["wait"].numpy().astype(np.int64)
     xcds = trace_data["xcd"].numpy().astype(np.int32)
     grid_size = trace_data["grid_size"]
-    n_fetch = trace_data["num_fetch_sms"]
+    n_fetch_per_stage = trace_data["num_fetch_sms"]
+    n_stages = trace_data.get("num_fetch_stages", 1)
+    total_fetch = trace_data.get("total_fetch_wgs", n_fetch_per_stage)
+    wgs_per_stage = trace_data.get("wgs_per_stage", grid_size)
 
     # Convert to microseconds relative to earliest start
     t_min = starts.min()
@@ -65,8 +67,16 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     ends_us = (ends - t_min) / TICKS_PER_US
     waits_us = waits / TICKS_PER_US
 
-    # Build role array: 0=fetcher, 1=GEMM
-    roles = np.array([0 if i < n_fetch else 1 for i in range(grid_size)])
+    # Build role array: stage index for fetchers (0..S-1), S for GEMM
+    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
+    roles = np.empty(grid_size, dtype=np.int32)
+    for i in range(grid_size):
+        stage = i // wgs_per_stage
+        local = i % wgs_per_stage
+        if local < n_fetch_per_stage:
+            roles[i] = stage  # fetcher for this stage
+        else:
+            roles[i] = n_stages  # GEMM
 
     # Sort by start time
     order = np.argsort(starts_us)
@@ -76,7 +86,8 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     fig_h = max(12, grid_size * row_h + 2)
     fig, ax = plt.subplots(figsize=(18, fig_h))
 
-    fetch_color = "#2196F3"   # blue
+    # One color per fetch stage (blue palette), plus GEMM colors
+    fetch_blues = ["#1565C0", "#42A5F5", "#90CAF9", "#BBDEFB"]
     wait_color = "#F44336"    # red
     compute_color = "#4CAF50" # green
 
@@ -86,18 +97,18 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
         dur = e - s
         role = roles[wg_idx]
 
-        if role == 0:
-            # Fetcher: solid blue bar
-            ax.barh(y_idx, dur, left=s, height=0.8, color=fetch_color,
+        if role < n_stages:
+            # Fetcher: color by stage
+            c = fetch_blues[role % len(fetch_blues)]
+            ax.barh(y_idx, dur, left=s, height=0.8, color=c,
                     edgecolor="none", linewidth=0)
         else:
             # GEMM: split into wait (red) and compute (green)
             w = waits_us[wg_idx]
-            c = max(0, dur - w)
-            # Show wait portion first, then compute
+            comp = max(0, dur - w)
             ax.barh(y_idx, w, left=s, height=0.8, color=wait_color,
                     edgecolor="none", linewidth=0)
-            ax.barh(y_idx, c, left=s + w, height=0.8, color=compute_color,
+            ax.barh(y_idx, comp, left=s + w, height=0.8, color=compute_color,
                     edgecolor="none", linewidth=0)
 
     # XCD annotations on the right margin
@@ -115,12 +126,15 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
             ax.plot(x_max, y_idx, marker="s", markersize=1.5,
                     color=xcd_cmap[xcd_id], clip_on=False)
 
+    n_gemm = grid_size - total_fetch
+    stage_info = (f"{n_stages}x{n_fetch_per_stage}" if n_stages > 1
+                  else str(n_fetch_per_stage))
     ax.set_xlabel("Time (us)", fontsize=12)
     ax.set_ylabel("Workgroup (sorted by start time)", fontsize=12)
     ax.set_title(
         f"Rank {rank}  |  All-Gather GEMM Trace  |  "
         f"M={M} N={N} K={K}  |  "
-        f"{n_fetch} fetchers + {grid_size - n_fetch} GEMM workgroups",
+        f"{stage_info} fetchers + {n_gemm} GEMM workgroups",
         fontsize=13,
     )
     ax.set_ylim(-1, grid_size + 1)
@@ -130,29 +144,45 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     ax.invert_yaxis()
 
     # Legend
-    legend_elements = [
-        Line2D([0], [0], color=fetch_color, lw=6, label="Fetcher (all-gather)"),
-        Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"),
-        Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"),
-    ]
+    legend_elements = []
+    for s_idx in range(min(n_stages, len(fetch_blues))):
+        legend_elements.append(
+            Line2D([0], [0], color=fetch_blues[s_idx], lw=6,
+                   label=f"Fetch stage {s_idx}")
+        )
+    legend_elements.append(
+        Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
+    legend_elements.append(
+        Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
     ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
 
     # Summary stats
-    fetch_mask = roles == 0
-    gemm_mask = roles == 1
+    fetch_mask = roles < n_stages
+    gemm_mask = roles == n_stages
     fetch_dur = (ends_us - starts_us)[fetch_mask]
     gemm_dur = (ends_us - starts_us)[gemm_mask]
     gemm_wait = waits_us[gemm_mask]
     gemm_compute = gemm_dur - gemm_wait
 
-    stats_text = (
-        f"Fetcher: {fetch_dur.mean():.1f} us avg  ({fetch_dur.min():.1f}-{fetch_dur.max():.1f})\n"
-        f"GEMM total: {gemm_dur.mean():.1f} us avg  ({gemm_dur.min():.1f}-{gemm_dur.max():.1f})\n"
-        f"  wait: {gemm_wait.mean():.1f} us avg  ({gemm_wait.min():.1f}-{gemm_wait.max():.1f})\n"
-        f"  compute: {gemm_compute.mean():.1f} us avg  ({gemm_compute.min():.1f}-{gemm_compute.max():.1f})\n"
-        f"  wait%: {100 * gemm_wait.sum() / gemm_dur.sum():.1f}%\n"
-        f"Wall time: {ends_us.max():.1f} us"
-    )
+    stats_lines = []
+    for s_idx in range(n_stages):
+        s_mask = roles == s_idx
+        s_dur = (ends_us - starts_us)[s_mask]
+        s_start = starts_us[s_mask]
+        if len(s_dur) > 0:
+            stats_lines.append(
+                f"Fetch stg{s_idx}: {s_dur.mean():.1f} us avg  "
+                f"({s_dur.min():.1f}-{s_dur.max():.1f})  "
+                f"first@{s_start.min():.0f}us"
+            )
+    stats_lines += [
+        f"GEMM total: {gemm_dur.mean():.1f} us avg  ({gemm_dur.min():.1f}-{gemm_dur.max():.1f})",
+        f"  wait: {gemm_wait.mean():.1f} us avg  ({gemm_wait.min():.1f}-{gemm_wait.max():.1f})",
+        f"  compute: {gemm_compute.mean():.1f} us avg  ({gemm_compute.min():.1f}-{gemm_compute.max():.1f})",
+        f"  wait%: {100 * gemm_wait.sum() / gemm_dur.sum():.1f}%",
+        f"Wall time: {ends_us.max():.1f} us",
+    ]
+    stats_text = "\n".join(stats_lines)
     ax.text(
         0.01, 0.99, stats_text, transform=ax.transAxes,
         fontsize=9, verticalalignment="top", fontfamily="monospace",
@@ -202,6 +232,7 @@ def parse_args():
     parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
+    parser.add_argument("--num_fetch_stages", type=int, default=1, help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)")
     parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
     parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
     return vars(parser.parse_args())
@@ -321,6 +352,7 @@ def _worker(args):
     num_fetch_sms = args["num_fetch_sms"]
     num_warps = args["num_warps"]
     num_stages = args["num_stages"]
+    num_fetch_stages = args["num_fetch_stages"]
 
     def run_experiment():
         nonlocal total_ms, num_experiments
@@ -339,6 +371,7 @@ def _worker(args):
                 k_per_flag=k_per_flag,
                 num_warps=num_warps,
                 num_stages=num_stages,
+                num_fetch_stages=num_fetch_stages,
             )
             end_ev.record()
             num_experiments += 1
@@ -422,6 +455,7 @@ def _worker(args):
             k_per_flag=k_per_flag,
             num_warps=num_warps,
             num_stages=num_stages,
+            num_fetch_stages=num_fetch_stages,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()
@@ -461,7 +495,7 @@ def _worker(args):
             config=config, async_op=False, workspace=workspace,
             num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
             num_warps=num_warps, num_stages=num_stages,
-            trace=True,
+            num_fetch_stages=num_fetch_stages, trace=True,
         )
         torch.cuda.synchronize()
         shmem.barrier()
@@ -484,6 +518,7 @@ def _worker(args):
             k_per_flag=k_per_flag,
             num_warps=num_warps,
             num_stages=num_stages,
+            num_fetch_stages=num_fetch_stages,
             trace=True,
         )
         torch.cuda.synchronize()
