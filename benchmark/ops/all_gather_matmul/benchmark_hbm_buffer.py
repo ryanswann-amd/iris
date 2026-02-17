@@ -47,9 +47,9 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     Colors: fetcher (blue), GEMM wait (red), GEMM compute (green)
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
     from matplotlib.lines import Line2D
 
     starts = trace_data["start"].numpy().astype(np.int64)
@@ -76,9 +76,9 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     fig_h = max(12, grid_size * row_h + 2)
     fig, ax = plt.subplots(figsize=(18, fig_h))
 
-    fetch_color = "#2196F3"   # blue
-    wait_color = "#F44336"    # red
-    compute_color = "#4CAF50" # green
+    fetch_color = "#2196F3"  # blue
+    wait_color = "#F44336"  # red
+    compute_color = "#4CAF50"  # green
 
     for y_idx, wg_idx in enumerate(order):
         s = starts_us[wg_idx]
@@ -88,17 +88,14 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
 
         if role == 0:
             # Fetcher: solid blue bar
-            ax.barh(y_idx, dur, left=s, height=0.8, color=fetch_color,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, dur, left=s, height=0.8, color=fetch_color, edgecolor="none", linewidth=0)
         else:
             # GEMM: split into wait (red) and compute (green)
             w = waits_us[wg_idx]
             c = max(0, dur - w)
             # Show wait portion first, then compute
-            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color,
-                    edgecolor="none", linewidth=0)
-            ax.barh(y_idx, c, left=s + w, height=0.8, color=compute_color,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color, edgecolor="none", linewidth=0)
+            ax.barh(y_idx, c, left=s + w, height=0.8, color=compute_color, edgecolor="none", linewidth=0)
 
     # XCD annotations on the right margin
     xcd_set = sorted(set(xcds.tolist()))
@@ -112,8 +109,7 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     for y_idx, wg_idx in enumerate(order):
         xcd_id = xcds[wg_idx]
         if xcd_id in xcd_cmap:
-            ax.plot(x_max, y_idx, marker="s", markersize=1.5,
-                    color=xcd_cmap[xcd_id], clip_on=False)
+            ax.plot(x_max, y_idx, marker="s", markersize=1.5, color=xcd_cmap[xcd_id], clip_on=False)
 
     ax.set_xlabel("Time (us)", fontsize=12)
     ax.set_ylabel("Workgroup (sorted by start time)", fontsize=12)
@@ -154,8 +150,13 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
         f"Wall time: {ends_us.max():.1f} us"
     )
     ax.text(
-        0.01, 0.99, stats_text, transform=ax.transAxes,
-        fontsize=9, verticalalignment="top", fontfamily="monospace",
+        0.01,
+        0.99,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        fontfamily="monospace",
         bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
     )
 
@@ -238,10 +239,7 @@ def _worker(args):
     world_size = shmem.get_num_ranks()
 
     t2 = time.perf_counter()
-    shmem.info(
-        f"Startup: dist.init={t1 - t0:.1f}s, iris.init={t2 - t1:.1f}s, "
-        f"total={t2 - t0:.1f}s"
-    )
+    shmem.info(f"Startup: dist.init={t1 - t0:.1f}s, iris.init={t2 - t1:.1f}s, total={t2 - t0:.1f}s")
 
     datatype_map = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}
     datatype = datatype_map.get(args["datatype"], torch.float16)
@@ -457,10 +455,17 @@ def _worker(args):
         workspace.locks.zero_()
         shmem.barrier()
         all_gather_matmul_hbm_buffer(
-            shmem, C, A_sharded, B,
-            config=config, async_op=False, workspace=workspace,
-            num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
-            num_warps=num_warps, num_stages=num_stages,
+            shmem,
+            C,
+            A_sharded,
+            B,
+            config=config,
+            async_op=False,
+            workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
             trace=True,
         )
         torch.cuda.synchronize()

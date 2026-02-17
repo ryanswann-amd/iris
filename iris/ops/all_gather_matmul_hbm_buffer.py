@@ -112,15 +112,15 @@ def _hbm_buffer_all_gather_matmul_kernel(
                 for compile_rank in range(world_size):
                     if src_rank_idx == compile_rank:
                         a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
-                        tl.store(staged_ptrs, a_tile,cache_modifier=".cg")   
+                        tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
             flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
             tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-            #tl.store(flags_ptr + flag_idx, 1,cache_modifier=".wt")
+            # tl.store(flags_ptr + flag_idx, 1,cache_modifier=".wt")
 
         if TRACE:
-            tl.store(trace_wait_ptr + pid, zero.to(tl.int64),cache_modifier=".wt")
-            tl.store(trace_end_ptr + pid, read_realtime(),cache_modifier=".wt")
+            tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
+            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
 
     else:
         # ==============================================================
@@ -181,11 +181,11 @@ def _hbm_buffer_all_gather_matmul_kernel(
         c = acc.to(C.type.element_ty)
         C_ptrs = C + rm[:, None] * stride_cm + rn[None, :] * stride_cn
         c_mask = (rm[:, None] < M) & (rn[None, :] < N)
-        tl.store(C_ptrs, c, mask=c_mask,cache_modifier=".wt")
+        tl.store(C_ptrs, c, mask=c_mask, cache_modifier=".wt")
 
         if TRACE:
             tl.store(trace_wait_ptr + pid, _wt)
-            tl.store(trace_end_ptr + pid, read_realtime(),cache_modifier=".wt")
+            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
 
 
 # ==========================================================================
