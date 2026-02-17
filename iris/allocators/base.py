@@ -33,6 +33,17 @@ class BaseAllocator(ABC):
         self.num_ranks = num_ranks
         self.heap_offset = 0
 
+    def get_minimum_allocation_size(self) -> int:
+        """
+        Minimum size in bytes for a single allocation.
+        Callers must request at least this many bytes (or the allocator will bump);
+        the allocator uses this for tracking actual size for deallocation.
+
+        Returns:
+            Minimum allocation size in bytes (default 0).
+        """
+        return 0
+
     @abstractmethod
     def get_base_address(self) -> int:
         """

@@ -27,7 +27,7 @@ def test_dmabuf_export_returns_base_allocation():
     from iris.hip import export_dmabuf_handle, get_address_range
 
     # Create a tensor and slice it to guarantee an offset
-    full_tensor = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    full_tensor = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
 
     # Slice to create an offset pointer (skip 100 rows = 100*1000*4 = 400KB)
     sliced_tensor = full_tensor[100:200, :]
@@ -48,21 +48,15 @@ def test_dmabuf_export_returns_base_allocation():
     try:
         # ASSERTION 1: Export should return the BASE allocation, not ptr
         assert export_base == alloc_base, (
-            f"DMA-BUF export should return base allocation {hex(alloc_base)}, "
-            f"but got {hex(export_base)}"
+            f"DMA-BUF export should return base allocation {hex(alloc_base)}, but got {hex(export_base)}"
         )
 
         # ASSERTION 2: Export size should be the full allocation, not just slice size
         assert export_size == alloc_size, (
-            f"DMA-BUF export size should be full allocation {alloc_size}, "
-            f"but got {export_size}"
+            f"DMA-BUF export size should be full allocation {alloc_size}, but got {export_size}"
         )
 
-        # ASSERTION 3: Export base should be less than the slice pointer (has offset)
-        assert export_base < ptr, (
-            f"For offset pointer, export_base {hex(export_base)} "
-            f"should be < pointer {hex(ptr)}"
-        )
+        assert export_base < ptr, f"For offset pointer, export_base {hex(export_base)} should be < pointer {hex(ptr)}"
 
     finally:
         os.close(fd)
@@ -78,7 +72,7 @@ def test_dmabuf_export_with_large_offset():
     from iris.hip import export_dmabuf_handle, get_address_range
 
     # Create a large tensor
-    large_tensor = torch.randn(10000, 1000, device='cuda', dtype=torch.float32)
+    large_tensor = torch.randn(10000, 1000, device="cuda", dtype=torch.float32)
 
     # Create a slice with guaranteed large offset
     # Skip 5000 rows = 5000 * 1000 * 4 bytes = 20MB offset
@@ -106,9 +100,7 @@ def test_dmabuf_export_with_large_offset():
         )
 
         # Export size should be full allocation
-        assert export_size == alloc_size, (
-            f"DMA-BUF export size should be {alloc_size}, got {export_size}"
-        )
+        assert export_size == alloc_size, f"DMA-BUF export size should be {alloc_size}, got {export_size}"
 
         # Verify offset calculation is correct
         assert slice_ptr == alloc_base + offset, "Offset calculation mismatch"
@@ -125,7 +117,7 @@ def test_get_address_range_consistency():
     from iris.hip import get_address_range
 
     # Create a large tensor
-    tensor = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    tensor = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
 
     # Get base for various offsets within the same tensor
     bases = []
@@ -133,22 +125,18 @@ def test_get_address_range_consistency():
 
     # Test multiple slice offsets
     for start_row in [0, 100, 500, 900]:
-        slice_tensor = tensor[start_row:start_row+10, :]
+        slice_tensor = tensor[start_row : start_row + 10, :]
         ptr = slice_tensor.data_ptr()
         base, size = get_address_range(ptr)
         bases.append(base)
         sizes.append(size)
 
-    # ASSERTION: All should return the same base
     assert len(set(bases)) == 1, f"All slices should have same base, got {[hex(b) for b in bases]}"
-
-    # ASSERTION: All should return the same size
     assert len(set(sizes)) == 1, f"All slices should have same size, got {sizes}"
 
-    # ASSERTION: All pointers should be >= base
     base = bases[0]
     for start_row in [0, 100, 500, 900]:
-        slice_tensor = tensor[start_row:start_row+10, :]
+        slice_tensor = tensor[start_row : start_row + 10, :]
         ptr = slice_tensor.data_ptr()
         assert ptr >= base, f"Pointer {hex(ptr)} should be >= base {hex(base)}"
 
@@ -162,7 +150,7 @@ def test_get_address_range_with_guaranteed_offsets():
     from iris.hip import get_address_range
 
     # Create a large tensor
-    large_tensor = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    large_tensor = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
 
     # Get base for the full tensor
     full_ptr = large_tensor.data_ptr()
@@ -170,9 +158,9 @@ def test_get_address_range_with_guaranteed_offsets():
 
     # Create multiple slices with different offsets
     test_cases = [
-        (100, 200, 100 * 1000 * 4),   # Skip 100 rows
-        (500, 600, 500 * 1000 * 4),   # Skip 500 rows
-        (900, 950, 900 * 1000 * 4),   # Skip 900 rows
+        (100, 200, 100 * 1000 * 4),  # Skip 100 rows
+        (500, 600, 500 * 1000 * 4),  # Skip 500 rows
+        (900, 950, 900 * 1000 * 4),  # Skip 900 rows
     ]
 
     for start_row, end_row, expected_min_offset in test_cases:
@@ -182,21 +170,16 @@ def test_get_address_range_with_guaranteed_offsets():
 
         # ASSERTION 1: Slice should report same base as full tensor
         assert slice_base == full_base, (
-            f"Slice [{start_row}:{end_row}] should have base {hex(full_base)}, "
-            f"got {hex(slice_base)}"
+            f"Slice [{start_row}:{end_row}] should have base {hex(full_base)}, got {hex(slice_base)}"
         )
 
         # ASSERTION 2: Slice should report same size as full tensor
-        assert slice_size == full_size, (
-            f"Slice [{start_row}:{end_row}] should have size {full_size}, "
-            f"got {slice_size}"
-        )
+        assert slice_size == full_size, f"Slice [{start_row}:{end_row}] should have size {full_size}, got {slice_size}"
 
         # ASSERTION 3: Slice pointer should have expected offset
         actual_offset = slice_ptr - slice_base
         assert actual_offset >= expected_min_offset, (
-            f"Slice [{start_row}:{end_row}] should have offset >= {expected_min_offset}, "
-            f"got {actual_offset}"
+            f"Slice [{start_row}:{end_row}] should have offset >= {expected_min_offset}, got {actual_offset}"
         )
 
 
@@ -212,13 +195,16 @@ def test_vmem_allocator_uses_cumulative_access():
     We test this indirectly by using VMemAllocator and verifying multiple
     allocations work correctly.
     """
+    import torch.distributed as dist
+
     from iris.allocators.vmem_allocator import VMemAllocator
 
-    device_id = torch.cuda.current_device()
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    device_id = rank  # num_ranks == num_gpus: one GPU per rank
     heap_size = 1 << 20  # 1 MB
 
-    # Create allocator (this tests initial mem_set_access)
-    allocator = VMemAllocator(heap_size, device_id, rank=0, world_size=1)
+    allocator = VMemAllocator(heap_size, device_id, rank=rank, world_size=world_size)
 
     try:
         # Test multiple allocations (each triggers cumulative mem_set_access)
@@ -228,26 +214,24 @@ def test_vmem_allocator_uses_cumulative_access():
             t.fill_(float(i))
             tensors.append(t)
 
-        # Verify all allocations are accessible
         for i, t in enumerate(tensors):
             torch.cuda.synchronize()
             assert torch.all(t == float(i)), f"Tensor {i} should be accessible and have value {i}"
 
-        # CRITICAL: If cumulative access pattern didn't work, some tensors
+        # If cumulative access pattern didn't work, some tensors
         # would fail to be accessible (segfault or wrong values)
 
-        # Verify cumulative_allocated is tracking correctly
-        assert allocator.cumulative_allocated >= allocator.current_offset, (
-            "cumulative_allocated should be >= current_offset"
+        # Verify cumulative_mapped_size is tracking correctly (ROCm workaround)
+        assert allocator.cumulative_mapped_size >= allocator.current_offset, (
+            "cumulative_mapped_size should be >= current_offset"
         )
 
     finally:
         allocator.close()
-        # Clear GPU state after VMem operations
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
-        # Force Python GC to clean up any remaining references
         import gc
+
         gc.collect()
         torch.cuda.synchronize()
 
@@ -257,7 +241,7 @@ def test_dmabuf_import_cleanup_preserves_original():
     Test that importing a DMA-BUF and then cleaning up the import
     does NOT corrupt the original PyTorch tensor.
 
-    This is the CRITICAL test for as_symmetric() lifetime contract:
+    This is the test for as_symmetric() lifetime contract:
     - Import creates a new mapping to the same physical memory
     - Cleanup destroys the import mapping
     - Original tensor should remain valid
@@ -270,9 +254,20 @@ def test_dmabuf_import_cleanup_preserves_original():
         destroy_external_memory,
         get_address_range,
     )
+    import torch.distributed as dist
+
+    # Use the same device selection logic as Iris: rank % num_gpus
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        num_gpus = torch.cuda.device_count()
+        device_id = rank % num_gpus
+    else:
+        device_id = torch.cuda.current_device()
+
+    device = f"cuda:{device_id}"
 
     # Create original PyTorch tensor
-    original_tensor = torch.randn(100, dtype=torch.float32, device='cuda')
+    original_tensor = torch.randn(100, dtype=torch.float32, device=device)
     original_tensor.fill_(42.0)
 
     # Verify original works
@@ -305,7 +300,7 @@ def test_dmabuf_import_cleanup_preserves_original():
 
     tensor_size = original_tensor.numel() * original_tensor.element_size()
     cuda_array = CUDAArrayInterface(remapped_ptr, tensor_size)
-    imported_bytes = torch.as_tensor(cuda_array, device='cuda')
+    imported_bytes = torch.as_tensor(cuda_array, device=device)
     imported_tensor = imported_bytes.view(torch.float32)
 
     # Verify shared memory works
@@ -315,19 +310,20 @@ def test_dmabuf_import_cleanup_preserves_original():
     assert torch.all(original_tensor == 99.0), "Original should see imported changes"
     assert torch.all(imported_tensor == 99.0), "Imported should see its own changes"
 
-    # NOW THE CRITICAL TEST: Destroy imported tensor and external memory
+    # Destroy imported tensor and external memory
     # This should clean up the import mapping but NOT affect original
     del imported_tensor, imported_bytes, cuda_array
     import gc
+
     gc.collect()
     torch.cuda.synchronize()
 
-    # EXPLICITLY destroy the external memory handle (this is what close() should do)
+    # Destroy the external memory handle (this is what close() should do)
     print("Destroying external memory handle...")
     destroy_external_memory(ext_mem_handle)
     torch.cuda.synchronize()
 
-    # VERIFY: Original tensor should still be valid and functional
+    # Original tensor should still be valid and functional
     print("Testing original tensor after import cleanup...")
 
     # Can we read it?
@@ -345,4 +341,4 @@ def test_dmabuf_import_cleanup_preserves_original():
     result = original_tensor + 1.0
     assert torch.all(result == 124.0), "Original tensor should still support operations!"
 
-    print("✓ DMA-BUF import cleanup preserves original tensor")
+    print("DMA-BUF import cleanup preserves original tensor")

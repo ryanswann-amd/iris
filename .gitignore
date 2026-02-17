@@ -49,3 +49,8 @@ __pycache__/
 *.pyzwz
 
 !.devcontainer/devcontainer.json
+
+
+resources/
+gpucore.*
+logs/

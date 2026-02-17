@@ -9,6 +9,7 @@ enabling features like memory oversubscription and on-demand paging.
 """
 
 import torch
+import os
 from typing import Dict
 from threading import Lock
 
@@ -17,8 +18,7 @@ from ..hip import (
     get_allocation_granularity,
     get_address_range,
     export_dmabuf_handle,
-    import_dmabuf_handle,
-    destroy_external_memory,
+    mem_import_from_shareable_handle,
     mem_create,
     mem_address_reserve,
     mem_map,
@@ -61,47 +61,65 @@ class VMemAllocator(BaseAllocator):
         super().__init__(heap_size, device_id, rank, world_size)
         self.va_multiplier = va_multiplier
         self.device = torch.device(f"cuda:{device_id}")
-
-        # Thread safety
         self.lock = Lock()
-
-        # Get allocation granularity
         self.granularity = get_allocation_granularity(self.device_id)
-
-        # Align heap size to granularity
         self.aligned_heap_size = (heap_size + self.granularity - 1) & ~(self.granularity - 1)
-
-        # Reserve VA space (use aligned heap size for now, multiplier for future oversubscription)
         self.va_size = self.aligned_heap_size
+        self.base_va = mem_address_reserve(self.va_size, self.granularity, 0)
 
-        # Create physical memory allocation
-        self.local_handle = mem_create(self.aligned_heap_size, self.device_id)
+        self.minimal_size = min(2 << 20, self.aligned_heap_size // 2)
+        if self.minimal_size < self.granularity:
+            self.minimal_size = self.granularity
 
-        # Reserve VA space
-        self.base_va = mem_address_reserve(self.va_size)
+        self.minimal_handle = mem_create(self.minimal_size, self.device_id)
+        mem_map(self.base_va, self.minimal_size, 0, self.minimal_handle)
 
-        # Map local physical memory to VA
-        mem_map(self.base_va, self.aligned_heap_size, 0, self.local_handle)
+        # ROCm: mem_set_access must be called cumulatively from base_va (see rocm-systems#2667)
+        self.access_descs = []
+        for peer_device_id in range(world_size):
+            desc = hipMemAccessDesc()
+            desc.location.type = hipMemLocationTypeDevice
+            desc.location.id = peer_device_id
+            desc.flags = hipMemAccessFlagsProtReadWrite
+            self.access_descs.append(desc)
 
-        # CRITICAL: Track cumulative allocated size for hipMemSetAccess workaround
-        # ROCm bug: must call hipMemSetAccess from base_va with cumulative size
-        # See: https://github.com/ROCm/rocm-systems/issues/2667
-        self.cumulative_allocated = self.aligned_heap_size
+        self.cumulative_mapped_size = self.minimal_size
+        mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
 
-        # Set access permissions for current device (initial mapping)
-        access_desc = hipMemAccessDesc()
-        access_desc.location.type = hipMemLocationTypeDevice
-        access_desc.location.id = self.device_id
-        access_desc.flags = hipMemAccessFlagsProtReadWrite
-        mem_set_access(self.base_va, self.cumulative_allocated, access_desc)
-
-        # Track allocations: offset -> (size, is_imported, external_ptr)
         self.allocations: Dict[int, tuple] = {}
-        self.current_offset = 0
+        self.allocation_order = []
+        self._track_allocation(0, self.minimal_size, False, self.minimal_handle, self.base_va)
+        self.current_offset = self.minimal_size
+
+        self.world_size = world_size
 
     def get_base_address(self) -> int:
         """Get the base address of the heap."""
         return self.base_va
+
+    def _track_allocation(self, offset: int, size: int, is_imported: bool, handle, va: int):
+        """Track a new allocation for cleanup and segmented export."""
+        self.allocations[offset] = (size, is_imported, handle, va)
+        self.allocation_order.append((offset, size))
+
+    def get_allocation_segments(self):
+        """
+        Get list of allocation segments for segmented DMA-BUF export.
+
+        Returns:
+            List of (offset, size, va) tuples for each allocation in order.
+            Each tuple describes one physically-backed segment that needs
+            to be exported/imported separately.
+        """
+        segments = []
+        for offset, size in self.allocation_order:
+            va = self.base_va + offset
+            segments.append((offset, size, va))
+        return segments
+
+    def get_minimum_allocation_size(self) -> int:
+        """Minimum allocation size in bytes (one granule; hipMemCreate(0) is invalid)."""
+        return self.granularity
 
     def allocate(self, num_elements: int, dtype: torch.dtype, alignment: int = 1024) -> torch.Tensor:
         """
@@ -119,28 +137,35 @@ class VMemAllocator(BaseAllocator):
             RuntimeError: If allocation fails or heap is full
         """
         with self.lock:
-            # Calculate size in bytes
             element_size = torch.tensor([], dtype=dtype).element_size()
             size_bytes = num_elements * element_size
-
-            # Align offset
+            actual_size_bytes = max(size_bytes, self.get_minimum_allocation_size())
+            aligned_size = (actual_size_bytes + self.granularity - 1) & ~(self.granularity - 1)
             aligned_offset = (self.current_offset + alignment - 1) & ~(alignment - 1)
 
-            # Check if we have enough space
-            if aligned_offset + size_bytes > self.aligned_heap_size:
+            if aligned_offset + aligned_size > self.aligned_heap_size:
                 raise RuntimeError(
-                    f"VMem heap exhausted: requested {size_bytes} bytes at offset {aligned_offset}, "
-                    f"but heap size is {self.aligned_heap_size}"
+                    f"Out of VMem address space for allocation: "
+                    f"need {aligned_size} bytes at offset {aligned_offset}, "
+                    f"but heap size is {self.aligned_heap_size}. "
+                    f"Current offset: {self.current_offset}, "
+                    f"available: {self.aligned_heap_size - aligned_offset} bytes"
                 )
 
-            # Calculate address
-            alloc_addr = self.base_va + aligned_offset
+            target_va = self.base_va + aligned_offset
+            handle = mem_create(aligned_size, self.device_id)
+            mem_map(target_va, aligned_size, 0, handle)
 
-            # Track allocation (is_imported=False, external_ptr=None)
-            self.allocations[aligned_offset] = (size_bytes, False, None)
-            self.current_offset = aligned_offset + size_bytes
+            new_cumulative_size = aligned_offset + aligned_size
+            if new_cumulative_size > self.cumulative_mapped_size:
+                self.cumulative_mapped_size = new_cumulative_size
+                mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
 
-            # Create a torch tensor directly from the GPU pointer using __cuda_array_interface__
+            self._track_allocation(aligned_offset, aligned_size, False, handle, target_va)
+            self.current_offset = aligned_offset + aligned_size
+
+            interface_size = (aligned_size // element_size) * element_size
+
             class CUDAArrayInterface:
                 def __init__(self, ptr, size_bytes, device):
                     self.ptr = ptr
@@ -151,17 +176,18 @@ class VMemAllocator(BaseAllocator):
                 def __cuda_array_interface__(self):
                     return {
                         "shape": (self.size_bytes,),
-                        "typestr": "|u1",  # uint8
-                        "data": (self.ptr, False),  # (ptr, read_only)
+                        "typestr": "|u1",
+                        "data": (self.ptr, False),
                         "version": 3,
                     }
 
-            cuda_array = CUDAArrayInterface(alloc_addr, size_bytes, self.device)
+            cuda_array = CUDAArrayInterface(target_va, interface_size, self.device)
             tensor_bytes = torch.as_tensor(cuda_array, device=self.device)
-
-            # Cast to correct dtype and reshape
-            tensor = tensor_bytes.view(dtype)[:num_elements]
-
+            full = tensor_bytes.view(dtype)
+            if num_elements == 0:
+                tensor = full.narrow(0, 1, 0)
+            else:
+                tensor = full.narrow(0, 0, num_elements)
             return tensor
 
     def get_device(self) -> torch.device:
@@ -185,10 +211,10 @@ class VMemAllocator(BaseAllocator):
         """
         if not tensor.is_cuda:
             return False
+        if tensor.numel() == 0:
+            return True
 
         ptr = tensor.data_ptr()
-
-        # Check if pointer is within our local VA range only
         return self.base_va <= ptr < self.base_va + self.aligned_heap_size
 
     def import_external_tensor(self, external_tensor: torch.Tensor) -> torch.Tensor:
@@ -213,39 +239,37 @@ class VMemAllocator(BaseAllocator):
                 raise RuntimeError("Can only import CUDA tensors")
 
             external_ptr = external_tensor.data_ptr()
-
-            # Query the base allocation to handle PyTorch caching allocator offsets
             alloc_base, alloc_size = get_address_range(external_ptr)
             offset_in_alloc = external_ptr - alloc_base
-
-            # Align allocation size to granularity
             aligned_size = (alloc_size + self.granularity - 1) & ~(self.granularity - 1)
-
-            # Allocate VA space in our heap (bump allocation)
             aligned_offset = (self.current_offset + self.granularity - 1) & ~(self.granularity - 1)
 
             if aligned_offset + aligned_size > self.aligned_heap_size:
                 raise RuntimeError(
-                    f"VMem heap exhausted during import: need {aligned_size} bytes "
-                    f"at offset {aligned_offset}, heap size is {self.aligned_heap_size}"
+                    f"Out of VMem address space for import: "
+                    f"need {aligned_size} bytes at offset {aligned_offset}, "
+                    f"but heap size is {self.aligned_heap_size}. "
+                    f"Current offset: {self.current_offset}, "
+                    f"available: {self.aligned_heap_size - aligned_offset} bytes"
                 )
 
-            # Export external allocation as DMA-BUF (using base, not offset pointer)
             dmabuf_fd, export_base, export_size = export_dmabuf_handle(alloc_base, alloc_size)
+            aligned_export_size = (export_size + self.granularity - 1) & ~(self.granularity - 1)
+            target_va = self.base_va + aligned_offset
+            imported_handle = mem_import_from_shareable_handle(dmabuf_fd)
+            os.close(dmabuf_fd)
 
-            # Import DMA-BUF with automatic offset correction
-            # This handles PyTorch caching allocator offsets correctly
-            # Returns (pointer, ext_mem_handle) - we need to track the handle for cleanup
-            remapped_ptr, ext_mem_handle = import_dmabuf_handle(dmabuf_fd, export_size, external_ptr, export_base)
+            mem_map(target_va, aligned_export_size, 0, imported_handle)
 
-            # Note: import_dmabuf_handle manages the FD internally, don't close it
+            new_cumulative_size = aligned_offset + aligned_export_size
+            if new_cumulative_size > self.cumulative_mapped_size:
+                self.cumulative_mapped_size = new_cumulative_size
+                mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
 
-            # Track this as an imported allocation
-            # Store ext_mem_handle so we can destroy it in close()
-            self.allocations[aligned_offset] = (aligned_size, True, alloc_base, ext_mem_handle)
-            self.current_offset = aligned_offset + aligned_size
+            tensor_va = target_va + offset_in_alloc
+            self._track_allocation(aligned_offset, aligned_export_size, True, imported_handle, target_va)
+            self.current_offset = aligned_offset + aligned_export_size
 
-            # Create tensor using __cuda_array_interface__
             tensor_size = external_tensor.numel() * external_tensor.element_size()
 
             class CUDAArrayInterface:
@@ -263,10 +287,8 @@ class VMemAllocator(BaseAllocator):
                         "version": 3,
                     }
 
-            cuda_array = CUDAArrayInterface(remapped_ptr, tensor_size, self.device)
+            cuda_array = CUDAArrayInterface(tensor_va, tensor_size, self.device)
             tensor_bytes = torch.as_tensor(cuda_array, device=self.device)
-
-            # View as original dtype and reshape
             imported_tensor = tensor_bytes.view(external_tensor.dtype).reshape(external_tensor.shape)
 
             return imported_tensor
@@ -277,35 +299,20 @@ class VMemAllocator(BaseAllocator):
             return
 
         with self.lock:
-            # Clean up imported allocations only
-            # Native allocations don't need individual cleanup - they're part of the base mapping
             for offset, alloc_info in self.allocations.items():
-                # Handle both old (3-tuple) and new (4-tuple) formats
                 if len(alloc_info) == 4:
-                    size, is_imported, external_ptr, ext_mem_handle = alloc_info
-                else:
-                    size, is_imported, external_ptr = alloc_info
-                    ext_mem_handle = None
+                    size, is_imported, handle, va = alloc_info
 
-                if is_imported and ext_mem_handle is not None:
-                    # Imported allocation: destroy external memory handle
-                    # This unmaps the imported memory
-                    destroy_external_memory(ext_mem_handle)
-                # Native allocations: no individual cleanup needed
-                # They're sub-regions of the base mapping which we unmap below
+                    if handle is not None:
+                        aligned_size = (size + self.granularity - 1) & ~(self.granularity - 1)
+                        mem_unmap(va, aligned_size)
+                        mem_release(handle)
 
             self.allocations.clear()
 
-            # Unmap and free the initial local physical allocation
             if hasattr(self, "base_va") and self.base_va:
-                mem_unmap(self.base_va, self.aligned_heap_size)
                 mem_address_free(self.base_va, self.va_size)
                 self.base_va = 0
-
-            # Release local handle (this frees physical memory)
-            if hasattr(self, "local_handle") and self.local_handle:
-                mem_release(self.local_handle)
-                self.local_handle = 0
 
             self._closed = True
 

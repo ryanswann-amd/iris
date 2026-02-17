@@ -42,6 +42,10 @@ class TorchAllocator(BaseAllocator):
         self.device = f"cuda:{device_id}"
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
 
+    def get_minimum_allocation_size(self) -> int:
+        """Minimum allocation size in bytes (PyTorch allows 0-size views)."""
+        return 0
+
     def get_base_address(self) -> int:
         """Get the base address of the memory pool."""
         return self.memory_pool.data_ptr()
@@ -92,54 +96,34 @@ class TorchAllocator(BaseAllocator):
             all_bases: Dictionary mapping rank -> base address
             connections: Optional peer connections for handle exchange
         """
-        # Use the original heap bases (no remapping for TorchAllocator)
         heap_bases_array = np.zeros(self.num_ranks, dtype=np.uint64)
 
         if connections is not None:
-            # Get shareable handle for our memory pool
             my_fd, my_base, my_size = self.get_shareable_handle()
             heap_base = self.get_base_address()
-
-            # Pack metadata: (base_ptr, base_size, heap_ptr) as three 64-bit unsigned ints
             my_metadata = struct.pack("QQQ", my_base, my_size, heap_base)
 
-            # Use context manager for automatic cleanup
             with managed_fd(my_fd):
-                # Exchange handles with all peers
                 for peer, sock in connections.items():
                     if peer == self.cur_rank:
                         continue
 
-                    # To avoid deadlock, higher rank sends first
-                    # Send FD along with metadata (base_ptr, base_size, heap_ptr)
+                    # Higher rank sends first to avoid deadlock
                     if self.cur_rank > peer:
                         send_fd(sock, my_fd, payload=my_metadata)
-                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)  # 3 * 8 bytes
+                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)
                     else:
-                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)  # 3 * 8 bytes
+                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)
                         send_fd(sock, my_fd, payload=my_metadata)
 
-                    # Unpack peer's metadata
                     peer_base, peer_size, peer_heap = struct.unpack("QQQ", peer_metadata)
 
-                    # Use context manager for peer handle and import the DMA-BUF
                     with managed_fd(peer_handle):
-                        # Import peer's memory via DMA-BUF with proper offset correction
-                        # peer_heap is where their heap starts (what they want us to use)
-                        # peer_base is the base of their allocation buffer
-                        # peer_size is the size of their allocation buffer
-                        mapped_addr = import_dmabuf_handle(
-                            peer_handle,
-                            peer_size,  # Import the full base allocation
-                            peer_heap,  # Original heap pointer (for offset calculation)
-                            peer_base,  # Base of allocation (for offset calculation)
-                        )
+                        mapped_addr = import_dmabuf_handle(peer_handle, peer_size, peer_heap, peer_base)
                         heap_bases_array[peer] = mapped_addr
 
-            # Set our own base
             heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
         else:
-            # Single rank, just set our own base
             heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
 
         self.heap_bases_array = heap_bases_array
@@ -158,7 +142,6 @@ class TorchAllocator(BaseAllocator):
         Returns:
             True if tensor is within the heap, False otherwise
         """
-        # Special case for empty tensors - they might not have a valid data_ptr
         if tensor.numel() == 0:
             return True
 

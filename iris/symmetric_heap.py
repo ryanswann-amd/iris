@@ -52,66 +52,27 @@ class SymmetricHeap:
         self.device_id = device_id
         self.cur_rank = cur_rank
         self.num_ranks = num_ranks
-
-        # Allow environment variable override
         allocator_type = os.environ.get("IRIS_ALLOCATOR", allocator_type).lower()
 
-        # Create allocator based on type
         if allocator_type == "torch":
             self.allocator = TorchAllocator(heap_size, device_id, cur_rank, num_ranks)
         elif allocator_type == "vmem":
             self.allocator = VMemAllocator(heap_size, device_id, cur_rank, num_ranks)
         else:
-            raise ValueError(
-                f"Unknown allocator type: {allocator_type}. Supported: 'torch', 'vmem'"
-            )
+            raise ValueError(f"Unknown allocator type: {allocator_type}. Supported: 'torch', 'vmem'")
 
-        # All-gather local heap bases
-        heap_base = self.allocator.get_base_address()
-        local_base_arr = np.array([heap_base], dtype=np.uint64)
-        all_bases_arr = distributed_allgather(local_base_arr).reshape(num_ranks).astype(np.uint64)
-        all_bases = {rank: int(all_bases_arr[rank]) for rank in range(num_ranks)}
-
-        # Setup FD passing infrastructure
-        fd_conns = setup_fd_infrastructure(cur_rank, num_ranks)
-
-        # Exchange handles and import peer memory via DMA-BUF
-        if fd_conns is not None:
-            from iris.fd_passing import send_fd, recv_fd, managed_fd
-            from iris.hip import export_dmabuf_handle, import_dmabuf_handle
-
-            # Export our memory as a shareable DMA-BUF handle
-            my_base = self.allocator.get_base_address()
-            my_handle_fd, _, _ = export_dmabuf_handle(my_base, heap_size)
-
-            with managed_fd(my_handle_fd):
-                for peer, sock in fd_conns.items():
-                    if peer == cur_rank:
-                        continue
-
-                    # Exchange FDs (higher rank sends first to avoid deadlock)
-                    if cur_rank > peer:
-                        send_fd(sock, my_handle_fd)
-                        peer_handle, _ = recv_fd(sock)
-                    else:
-                        peer_handle, _ = recv_fd(sock)
-                        send_fd(sock, my_handle_fd)
-
-                    # Import peer handle via DMA-BUF (same for all allocators)
-                    with managed_fd(peer_handle):
-                        mapped_addr, _ = import_dmabuf_handle(peer_handle, heap_size)
-                        all_bases[peer] = mapped_addr
-
-        # Create heap_bases tensor
+        self.fd_conns = setup_fd_infrastructure(cur_rank, num_ranks)
         device = self.allocator.get_device()
-        heap_bases_array = torch.zeros(num_ranks, dtype=torch.uint64, device=device)
-        for rank, base in all_bases.items():
-            heap_bases_array[rank] = base
-        self.heap_bases = heap_bases_array
+        self.heap_bases = torch.zeros(num_ranks, dtype=torch.uint64, device=device)
+        self.refresh_peer_access()
 
     def allocate(self, num_elements: int, dtype: torch.dtype, alignment: int = 1024) -> torch.Tensor:
         """
         Allocate a tensor on the symmetric heap.
+
+        Always allocates at least the allocator's minimum allocation size so that
+        even zero-element requests get a buffer on the heap; for num_elements==0
+        we return a zero-length slice of that buffer so the tensor is still on heap.
 
         Args:
             num_elements: Number of elements to allocate
@@ -119,9 +80,20 @@ class SymmetricHeap:
             alignment: Alignment requirement in bytes (default: 1024)
 
         Returns:
-            Allocated tensor on the symmetric heap
+            Allocated tensor on the symmetric heap (shape (num_elements,) or (0,) for empty)
+
+        Note:
+            This should be called collectively across all ranks to maintain
+            symmetric heap consistency. After allocation, peer access is refreshed.
         """
-        return self.allocator.allocate(num_elements, dtype, alignment)
+        min_bytes = self.allocator.get_minimum_allocation_size()
+        element_size = torch.tensor([], dtype=dtype).element_size()
+        min_elements = max(1, (min_bytes + element_size - 1) // element_size)
+        actual_elements = max(num_elements, min_elements)
+        tensor = self.allocator.allocate(actual_elements, dtype, alignment)
+        tensor = tensor[:num_elements]
+        self.refresh_peer_access()
+        return tensor
 
     def get_device(self) -> torch.device:
         """Get the torch device for this heap."""
@@ -137,12 +109,121 @@ class SymmetricHeap:
         Returns:
             True if tensor is on the symmetric heap, False otherwise
         """
-        # Delegate to allocator
         return self.allocator.owns_tensor(tensor)
 
     def get_heap_bases(self) -> torch.Tensor:
         """Get heap base addresses for all ranks as a tensor."""
         return self.heap_bases
+
+    def refresh_peer_access(self):
+        """
+        Refresh peer DMA-BUF imports using segmented export/import.
+        Collective: all ranks must call together. Do not cache heap_bases.
+        """
+        import torch.distributed as dist
+        from iris.fd_passing import send_fd, recv_fd
+        from iris.hip import (
+            export_dmabuf_handle,
+            mem_import_from_shareable_handle,
+            mem_map,
+            mem_set_access,
+            mem_address_reserve,
+            hipMemAccessDesc,
+            hipMemLocationTypeDevice,
+            hipMemAccessFlagsProtReadWrite,
+        )
+
+        if dist.is_initialized():
+            dist.barrier()
+
+        my_base = self.allocator.get_base_address()
+        local_base_arr = np.array([my_base], dtype=np.uint64)
+        all_bases_arr = distributed_allgather(local_base_arr).reshape(self.num_ranks).astype(np.uint64)
+        self.heap_bases[self.cur_rank] = int(all_bases_arr[self.cur_rank])
+
+        if self.num_ranks == 1 or self.fd_conns is None:
+            return
+
+        if not hasattr(self.allocator, "get_allocation_segments"):
+            return
+
+        my_segments = self.allocator.get_allocation_segments()
+        my_exported_fds = []
+        for offset, size, va in my_segments:
+            dmabuf_fd, export_base, export_size = export_dmabuf_handle(va, size)
+            my_exported_fds.append((dmabuf_fd, export_size, offset))
+
+        access_desc = hipMemAccessDesc()
+        access_desc.location.type = hipMemLocationTypeDevice
+        access_desc.location.id = self.device_id
+        access_desc.flags = hipMemAccessFlagsProtReadWrite
+
+        for peer, sock in self.fd_conns.items():
+            if peer == self.cur_rank:
+                continue
+
+            if not hasattr(self, "_peer_va_ranges"):
+                self._peer_va_ranges = {}
+
+            if peer not in self._peer_va_ranges:
+                peer_va_base = mem_address_reserve(self.heap_size, self.allocator.granularity, 0)
+                self._peer_va_ranges[peer] = peer_va_base
+            else:
+                peer_va_base = self._peer_va_ranges[peer]
+
+            peer_fds = []
+            for seg_idx, (my_fd, my_size, my_offset) in enumerate(my_exported_fds):
+                # Exchange FDs (higher rank sends first to avoid deadlock)
+                if self.cur_rank > peer:
+                    send_fd(sock, my_fd)
+                    peer_fd, _ = recv_fd(sock)
+                else:
+                    peer_fd, _ = recv_fd(sock)
+                    send_fd(sock, my_fd)
+
+                peer_fds.append((peer_fd, my_size, my_offset))
+
+            if not hasattr(self, "_peer_cumulative_sizes"):
+                self._peer_cumulative_sizes = {}
+            cumulative_size = self._peer_cumulative_sizes.get(peer, 0)
+
+            if not hasattr(self, "_peer_imported_segments"):
+                self._peer_imported_segments = {}
+            if peer not in self._peer_imported_segments:
+                self._peer_imported_segments[peer] = set()
+
+            for peer_fd, segment_size, offset in peer_fds:
+                segment_key = (offset, segment_size)
+                if segment_key in self._peer_imported_segments[peer]:
+                    import os
+
+                    os.close(peer_fd)
+                    continue
+
+                imported_handle = mem_import_from_shareable_handle(peer_fd)
+                import os
+
+                os.close(peer_fd)
+
+                peer_va = peer_va_base + offset
+                mem_map(peer_va, segment_size, 0, imported_handle)
+                self._peer_imported_segments[peer].add(segment_key)
+
+                new_cumulative = offset + segment_size
+                if new_cumulative > cumulative_size:
+                    cumulative_size = new_cumulative
+                    mem_set_access(peer_va_base, cumulative_size, access_desc)
+
+            self._peer_cumulative_sizes[peer] = cumulative_size
+            self.heap_bases[peer] = peer_va_base
+
+        for fd, _, _ in my_exported_fds:
+            import os
+
+            os.close(fd)
+
+        if dist.is_initialized():
+            dist.barrier()
 
     def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -161,11 +242,12 @@ class SymmetricHeap:
         Raises:
             RuntimeError: If allocator doesn't support imports or import fails
         """
-        # Check if allocator supports import (currently only VMem)
-        if not hasattr(self.allocator, 'import_external_tensor'):
+        if not hasattr(self.allocator, "import_external_tensor"):
             raise RuntimeError(
                 f"{type(self.allocator).__name__} does not support as_symmetric(). "
                 "Use allocator_type='vmem' to enable this feature."
             )
 
-        return self.allocator.import_external_tensor(external_tensor)
+        imported = self.allocator.import_external_tensor(external_tensor)
+        self.refresh_peer_access()
+        return imported

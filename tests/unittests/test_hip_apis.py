@@ -14,7 +14,7 @@ def test_get_address_range_basic():
     from iris.hip import get_address_range
 
     # Allocate a tensor
-    tensor = torch.randn(1000, 1000, device='cuda', dtype=torch.float32)
+    tensor = torch.randn(1000, 1000, device="cuda", dtype=torch.float32)
     ptr = tensor.data_ptr()
 
     # Query the base allocation
@@ -40,7 +40,7 @@ def test_get_address_range_offset_pointer():
     from iris.hip import get_address_range
 
     # Allocate a large tensor
-    large_tensor = torch.randn(5000, 1000, device='cuda', dtype=torch.float32)
+    large_tensor = torch.randn(5000, 1000, device="cuda", dtype=torch.float32)
     large_ptr = large_tensor.data_ptr()
     large_base, large_size = get_address_range(large_ptr)
 
@@ -68,7 +68,7 @@ def test_get_address_range_multiple_allocations():
     # PyTorch's caching allocator may allocate these from the same base buffer
     tensors = []
     for i in range(3):
-        t = torch.zeros(128, 128, device='cuda', dtype=torch.float32)
+        t = torch.zeros(128, 128, device="cuda", dtype=torch.float32)
         t.fill_(float(i))
         tensors.append(t)
 
@@ -89,7 +89,7 @@ def test_get_address_range_contiguous():
     from iris.hip import get_address_range
 
     # Create contiguous tensor
-    contiguous = torch.randn(5000, 1000, device='cuda', dtype=torch.float32)
+    contiguous = torch.randn(5000, 1000, device="cuda", dtype=torch.float32)
     assert contiguous.is_contiguous(), "Tensor should be contiguous"
 
     cont_ptr = contiguous.data_ptr()
@@ -115,9 +115,9 @@ def test_get_address_range_dtypes(dtype):
 
     # Use randint for integer types, randn for float types
     if dtype in [torch.int64, torch.int32]:
-        tensor = torch.randint(0, 100, (100, 100), device='cuda', dtype=dtype)
+        tensor = torch.randint(0, 100, (100, 100), device="cuda", dtype=dtype)
     else:
-        tensor = torch.randn(100, 100, device='cuda', dtype=dtype)
+        tensor = torch.randn(100, 100, device="cuda", dtype=dtype)
 
     ptr = tensor.data_ptr()
     base_ptr, size = get_address_range(ptr)
@@ -135,7 +135,7 @@ def test_get_address_range_shapes(shape):
     """Test get_address_range with different tensor shapes."""
     from iris.hip import get_address_range
 
-    tensor = torch.randn(*shape, device='cuda', dtype=torch.float32)
+    tensor = torch.randn(*shape, device="cuda", dtype=torch.float32)
     ptr = tensor.data_ptr()
     base_ptr, size = get_address_range(ptr)
 

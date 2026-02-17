@@ -73,9 +73,7 @@ def test_vmem_heap_bases():
             if peer != ctx.cur_rank:
                 assert int(ctx.heap_bases[peer].item()) > 0, f"Peer {peer} heap base not set"
                 # Verify heap bases are different addresses
-                assert int(ctx.heap_bases[peer].item()) != int(
-                    ctx.heap_bases[ctx.cur_rank].item()
-                )
+                assert int(ctx.heap_bases[peer].item()) != int(ctx.heap_bases[ctx.cur_rank].item())
 
     print(f"Rank {ctx.cur_rank}: VMem heap bases test passed!")
 
@@ -98,9 +96,7 @@ def test_vmem_multirank_exchange():
             if peer != ctx.cur_rank:
                 assert int(ctx.heap_bases[peer].item()) > 0, f"Peer {peer} heap base not set"
                 # Verify heap bases are different addresses
-                assert int(ctx.heap_bases[peer].item()) != int(
-                    ctx.heap_bases[ctx.cur_rank].item()
-                )
+                assert int(ctx.heap_bases[peer].item()) != int(ctx.heap_bases[ctx.cur_rank].item())
 
     # Verify local memory access still works after FD exchange
     ctx.barrier()
@@ -131,9 +127,7 @@ def test_vmem_owns_tensor():
     torch.cuda.empty_cache()
 
 
-@pytest.mark.skipif(
-    torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs for RMA testing"
-)
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs for RMA testing")
 def test_vmem_rma_compatibility():
     """Test that VMem allocator works with RMA operations."""
     pytest.skip("RMA operations (ctx.get/ctx.put) not yet implemented")
@@ -160,9 +154,7 @@ def test_vmem_rma_compatibility():
 
     # Verify we read the peer's value
     expected_value = float(peer_rank)
-    assert torch.all(
-        remote_tensor == expected_value
-    ), f"Expected {expected_value}, got {remote_tensor[0].item()}"
+    assert torch.all(remote_tensor == expected_value), f"Expected {expected_value}, got {remote_tensor[0].item()}"
 
     print(f"Rank {ctx.cur_rank}: VMem RMA compatibility test passed!")
 
@@ -243,8 +235,10 @@ def test_vmem_import_external_tensor():
     result = original_tensor + 1.0
     assert torch.all(result == 124.0), "Original tensor should still support operations!"
 
-    print(f"Rank {torch.distributed.get_rank() if torch.distributed.is_initialized() else 0}: "
-          f"VMem import external tensor test passed!")
+    print(
+        f"Rank {torch.distributed.get_rank() if torch.distributed.is_initialized() else 0}: "
+        f"VMem import external tensor test passed!"
+    )
     print("  ✓ Imported tensor shared memory with original (while ctx alive)")
     print("  ✓ Original tensor survived ctx destruction")
     print("  ✓ Original tensor still fully functional after ctx destroyed")
