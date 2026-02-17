@@ -1780,10 +1780,6 @@ class Iris:
 
 @triton.jit
 def __translate(ptr, from_rank, to_rank, heap_bases):
-    """
-    Basic pointer translation without vectorization hints.
-    Used for atomic operations which may receive scalar pointers.
-    """
     from_base = tl.load(heap_bases + from_rank)
     to_base = tl.load(heap_bases + to_rank)
     # convert to int to compute difference
@@ -1797,7 +1793,19 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # Cast to_base back to pointer type
     translated_ptr = tl.cast(translated_ptr_byte, ptr.dtype)
 
+    # Optimization to vectorize the load/store
+    # We can't do this in general because we don't know the shape of the tensor or block sizes
+    # ptr = tl.max_contiguous(tl.multiple_of(ptr, (16, 16)), (16, 32))
+
+    # 0 You can use this if your block sizes are multiples of 32.
+    # Largest vectorized load instruction is dwordx4 (128-bits)
+    translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
+    translated_ptr = tl.max_contiguous(translated_ptr, (1, 32))
+
+    # ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
+    # translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
     return translated_ptr
+
 
 
 @triton.jit
@@ -2029,7 +2037,7 @@ class DeviceContext:
         Example:
             >>> data = ctx.load(buffer + offsets, from_rank=1, mask=mask)
         """
-        translated_ptr = self._translate_block_2d(pointer, self.rank, from_rank)
+        translated_ptr = self.__translate(pointer, self.rank, from_rank)
         result = tl.load(translated_ptr, mask=mask)
         return result
 
@@ -2055,7 +2063,7 @@ class DeviceContext:
         Example:
             >>> ctx.store(buffer + offsets, values, to_rank=1, mask=mask)
         """
-        translated_ptr = self._translate_block_2d(pointer, self.rank, to_rank)
+        translated_ptr = self.__translate(pointer, self.rank, to_rank)
         tl.store(translated_ptr, value, mask=mask)
 
     @triton.jit

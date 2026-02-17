@@ -61,6 +61,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
     ALLOW_TF32: tl.constexpr,
     NUM_FETCH_STAGES: tl.constexpr,
     GEMM_TILES_PER_STAGE: tl.constexpr,
+    FIRST_STAGE_FETCH_SMS: tl.constexpr,
     trace_start_ptr,
     trace_end_ptr,
     trace_wait_ptr,
@@ -71,21 +72,34 @@ def _hbm_buffer_all_gather_matmul_kernel(
     acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
     zero = tl.program_id(0) * 0
 
+
     if TRACE:
         tl.store(trace_start_ptr + pid, read_realtime())
         tl.store(trace_xcd_ptr + pid, get_xcc_id())
 
-    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
-    WGS_PER_STAGE: tl.constexpr = NUM_FETCH_SMS + GEMM_TILES_PER_STAGE
+    # Interleaved layout with asymmetric first stage:
+    #   [fetch0 (P)] [gemm0 (G)] [fetch1 (F)] [gemm1 (G)] ...
+    # P = FIRST_STAGE_FETCH_SMS, F = NUM_FETCH_SMS, G = GEMM_TILES_PER_STAGE
+    FIRST_STAGE_SIZE: tl.constexpr = FIRST_STAGE_FETCH_SMS + GEMM_TILES_PER_STAGE
+    REST_STAGE_SIZE: tl.constexpr = NUM_FETCH_SMS + GEMM_TILES_PER_STAGE
     M_PER_STAGE: tl.constexpr = (NUM_M_TILES + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
 
-    local_pid = pid % WGS_PER_STAGE
+    # Two-phase decode: stage 0 has a different size than subsequent stages
+    if pid < FIRST_STAGE_SIZE:
+        my_stage = zero
+        local_pid = pid
+        fetch_threshold = zero + FIRST_STAGE_FETCH_SMS
+    else:
+        adjusted = pid - FIRST_STAGE_SIZE
+        my_stage = 1 + adjusted // REST_STAGE_SIZE
+        local_pid = adjusted % REST_STAGE_SIZE
+        fetch_threshold = zero + NUM_FETCH_SMS
 
-    if local_pid < NUM_FETCH_SMS:
+    if local_pid < fetch_threshold:
         # ==============================================================
-        # FETCHER  — interleaved: stage determined by pid // WGS_PER_STAGE
+        # FETCHER  — stage 0 uses FIRST_STAGE_FETCH_SMS WGs,
+        #            later stages use NUM_FETCH_SMS WGs
         # ==============================================================
-        my_stage = pid // WGS_PER_STAGE
         stage_pid = local_pid
 
         ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size)
@@ -95,11 +109,12 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
         for const_stage in range(NUM_FETCH_STAGES):
             if my_stage == const_stage:
+                stage_fetch_sms = FIRST_STAGE_FETCH_SMS if const_stage == 0 else NUM_FETCH_SMS
                 stage_m_start = const_stage * M_PER_STAGE
                 stage_m_count = min(M_PER_STAGE, NUM_M_TILES - stage_m_start)
                 total_fg_stage = NUM_FLAG_GROUPS_K * stage_m_count
 
-                for fg_idx in range(stage_pid, total_fg_stage, NUM_FETCH_SMS):
+                for fg_idx in range(stage_pid, total_fg_stage, stage_fetch_sms):
                     m_group = fg_idx // tiles_per_m_group
                     within_group = fg_idx % tiles_per_m_group
                     k_flag_group = within_group // GROUP_SIZE_M
@@ -129,21 +144,18 @@ def _hbm_buffer_all_gather_matmul_kernel(
                                 tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
                     flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                    #tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                    tl.store(flags_ptr + flag_idx, 1, cache_modifier=".wt")
 
         if TRACE:
-            tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
-            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
             tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
             tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
 
     else:
         # ==============================================================
-        # GEMM  — interleaved: stage determined by pid // WGS_PER_STAGE
-        #   gemm_local_id indexes into this stage's M-tile range
+        # GEMM  — gemm_local_id indexes into this stage's M-tile range
         # ==============================================================
-        my_stage = pid // WGS_PER_STAGE
-        gemm_local_id = local_pid - NUM_FETCH_SMS
+        gemm_local_id = local_pid - fetch_threshold
         stage_m_start = my_stage * M_PER_STAGE
 
         num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
@@ -293,6 +305,7 @@ def all_gather_matmul_hbm_buffer(
     num_warps: Optional[int] = None,
     num_stages: Optional[int] = None,
     num_fetch_stages: int = 1,
+    first_stage_fetch_sms: Optional[int] = None,
     trace: bool = False,
 ) -> FusedWorkspace:
     """
@@ -363,12 +376,17 @@ def all_gather_matmul_hbm_buffer(
     assert 0 < num_fetch_sms
     assert num_fetch_stages >= 1
 
-    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
+    # First stage can use more fetcher WGs to fill the first GPU wave
+    if first_stage_fetch_sms is None:
+        first_stage_fetch_sms = num_fetch_sms
+
+    # Interleaved layout: [fetch0 (P)] [gemm0 (G)] [fetch1 (F)] [gemm1 (G)] ...
     m_per_stage = (num_m_tiles + num_fetch_stages - 1) // num_fetch_stages
     gemm_tiles_per_stage = m_per_stage * num_tiles_n
-    wgs_per_stage = num_fetch_sms + gemm_tiles_per_stage
-    total_fetch_wgs = num_fetch_sms * num_fetch_stages
-    grid_size = wgs_per_stage * num_fetch_stages
+    first_stage_size = first_stage_fetch_sms + gemm_tiles_per_stage
+    rest_stage_size = num_fetch_sms + gemm_tiles_per_stage
+    total_fetch_wgs = first_stage_fetch_sms + num_fetch_sms * max(0, num_fetch_stages - 1)
+    grid_size = first_stage_size + rest_stage_size * max(0, num_fetch_stages - 1)
 
     # Trace buffers
     if trace:
@@ -427,6 +445,7 @@ def all_gather_matmul_hbm_buffer(
         config.allow_tf32,
         num_fetch_stages,
         gemm_tiles_per_stage,
+        first_stage_fetch_sms,
         trace_start,
         trace_end,
         trace_wait,
@@ -451,7 +470,9 @@ def all_gather_matmul_hbm_buffer(
             "total_fetch_wgs": total_fetch_wgs,
             "num_m_tiles": num_m_tiles,
             "num_tiles_n": num_tiles_n,
-            "wgs_per_stage": wgs_per_stage,
+            "first_stage_fetch_sms": first_stage_fetch_sms,
+            "first_stage_size": first_stage_size,
+            "rest_stage_size": rest_stage_size,
             "gemm_tiles_per_stage": gemm_tiles_per_stage,
         }
 

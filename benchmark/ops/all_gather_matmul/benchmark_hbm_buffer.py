@@ -60,7 +60,9 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     n_fetch_per_stage = trace_data["num_fetch_sms"]
     n_stages = trace_data.get("num_fetch_stages", 1)
     total_fetch = trace_data.get("total_fetch_wgs", n_fetch_per_stage)
-    wgs_per_stage = trace_data.get("wgs_per_stage", grid_size)
+    first_stage_fetch = trace_data.get("first_stage_fetch_sms", n_fetch_per_stage)
+    first_stage_size = trace_data.get("first_stage_size", grid_size)
+    rest_stage_size = trace_data.get("rest_stage_size", grid_size)
 
     # Convert to microseconds relative to earliest start
     t_min = starts.min()
@@ -69,12 +71,19 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     waits_us = waits / TICKS_PER_US
 
     # Build role array: stage index for fetchers (0..S-1), S for GEMM
-    # Interleaved layout: [fetch0 | gemm0 | fetch1 | gemm1 | ...]
+    # Asymmetric layout: [fetch0 (P)] [gemm0] [fetch1 (F)] [gemm1] ...
     roles = np.empty(grid_size, dtype=np.int32)
     for i in range(grid_size):
-        stage = i // wgs_per_stage
-        local = i % wgs_per_stage
-        if local < n_fetch_per_stage:
+        if i < first_stage_size:
+            stage = 0
+            local = i
+            fetch_thresh = first_stage_fetch
+        else:
+            adjusted = i - first_stage_size
+            stage = 1 + adjusted // rest_stage_size
+            local = adjusted % rest_stage_size
+            fetch_thresh = n_fetch_per_stage
+        if local < fetch_thresh:
             roles[i] = stage  # fetcher for this stage
         else:
             roles[i] = n_stages  # GEMM
@@ -127,8 +136,12 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
             ax.plot(x_max, y_idx, marker="s", markersize=1.5, color=xcd_cmap[xcd_id], clip_on=False)
 
     n_gemm = grid_size - total_fetch
-    stage_info = (f"{n_stages}x{n_fetch_per_stage}" if n_stages > 1
-                  else str(n_fetch_per_stage))
+    if n_stages > 1 and first_stage_fetch != n_fetch_per_stage:
+        stage_info = f"{first_stage_fetch}+{n_stages - 1}x{n_fetch_per_stage}"
+    elif n_stages > 1:
+        stage_info = f"{n_stages}x{n_fetch_per_stage}"
+    else:
+        stage_info = str(first_stage_fetch)
     ax.set_xlabel("Time (us)", fontsize=12)
     ax.set_ylabel("Workgroup (sorted by start time)", fontsize=12)
     ax.set_title(
@@ -238,6 +251,7 @@ def parse_args():
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
     parser.add_argument("--num_fetch_stages", type=int, default=1, help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)")
+    parser.add_argument("--first_stage_fetch_sms", type=int, default=None, help="Fetcher WGs for stage 0 (fills first GPU wave; defaults to num_fetch_sms)")
     parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
     parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
     return vars(parser.parse_args())
@@ -355,6 +369,7 @@ def _worker(args):
     num_warps = args["num_warps"]
     num_stages = args["num_stages"]
     num_fetch_stages = args["num_fetch_stages"]
+    first_stage_fetch_sms = args["first_stage_fetch_sms"]
 
     def run_experiment():
         nonlocal total_ms, num_experiments
@@ -374,6 +389,7 @@ def _worker(args):
                 num_warps=num_warps,
                 num_stages=num_stages,
                 num_fetch_stages=num_fetch_stages,
+                first_stage_fetch_sms=first_stage_fetch_sms,
             )
             end_ev.record()
             num_experiments += 1
@@ -458,6 +474,7 @@ def _worker(args):
             num_warps=num_warps,
             num_stages=num_stages,
             num_fetch_stages=num_fetch_stages,
+            first_stage_fetch_sms=first_stage_fetch_sms,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()
@@ -497,7 +514,8 @@ def _worker(args):
             config=config, async_op=False, workspace=workspace,
             num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
             num_warps=num_warps, num_stages=num_stages,
-            num_fetch_stages=num_fetch_stages, trace=True,
+            num_fetch_stages=num_fetch_stages,
+            first_stage_fetch_sms=first_stage_fetch_sms, trace=True,
         )
         torch.cuda.synchronize()
         shmem.barrier()
@@ -521,6 +539,7 @@ def _worker(args):
             num_warps=num_warps,
             num_stages=num_stages,
             num_fetch_stages=num_fetch_stages,
+            first_stage_fetch_sms=first_stage_fetch_sms,
             trace=True,
         )
         torch.cuda.synchronize()
