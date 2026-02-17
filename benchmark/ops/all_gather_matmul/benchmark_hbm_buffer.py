@@ -98,8 +98,8 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
 
     # One color per fetch stage (blue palette), plus GEMM colors
     fetch_blues = ["#1565C0", "#42A5F5", "#90CAF9", "#BBDEFB"]
-    wait_color = "#F44336"    # red
-    compute_color = "#4CAF50" # green
+    wait_color = "#F44336"  # red
+    compute_color = "#4CAF50"  # green
 
     for y_idx, wg_idx in enumerate(order):
         s = starts_us[wg_idx]
@@ -110,16 +110,13 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
         if role < n_stages:
             # Fetcher: color by stage
             c = fetch_blues[role % len(fetch_blues)]
-            ax.barh(y_idx, dur, left=s, height=0.8, color=c,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, dur, left=s, height=0.8, color=c, edgecolor="none", linewidth=0)
         else:
             # GEMM: split into wait (red) and compute (green)
             w = waits_us[wg_idx]
             comp = max(0, dur - w)
-            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color,
-                    edgecolor="none", linewidth=0)
-            ax.barh(y_idx, comp, left=s + w, height=0.8, color=compute_color,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color, edgecolor="none", linewidth=0)
+            ax.barh(y_idx, comp, left=s + w, height=0.8, color=compute_color, edgecolor="none", linewidth=0)
 
     # XCD annotations on the right margin
     xcd_set = sorted(set(xcds.tolist()))
@@ -159,14 +156,9 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     # Legend
     legend_elements = []
     for s_idx in range(min(n_stages, len(fetch_blues))):
-        legend_elements.append(
-            Line2D([0], [0], color=fetch_blues[s_idx], lw=6,
-                   label=f"Fetch stage {s_idx}")
-        )
-    legend_elements.append(
-        Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
-    legend_elements.append(
-        Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
+        legend_elements.append(Line2D([0], [0], color=fetch_blues[s_idx], lw=6, label=f"Fetch stage {s_idx}"))
+    legend_elements.append(Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
+    legend_elements.append(Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
     ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
 
     # Summary stats
