@@ -47,6 +47,7 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     Colors: fetcher stages (blue shades), GEMM wait (red), GEMM compute (green)
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -123,8 +124,7 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     for y_idx, wg_idx in enumerate(order):
         xcd_id = xcds[wg_idx]
         if xcd_id in xcd_cmap:
-            ax.plot(x_max, y_idx, marker="s", markersize=1.5,
-                    color=xcd_cmap[xcd_id], clip_on=False)
+            ax.plot(x_max, y_idx, marker="s", markersize=1.5, color=xcd_cmap[xcd_id], clip_on=False)
 
     n_gemm = grid_size - total_fetch
     stage_info = (f"{n_stages}x{n_fetch_per_stage}" if n_stages > 1
@@ -184,8 +184,13 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     ]
     stats_text = "\n".join(stats_lines)
     ax.text(
-        0.01, 0.99, stats_text, transform=ax.transAxes,
-        fontsize=9, verticalalignment="top", fontfamily="monospace",
+        0.01,
+        0.99,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        fontfamily="monospace",
         bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
     )
 
@@ -269,10 +274,7 @@ def _worker(args):
     world_size = shmem.get_num_ranks()
 
     t2 = time.perf_counter()
-    shmem.info(
-        f"Startup: dist.init={t1 - t0:.1f}s, iris.init={t2 - t1:.1f}s, "
-        f"total={t2 - t0:.1f}s"
-    )
+    shmem.info(f"Startup: dist.init={t1 - t0:.1f}s, iris.init={t2 - t1:.1f}s, total={t2 - t0:.1f}s")
 
     datatype_map = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}
     datatype = datatype_map.get(args["datatype"], torch.float16)
