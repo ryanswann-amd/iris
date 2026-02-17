@@ -89,8 +89,8 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
 
     # One color per fetch stage (blue palette), plus GEMM colors
     fetch_blues = ["#1565C0", "#42A5F5", "#90CAF9", "#BBDEFB"]
-    wait_color = "#F44336"    # red
-    compute_color = "#4CAF50" # green
+    wait_color = "#F44336"  # red
+    compute_color = "#4CAF50"  # green
 
     for y_idx, wg_idx in enumerate(order):
         s = starts_us[wg_idx]
@@ -101,16 +101,13 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
         if role < n_stages:
             # Fetcher: color by stage
             c = fetch_blues[role % len(fetch_blues)]
-            ax.barh(y_idx, dur, left=s, height=0.8, color=c,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, dur, left=s, height=0.8, color=c, edgecolor="none", linewidth=0)
         else:
             # GEMM: split into wait (red) and compute (green)
             w = waits_us[wg_idx]
             comp = max(0, dur - w)
-            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color,
-                    edgecolor="none", linewidth=0)
-            ax.barh(y_idx, comp, left=s + w, height=0.8, color=compute_color,
-                    edgecolor="none", linewidth=0)
+            ax.barh(y_idx, w, left=s, height=0.8, color=wait_color, edgecolor="none", linewidth=0)
+            ax.barh(y_idx, comp, left=s + w, height=0.8, color=compute_color, edgecolor="none", linewidth=0)
 
     # XCD annotations on the right margin
     xcd_set = sorted(set(xcds.tolist()))
@@ -127,8 +124,7 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
             ax.plot(x_max, y_idx, marker="s", markersize=1.5, color=xcd_cmap[xcd_id], clip_on=False)
 
     n_gemm = grid_size - total_fetch
-    stage_info = (f"{n_stages}x{n_fetch_per_stage}" if n_stages > 1
-                  else str(n_fetch_per_stage))
+    stage_info = f"{n_stages}x{n_fetch_per_stage}" if n_stages > 1 else str(n_fetch_per_stage)
     ax.set_xlabel("Time (us)", fontsize=12)
     ax.set_ylabel("Workgroup (sorted by start time)", fontsize=12)
     ax.set_title(
@@ -146,14 +142,9 @@ def _plot_trace(trace_data, output_path, rank, M, N, K, num_fetch_sms_cfg):
     # Legend
     legend_elements = []
     for s_idx in range(min(n_stages, len(fetch_blues))):
-        legend_elements.append(
-            Line2D([0], [0], color=fetch_blues[s_idx], lw=6,
-                   label=f"Fetch stage {s_idx}")
-        )
-    legend_elements.append(
-        Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
-    legend_elements.append(
-        Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
+        legend_elements.append(Line2D([0], [0], color=fetch_blues[s_idx], lw=6, label=f"Fetch stage {s_idx}"))
+    legend_elements.append(Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
+    legend_elements.append(Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
     ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
 
     # Summary stats
@@ -237,7 +228,12 @@ def parse_args():
     parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
-    parser.add_argument("--num_fetch_stages", type=int, default=1, help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)")
+    parser.add_argument(
+        "--num_fetch_stages",
+        type=int,
+        default=1,
+        help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)",
+    )
     parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
     parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
     return vars(parser.parse_args())
@@ -493,11 +489,19 @@ def _worker(args):
         workspace.locks.zero_()
         shmem.barrier()
         all_gather_matmul_hbm_buffer(
-            shmem, C, A_sharded, B,
-            config=config, async_op=False, workspace=workspace,
-            num_fetch_sms=num_fetch_sms, k_per_flag=k_per_flag,
-            num_warps=num_warps, num_stages=num_stages,
-            num_fetch_stages=num_fetch_stages, trace=True,
+            shmem,
+            C,
+            A_sharded,
+            B,
+            config=config,
+            async_op=False,
+            workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            num_fetch_stages=num_fetch_stages,
+            trace=True,
         )
         torch.cuda.synchronize()
         shmem.barrier()
