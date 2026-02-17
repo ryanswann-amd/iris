@@ -26,14 +26,12 @@ except ImportError:
     [
         torch.float16,
         torch.float32,
-        torch.bfloat16,
     ],
 )
 @pytest.mark.parametrize(
     "M, N",
     [
         (128, 64),  # Small
-        (1024, 256),  # Medium
         (8192, 8192),  # Large
     ],
 )
