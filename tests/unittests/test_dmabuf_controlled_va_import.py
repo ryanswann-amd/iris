@@ -43,7 +43,7 @@ def test_import_to_controlled_va():
     granularity = get_allocation_granularity(device_id)
     va_size = 4 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         tensor = torch.randn(1024, dtype=torch.float32, device="cuda")
@@ -106,7 +106,7 @@ def test_import_with_offset():
     granularity = get_allocation_granularity(device_id)
     va_size = 4 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         large_tensor = torch.randn(10000, dtype=torch.float32, device="cuda")
@@ -174,7 +174,7 @@ def test_import_memory_sharing():
     granularity = get_allocation_granularity(device_id)
     va_size = 4 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         original_tensor = torch.randn(1024, dtype=torch.float32, device="cuda")
@@ -247,7 +247,7 @@ def test_import_multiple_tensors():
     granularity = get_allocation_granularity(device_id)
     va_size = 8 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         tensor1 = torch.randn(1024, dtype=torch.float32, device="cuda")
@@ -333,7 +333,7 @@ def test_cleanup_preserves_original():
 
     assert torch.all(original_tensor == 42.0)
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         original_ptr = original_tensor.data_ptr()

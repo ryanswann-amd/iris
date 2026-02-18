@@ -47,7 +47,7 @@ def test_dmabuf_import_into_reserved_va():
     granularity = get_allocation_granularity(device_id)
     va_size = 4 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         tensor_size = 1024
@@ -110,7 +110,7 @@ def test_dmabuf_import_after_native_allocation():
     va_size = 4 << 20
     native_size = 2 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         native_handle = mem_create(native_size, device_id)

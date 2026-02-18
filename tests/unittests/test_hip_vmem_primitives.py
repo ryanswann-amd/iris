@@ -46,7 +46,7 @@ def test_vmem_reserve_and_free():
     granularity = get_allocation_granularity(device_id)
     va_size = 4 << 20  # 4 MB
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
     assert base_va > 0
     mem_address_free(base_va, va_size)
 
@@ -62,7 +62,7 @@ def test_vmem_create_map_access():
     alloc_size = 2 << 20  # 2 MB
     va_size = 4 << 20  # 4 MB
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         handle = mem_create(alloc_size, device_id)
@@ -115,7 +115,7 @@ def test_vmem_multiple_mappings():
     alloc_size = 2 << 20  # 2 MB each
     va_size = 4 << 20  # 4 MB total
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         handle1 = mem_create(alloc_size, device_id)
@@ -195,7 +195,7 @@ def test_vmem_remap():
     alloc_size = 2 << 20
     va_size = 4 << 20
 
-    base_va = mem_address_reserve(va_size, 0, granularity)
+    base_va = mem_address_reserve(va_size, granularity, 0)
 
     try:
         handle1 = mem_create(alloc_size, device_id)
