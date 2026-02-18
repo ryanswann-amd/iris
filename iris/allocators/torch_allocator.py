@@ -127,9 +127,7 @@ class TorchAllocator(BaseAllocator):
                     peer_base, peer_size, peer_heap = struct.unpack("QQQ", peer_metadata)
 
                     with managed_fd(peer_handle):
-                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(
-                            peer_handle, peer_size, peer_heap, peer_base
-                        )
+                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(peer_handle, peer_size, peer_heap, peer_base)
                         heap_bases_array[peer] = mapped_ptr
                         self._peer_ext_mem_handles[peer] = ext_mem_handle
 
