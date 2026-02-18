@@ -24,7 +24,7 @@ class SymmetricHeap:
     Manages distributed memory with symmetric addressing across ranks,
     handling all allocator coordination and memory sharing internally.
 
-    Supports multiple allocator backends: 'torch' (default) and 'vmem'.
+    Supports multiple allocator backends: 'vmem' (default) and 'torch'.
     """
 
     def __init__(

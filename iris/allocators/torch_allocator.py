@@ -15,7 +15,7 @@ from typing import Optional, Dict
 import struct
 
 from .base import BaseAllocator
-from iris.hip import export_dmabuf_handle, import_dmabuf_handle
+from iris.hip import export_dmabuf_handle, import_dmabuf_handle, destroy_external_memory
 from iris.fd_passing import send_fd, recv_fd, managed_fd
 
 
@@ -41,6 +41,7 @@ class TorchAllocator(BaseAllocator):
 
         self.device = f"cuda:{device_id}"
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
+        self._peer_ext_mem_handles: Dict[int, object] = {}
 
     def get_minimum_allocation_size(self) -> int:
         """Minimum allocation size in bytes (PyTorch allows 0-size views)."""
@@ -99,6 +100,13 @@ class TorchAllocator(BaseAllocator):
         heap_bases_array = np.zeros(self.num_ranks, dtype=np.uint64)
 
         if connections is not None:
+            for handle in self._peer_ext_mem_handles.values():
+                try:
+                    destroy_external_memory(handle)
+                except Exception:
+                    pass
+            self._peer_ext_mem_handles.clear()
+
             my_fd, my_base, my_size = self.get_shareable_handle()
             heap_base = self.get_base_address()
             my_metadata = struct.pack("QQQ", my_base, my_size, heap_base)
@@ -119,14 +127,26 @@ class TorchAllocator(BaseAllocator):
                     peer_base, peer_size, peer_heap = struct.unpack("QQQ", peer_metadata)
 
                     with managed_fd(peer_handle):
-                        mapped_addr = import_dmabuf_handle(peer_handle, peer_size, peer_heap, peer_base)
-                        heap_bases_array[peer] = mapped_addr
+                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(
+                            peer_handle, peer_size, peer_heap, peer_base
+                        )
+                        heap_bases_array[peer] = mapped_ptr
+                        self._peer_ext_mem_handles[peer] = ext_mem_handle
 
             heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
         else:
             heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
 
         self.heap_bases_array = heap_bases_array
+
+    def close(self):
+        """Release peer external memory handles."""
+        for handle in self._peer_ext_mem_handles.values():
+            try:
+                destroy_external_memory(handle)
+            except Exception:
+                pass
+        self._peer_ext_mem_handles.clear()
 
     def get_device(self) -> torch.device:
         """Get the torch device."""
