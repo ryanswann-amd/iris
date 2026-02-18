@@ -24,7 +24,7 @@ class SymmetricHeap:
     Manages distributed memory with symmetric addressing across ranks,
     handling all allocator coordination and memory sharing internally.
 
-    Supports multiple allocator backends: 'vmem' (default) and 'torch'.
+    Supports multiple allocator backends: 'torch' (default) and 'vmem'.
     """
 
     def __init__(
@@ -33,7 +33,7 @@ class SymmetricHeap:
         device_id: int,
         cur_rank: int,
         num_ranks: int,
-        allocator_type: str = "vmem",
+        allocator_type: str = "torch",
     ):
         """
         Initialize symmetric heap.
@@ -43,7 +43,7 @@ class SymmetricHeap:
             device_id: GPU device ID
             cur_rank: Current process rank
             num_ranks: Total number of ranks
-            allocator_type: Type of allocator ("torch" or "vmem")
+            allocator_type: Type of allocator ("torch" or "vmem"); default "torch"
 
         Raises:
             ValueError: If allocator_type is not supported
@@ -232,25 +232,24 @@ class SymmetricHeap:
 
     def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Import an external PyTorch tensor into the symmetric heap.
+        Place an external PyTorch tensor on the symmetric heap.
 
-        This creates a new tensor in the symmetric heap that shares physical
-        memory with the external tensor. Modifications to either tensor will
-        be visible in both.
+        With the torch allocator: allocates on the heap and copies the data;
+        the returned tensor is independent of the input. With the vmem
+        allocator: imports the memory so both tensors share the same storage.
 
         Args:
-            external_tensor: External PyTorch tensor to import
+            external_tensor: External PyTorch tensor (must be CUDA, contiguous)
 
         Returns:
-            New tensor in symmetric heap sharing memory with external tensor
+            Tensor on the symmetric heap (same shape/dtype; copy or shared per allocator)
 
         Raises:
             RuntimeError: If allocator doesn't support imports or import fails
         """
         if not hasattr(self.allocator, "import_external_tensor"):
             raise RuntimeError(
-                f"{type(self.allocator).__name__} does not support as_symmetric(). "
-                "Use allocator_type='vmem' to enable this feature."
+                f"{type(self.allocator).__name__} does not support as_symmetric()."
             )
 
         imported = self.allocator.import_external_tensor(external_tensor)

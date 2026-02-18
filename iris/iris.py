@@ -86,7 +86,7 @@ class Iris:
         >>> ctx = iris.iris(heap_size=2**31, allocator_type="vmem")
     """
 
-    def __init__(self, heap_size=1 << 30, allocator_type="vmem"):
+    def __init__(self, heap_size=1 << 30, allocator_type="torch"):
         # Initialize distributed environment
         comm, cur_rank, num_ranks = init_distributed()
         num_gpus = count_devices()
@@ -707,7 +707,7 @@ class Iris:
         in both. This is useful for importing pre-allocated tensors (e.g., model weights)
         into the symmetric heap for RMA operations.
 
-        Note: This feature requires `allocator_type='vmem'` (default in current version).
+        Note: This feature requires `allocator_type='vmem'`.
 
         Args:
             external_tensor (torch.Tensor): External PyTorch tensor to import.
@@ -2912,13 +2912,13 @@ def atomic_max(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
     return tl.atomic_max(translated_ptr, val, mask=mask, sem=sem, scope=scope)
 
 
-def iris(heap_size=1 << 30, allocator_type="vmem"):
+def iris(heap_size=1 << 30, allocator_type="torch"):
     """
     Create and return an Iris instance with the specified heap size.
 
     Args:
         heap_size (int): Size of the heap in bytes. Defaults to 1GB.
-        allocator_type (str): Type of allocator to use. Options: "vmem" (default), "torch".
+        allocator_type (str): Type of allocator to use. Options: "torch" (default), "vmem".
                               Can be overridden with IRIS_ALLOCATOR environment variable.
 
     Returns:
@@ -2926,11 +2926,11 @@ def iris(heap_size=1 << 30, allocator_type="vmem"):
 
     Example:
         >>> import iris
-        >>> iris_ctx = iris.iris(2**30)  # 1GB heap with default (vmem) allocator
+        >>> iris_ctx = iris.iris(2**30)  # 1GB heap with default (torch) allocator
         >>> tensor = iris_ctx.zeros(1024, 1024)
 
-        >>> # Use torch allocator
-        >>> iris_ctx = iris.iris(2**30, allocator_type="torch")
+        >>> # Use VMem allocator
+        >>> iris_ctx = iris.iris(2**30, allocator_type="vmem")
         >>> tensor = iris_ctx.zeros(1024, 1024)
     """
     return Iris(heap_size, allocator_type)
