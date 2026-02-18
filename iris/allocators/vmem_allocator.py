@@ -231,12 +231,16 @@ class VMemAllocator(BaseAllocator):
             New tensor view in symmetric heap that shares memory with external tensor
 
         Raises:
-            RuntimeError: If import fails
+            RuntimeError: If import fails or tensor is not contiguous
         """
 
         with self.lock:
             if not external_tensor.is_cuda:
                 raise RuntimeError("Can only import CUDA tensors")
+            if not external_tensor.is_contiguous():
+                raise RuntimeError(
+                    "Only contiguous tensors can be imported; call .contiguous() before as_symmetric()"
+                )
 
             external_ptr = external_tensor.data_ptr()
             alloc_base, alloc_size = get_address_range(external_ptr)
