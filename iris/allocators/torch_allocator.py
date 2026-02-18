@@ -167,9 +167,7 @@ class TorchAllocator(BaseAllocator):
         if not external_tensor.is_cuda:
             raise RuntimeError("Can only import CUDA tensors")
         if not external_tensor.is_contiguous():
-            raise RuntimeError(
-                "Only contiguous tensors can be imported; call .contiguous() before as_symmetric()"
-            )
+            raise RuntimeError("Only contiguous tensors can be imported; call .contiguous() before as_symmetric()")
         num_elements = external_tensor.numel()
         dtype = external_tensor.dtype
         shape = external_tensor.shape

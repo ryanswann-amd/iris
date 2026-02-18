@@ -248,9 +248,7 @@ class SymmetricHeap:
             RuntimeError: If allocator doesn't support imports or import fails
         """
         if not hasattr(self.allocator, "import_external_tensor"):
-            raise RuntimeError(
-                f"{type(self.allocator).__name__} does not support as_symmetric()."
-            )
+            raise RuntimeError(f"{type(self.allocator).__name__} does not support as_symmetric().")
 
         imported = self.allocator.import_external_tensor(external_tensor)
         self.refresh_peer_access()
