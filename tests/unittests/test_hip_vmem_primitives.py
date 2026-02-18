@@ -109,7 +109,10 @@ def test_vmem_create_map_access():
 
 
 def test_vmem_multiple_mappings():
-    """Test multiple allocations in same VA range at different offsets."""
+    """Test multiple allocations: map, set_access (cumulative), map, set_access (cumulative).
+
+    Calls mem_set_access twice, each time with cumulative size from base_va so far.
+    """
     device_id = _get_device_id()
     granularity = get_allocation_granularity(device_id)
     alloc_size = 2 << 20  # 2 MB each
@@ -123,16 +126,15 @@ def test_vmem_multiple_mappings():
 
         va1 = base_va
         mem_map(va1, alloc_size, 0, handle1)
-
-        va2 = base_va + alloc_size
-        mem_map(va2, alloc_size, 0, handle2)
-
         access_desc = hipMemAccessDesc()
         access_desc.location.type = hipMemLocationTypeDevice
         access_desc.location.id = device_id
         access_desc.flags = hipMemAccessFlagsProtReadWrite
-        mem_set_access(va1, alloc_size, access_desc)
-        mem_set_access(va2, alloc_size, access_desc)
+        mem_set_access(base_va, alloc_size, access_desc)
+
+        va2 = base_va + alloc_size
+        mem_map(va2, alloc_size, 0, handle2)
+        mem_set_access(base_va, alloc_size * 2, access_desc)
 
         class CUDAArrayInterface:
             def __init__(self, ptr, size_bytes):
