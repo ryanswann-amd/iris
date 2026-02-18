@@ -145,6 +145,11 @@ class SymmetricHeap:
             return
 
         if not hasattr(self.allocator, "get_allocation_segments"):
+            if hasattr(self.allocator, "establish_peer_access"):
+                all_bases = {r: int(all_bases_arr[r]) for r in range(self.num_ranks)}
+                self.allocator.establish_peer_access(all_bases, self.fd_conns)
+                for r in range(self.num_ranks):
+                    self.heap_bases[r] = int(self.allocator.heap_bases_array[r])
             return
 
         my_segments = self.allocator.get_allocation_segments()
