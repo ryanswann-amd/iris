@@ -45,11 +45,15 @@ EXIT_CODE=0
     # Run new examples (numbered 24 and above)
     for example_file in examples/2[4-9]_*/example.py examples/3[0-9]_*/example.py; do
         if [ -f \"\$example_file\" ]; then
-            # Check for IRIS_REQUIRED_RANKS metadata; skip if ranks don't match
-            required_ranks=\$(grep -m1 '^# IRIS_REQUIRED_RANKS:' \"\$example_file\" | awk '{print \$3}')
-            if [ -n \"\$required_ranks\" ] && [ \"\$required_ranks\" != \"$NUM_RANKS\" ]; then
-                echo \"Skipping: \$example_file (requires \$required_ranks ranks, got $NUM_RANKS)\"
-                continue
+            # Check for optional iris_config.json sidecar; skip if required_ranks doesn't match
+            example_dir=\$(dirname \"\$example_file\")
+            config_file=\"\$example_dir/iris_config.json\"
+            if [ -f \"\$config_file\" ]; then
+                required_ranks=\$(python3 -c \"import json,sys; d=json.load(open('\$config_file')); print(d.get('required_ranks',''))\" 2>/dev/null)
+                if [ -n \"\$required_ranks\" ] && [ \"\$required_ranks\" != \"$NUM_RANKS\" ]; then
+                    echo \"Skipping: \$example_file (requires \$required_ranks ranks, got $NUM_RANKS)\"
+                    continue
+                fi
             fi
             echo \"Running: \$example_file with $NUM_RANKS ranks\"
             torchrun --nproc_per_node=$NUM_RANKS --standalone \"\$example_file\"
