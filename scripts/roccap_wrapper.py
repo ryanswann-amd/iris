@@ -19,7 +19,7 @@ child_script = unknown[0]
 child_args = unknown[1:]
 
 # Get rank from torchrun environment
-rank = os.environ.get('RANK', '0')
+rank = os.environ.get("RANK", "0")
 
 # Hardcoded dispatch filter: only capture dispatches
 DISP_FILTER = f"{parsed.kernel}/0-"
@@ -27,9 +27,12 @@ DISP_FILTER = f"{parsed.kernel}/0-"
 # Build roccap command: capture --loglevel trace --file <output> --disp <filter> python3 <script> [args...]
 roccap_args = [
     "capture",
-    "--loglevel", "trace",
-    "--file", f"{parsed.kernel}_rank_{rank}.cap",
-    "--disp", DISP_FILTER,
+    "--loglevel",
+    "trace",
+    "--file",
+    f"{parsed.kernel}_rank_{rank}.cap",
+    "--disp",
+    DISP_FILTER,
     "python3",
     child_script,
 ] + child_args

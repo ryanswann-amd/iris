@@ -61,7 +61,6 @@ class SymmetricHeap:
         else:
             raise ValueError(f"Unknown allocator type: {allocator_type}. Supported: 'torch', 'vmem'")
 
-            
         self.fd_conns = setup_fd_infrastructure(cur_rank, num_ranks)
         device = self.allocator.get_device()
         self.heap_bases = torch.zeros(num_ranks, dtype=torch.uint64, device=device)
