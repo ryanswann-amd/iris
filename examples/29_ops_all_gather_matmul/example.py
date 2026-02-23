@@ -10,6 +10,8 @@ A is column-sharded across ranks; each rank holds A[:, k_start:k_end].
 
 Run with:
     torchrun --nproc_per_node=<num_gpus> --standalone example.py [--validate]
+    Example:
+    torchrun --nproc_per_node=4 --standalone example.py -m 4096 -n 128
 """
 
 import argparse

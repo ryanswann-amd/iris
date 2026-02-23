@@ -17,6 +17,7 @@ import struct
 from .base import BaseAllocator
 from iris.hip import export_dmabuf_handle, import_dmabuf_handle, destroy_external_memory
 from iris.fd_passing import send_fd, recv_fd, managed_fd
+from iris.util import is_simulation_env
 
 
 class TorchAllocator(BaseAllocator):
@@ -41,6 +42,10 @@ class TorchAllocator(BaseAllocator):
 
         self.device = f"cuda:{device_id}"
         self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
+        if is_simulation_env():
+            self.rank_bools = torch.zeros(max(0, num_ranks - 1), device=self.device, dtype=torch.bool)
+        else:
+            self.rank_bools = None
         self._peer_ext_mem_handles: Dict[int, object] = {}
 
     def get_minimum_allocation_size(self) -> int:

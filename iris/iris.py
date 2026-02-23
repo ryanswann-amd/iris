@@ -66,6 +66,7 @@ from .tracing import Tracing, TraceEvent, DeviceTracing  # noqa: F401  re-export
 
 # Import shared tensor-creation helpers
 from . import tensor_creation
+from .util import is_simulation_env
 
 
 class Iris:
@@ -89,6 +90,8 @@ class Iris:
     """
 
     def __init__(self, heap_size=1 << 30, allocator_type="torch"):
+        if is_simulation_env():
+            allocator_type = "torch"
         # Initialize distributed environment
         comm, cur_rank, num_ranks = init_distributed()
         num_gpus = count_devices()
@@ -107,8 +110,9 @@ class Iris:
         self.device = f"cuda:{gpu_id}"
         self.heap_bases = self.heap.get_heap_bases()
 
-        for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(self.heap_bases[i].item()))}")
+        if is_simulation_env():
+            my_base = int(self.heap_bases[self.cur_rank].item())
+            print(f"Rank {self.cur_rank}: Heap base {hex(my_base)}", flush=True)
 
         distributed_barrier()
 

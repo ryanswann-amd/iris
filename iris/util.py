@@ -23,9 +23,21 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import os
 import statistics
 import math
 import torch
+
+
+def is_simulation_env() -> bool:
+    """
+    Return True if running in a simulation environment (e.g. pre-silicon).
+
+    When True, Iris will force the torch allocator regardless of allocator_type.
+    Set IRIS_SIMULATION=1 (or "true"/"yes") to enable.
+    """
+    val = os.environ.get("IRIS_SIMULATION", "").strip().lower()
+    return val in ("1", "true", "yes")
 
 
 def get_empty_cache_for_benchmark():
