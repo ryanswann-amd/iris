@@ -45,6 +45,12 @@ EXIT_CODE=0
     # Run new examples (numbered 24 and above)
     for example_file in examples/2[4-9]_*/example.py examples/3[0-9]_*/example.py; do
         if [ -f \"\$example_file\" ]; then
+            # Check for IRIS_REQUIRED_RANKS metadata; skip if ranks don't match
+            required_ranks=\$(grep -m1 '^# IRIS_REQUIRED_RANKS:' \"\$example_file\" | awk '{print \$3}')
+            if [ -n \"\$required_ranks\" ] && [ \"\$required_ranks\" != \"$NUM_RANKS\" ]; then
+                echo \"Skipping: \$example_file (requires \$required_ranks ranks, got $NUM_RANKS)\"
+                continue
+            fi
             echo \"Running: \$example_file with $NUM_RANKS ranks\"
             torchrun --nproc_per_node=$NUM_RANKS --standalone \"\$example_file\"
         fi
