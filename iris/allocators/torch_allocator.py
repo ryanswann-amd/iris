@@ -41,11 +41,34 @@ class TorchAllocator(BaseAllocator):
         super().__init__(heap_size, device_id, cur_rank, num_ranks)
 
         self.device = f"cuda:{device_id}"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
         if is_simulation_env():
-            self.rank_bools = torch.zeros(max(0, num_ranks - 1), device=self.device, dtype=torch.bool)
+            import json
+
+            # In simulation, each rank allocates n distinct buffers; memory_pool is a shallow view of the ith.
+            self.rank_bools = [
+                torch.empty(heap_size, device=self.device, dtype=torch.int8)
+                for _ in range(num_ranks)
+            ]
+            self.memory_pool = self.rank_bools[cur_rank]
+
+            heap_views = [self.rank_bools[r].data_ptr() for r in range(num_ranks)]
+            out_path = f"iris_rank_{cur_rank}_allocator_views.json"
+            with open(out_path, "w") as f:
+                json.dump(
+                    {
+                        "rank": cur_rank,
+                        "num_ranks": num_ranks,
+                        "heap_views": [hex(b) for b in heap_views],
+                    },
+                    f,
+                    indent=2,
+                )
         else:
             self.rank_bools = None
+            self.memory_pool = torch.empty(
+                heap_size, device=self.device, dtype=torch.int8
+            )
+
         self._peer_ext_mem_handles: Dict[int, object] = {}
 
     def get_minimum_allocation_size(self) -> int:

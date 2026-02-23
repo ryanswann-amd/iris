@@ -111,8 +111,22 @@ class Iris:
         self.heap_bases = self.heap.get_heap_bases()
 
         if is_simulation_env():
-            my_base = int(self.heap_bases[self.cur_rank].item())
-            print(f"Rank {self.cur_rank}: Heap base {hex(my_base)}", flush=True)
+            import json
+
+            heap_bases_list = [
+                int(self.heap_bases[r].item()) for r in range(self.num_ranks)
+            ]
+            out_path = f"iris_rank_{self.cur_rank}_heap_bases.json"
+            with open(out_path, "w") as f:
+                json.dump(
+                    {
+                        "rank": self.cur_rank,
+                        "num_ranks": self.num_ranks,
+                        "heap_bases": [hex(b) for b in heap_bases_list],
+                    },
+                    f,
+                    indent=2,
+                )
 
         distributed_barrier()
 
