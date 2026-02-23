@@ -14,7 +14,7 @@ parser.add_argument("-k", "--kernel", type=str, default="_fused_all_gather_matmu
 # Everything else: first is the script to run, rest are passed through to it
 parsed, unknown = parser.parse_known_args()
 if not unknown:
-    sys.exit("Usage: roccap_wrapper.py [-d DISP_FILTER] <script> [script_args...]")
+    sys.exit("Usage: roccap_wrapper.py [-k KERNEL] <script> [script_args...]")
 child_script = unknown[0]
 child_args = unknown[1:]
 
@@ -24,6 +24,7 @@ rank = os.environ.get("RANK", "0")
 # Hardcoded dispatch filter: only capture dispatches
 DISP_FILTER = f"{parsed.kernel}/0-"
 
+print(f"sys.executable: {sys.executable}")
 # Build roccap command: capture --loglevel trace --file <output> --disp <filter> python3 <script> [args...]
 roccap_args = [
     "capture",
@@ -33,7 +34,7 @@ roccap_args = [
     f"{parsed.kernel}_rank_{rank}.cap",
     "--disp",
     DISP_FILTER,
-    "python3",
+    sys.executable,
     child_script,
 ] + child_args
 
