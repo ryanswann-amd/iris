@@ -45,10 +45,7 @@ class TorchAllocator(BaseAllocator):
             import json
 
             # In simulation, each rank allocates n distinct buffers; memory_pool is a shallow view of the ith.
-            self.rank_bools = [
-                torch.empty(heap_size, device=self.device, dtype=torch.int8)
-                for _ in range(num_ranks)
-            ]
+            self.rank_bools = [torch.empty(heap_size, device=self.device, dtype=torch.int8) for _ in range(num_ranks)]
             self.memory_pool = self.rank_bools[cur_rank]
 
             heap_views = [self.rank_bools[r].data_ptr() for r in range(num_ranks)]
@@ -65,9 +62,7 @@ class TorchAllocator(BaseAllocator):
                 )
         else:
             self.rank_bools = None
-            self.memory_pool = torch.empty(
-                heap_size, device=self.device, dtype=torch.int8
-            )
+            self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
 
         self._peer_ext_mem_handles: Dict[int, object] = {}
 

@@ -113,9 +113,7 @@ class Iris:
         if is_simulation_env():
             import json
 
-            heap_bases_list = [
-                int(self.heap_bases[r].item()) for r in range(self.num_ranks)
-            ]
+            heap_bases_list = [int(self.heap_bases[r].item()) for r in range(self.num_ranks)]
             out_path = f"iris_rank_{self.cur_rank}_heap_bases.json"
             with open(out_path, "w") as f:
                 json.dump(
