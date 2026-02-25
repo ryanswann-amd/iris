@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 """
 Iris: Multi-GPU Communication and Memory Management Framework
@@ -15,19 +15,35 @@ Key Features:
 - Memory allocation and deallocation utilities
 - Built-in logging with rank information
 - PyTorch distributed integration for distributed computing
+- DeviceContext: Object-oriented API for device-side operations (gluon-style)
 
-Example:
+Example (Traditional Functional API):
     >>> import iris
     >>> ctx = iris.iris(heap_size=2**30)  # 1GB heap
     >>> tensor = ctx.zeros(1024, 1024, dtype=torch.float32)
+    >>>
+    >>> @triton.jit
+    >>> def kernel(buffer, heap_bases, rank, world_size):
+    >>>     data = iris.load(buffer, rank, remote_rank, heap_bases)
+
+Example (Object-Oriented DeviceContext API):
+    >>> import iris
+    >>> from iris import DeviceContext
+    >>> ctx = iris.iris(heap_size=2**30)
+    >>> context_tensor = ctx.get_device_context()
+    >>>
+    >>> @triton.jit
+    >>> def kernel(context_tensor, rank: tl.constexpr, world_size: tl.constexpr):
+    >>>     device_ctx = DeviceContext.initialize(context_tensor, rank, world_size)
+    >>>     data = device_ctx.load(buffer, from_rank=remote_rank)
 """
 
 import triton
 import triton.language as tl
+from triton.language.core import _aggregate as aggregate
 
 from iris._distributed_helpers import (
     init_distributed,
-    distributed_allgather,
     distributed_barrier,
     distributed_broadcast_scalar,
     distributed_broadcast_tensor,
@@ -36,18 +52,20 @@ from iris.hip import (
     set_device,
     get_cu_count,
     count_devices,
-    get_ipc_handle,
-    open_ipc_handle,
-    get_ipc_handle_size,
 )
+from iris.symmetric_heap import SymmetricHeap
 import numpy as np
-import math
 import torch
-import ctypes
 import logging
 
 # Import logging functionality from the separate logging module
 from .logging import logger
+
+# Import tracing functionality
+from .tracing import Tracing, TraceEvent, DeviceTracing  # noqa: F401  re-export for iris.TraceEvent
+
+# Import shared tensor-creation helpers
+from . import tensor_creation
 
 
 class Iris:
@@ -59,15 +77,19 @@ class Iris:
 
     Args:
         heap_size (int): Size of the symmetric heap in bytes. Default: 1GB (2^30)
+        allocator_type (str): Type of allocator to use. Options: "torch" (default), "vmem"
 
     Example:
-        >>> ctx = iris.iris(heap_size=2**31)  # 2GB heap
+        >>> ctx = iris.iris(heap_size=2**31)  # 2GB heap with torch allocator
         >>> print(f"Rank {ctx.cur_rank} of {ctx.num_ranks}") # Rank 0 of 1
         >>> tensor = ctx.zeros(1000, 1000, dtype=torch.float32)
+
+        >>> # Use VMem allocator for memory oversubscription
+        >>> ctx = iris.iris(heap_size=2**31, allocator_type="vmem")
     """
 
-    def __init__(self, heap_size=1 << 30):
-        # Initialize
+    def __init__(self, heap_size=1 << 30, allocator_type="torch"):
+        # Initialize distributed environment
         comm, cur_rank, num_ranks = init_distributed()
         num_gpus = count_devices()
 
@@ -79,47 +101,34 @@ class Iris:
         self.cur_rank = cur_rank
         self.gpu_id = gpu_id
         self.heap_size = heap_size
-        self.heap_offset = 0
-        self.alignment = 1024
+
+        # Initialize symmetric heap with specified allocator
+        self.heap = SymmetricHeap(heap_size, gpu_id, cur_rank, num_ranks, allocator_type)
         self.device = f"cuda:{gpu_id}"
-        self.memory_pool = torch.empty(heap_size, device=self.device, dtype=torch.int8)
-
-        heap_base = self.memory_pool.data_ptr()
-        heap_base_ptr = ctypes.c_void_p(heap_base)
-
-        heap_bases = np.zeros(num_ranks, dtype=np.uint64)
-        heap_bases[cur_rank] = heap_base
-        ipc_handle_size = get_ipc_handle_size()
-        ipc_handles = np.zeros((num_ranks, ipc_handle_size), dtype=np.uint8)
-        ipc_handle = get_ipc_handle(heap_base_ptr, cur_rank)
-
-        distributed_barrier()
-
-        all_ipc_handles = distributed_allgather(np.frombuffer(ipc_handle, dtype=np.uint8).copy())
-        heap_base_bytes = np.array([heap_bases[cur_rank]], dtype=np.uint64).tobytes()
-        all_heap_bases_bytes = distributed_allgather(np.frombuffer(heap_base_bytes, dtype=np.uint8).copy())
-        all_heap_bases = np.frombuffer(all_heap_bases_bytes.tobytes(), dtype=np.uint64).reshape(num_ranks, -1)
-
-        distributed_barrier()
-
-        ipc_heap_bases = np.zeros(num_ranks, dtype=np.uintp)
-        for rank in range(num_ranks):
-            if rank != cur_rank:
-                handle = open_ipc_handle(all_ipc_handles[rank], cur_rank)
-                ipc_heap_bases[rank] = int(handle)
-            else:
-                ipc_heap_bases[rank] = heap_bases[rank]
+        self.heap_bases = self.heap.get_heap_bases()
 
         for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(ipc_heap_bases[i]))}")
-
-        distributed_barrier()
-        self.heap_bases = torch.from_numpy(ipc_heap_bases).to(device=self.device, dtype=torch.uint64)
+            self.debug(f"GPU {i}: Heap base {hex(int(self.heap_bases[i].item()))}")
 
         distributed_barrier()
 
         # Initialize CCL interface
         self.ccl = self.CCL(self)
+
+        # Lazy initialization for ops interface
+        self._ops = None
+
+        # Initialize tracing
+        self.tracing = Tracing(self)
+
+    def __del__(self):
+        """Cleanup resources on deletion."""
+        try:
+            if hasattr(self, "heap") and hasattr(self.heap, "allocator"):
+                if hasattr(self.heap.allocator, "close"):
+                    self.heap.allocator.close()
+        except Exception:
+            pass  # Best effort cleanup in destructor (GC context)
 
     def _log_with_rank(self, level, message):
         """Helper method to log with rank information injected into the record."""
@@ -189,7 +198,41 @@ class Iris:
         """
         self._log_with_rank(logging.ERROR, message)
 
-    def broadcast(self, value, source_rank):
+    @property
+    def ops(self):
+        """
+        Access fused GEMM+CCL operations.
+
+        This property provides a namespace for high-level fused operations that combine
+        matrix multiplication with collective communication. Operations automatically infer
+        dimensions, strides, and hardware parameters from input tensors.
+
+        Available operations:
+            - matmul_all_reduce: GEMM + All-Reduce
+            - all_gather_matmul: All-Gather + GEMM
+            - matmul_all_gather: GEMM + All-Gather
+            - matmul_reduce_scatter: GEMM + Reduce-Scatter
+
+        Returns:
+            OpsNamespace: Namespace with fused operation methods
+
+        Raises:
+            ImportError: If tritonBLAS is not available
+
+        Example:
+            >>> ctx = iris.iris()
+            >>> A = ctx.randn((1024, 512), dtype=torch.float16)
+            >>> B = ctx.randn((512, 2048), dtype=torch.float16)
+            >>> output = ctx.zeros((1024, 2048), dtype=torch.float16)
+            >>> ctx.ops.matmul_all_reduce(output, A, B, ctx)
+        """
+        if self._ops is None:
+            from iris.ops import OpsNamespace
+
+            self._ops = OpsNamespace(self)
+        return self._ops
+
+    def broadcast(self, value, source_rank=0):
         """
         Broadcast a value from one rank to all ranks.
 
@@ -260,29 +303,6 @@ class Iris:
         else:
             return distributed_broadcast_scalar(value, source_rank)
 
-    def __allocate(self, num_elements, dtype):
-        self.debug(f"allocate: num_elements = {num_elements}, dtype = {dtype}")
-
-        element_size = torch.tensor([], dtype=dtype).element_size()
-        size_in_bytes = num_elements * element_size
-        aligned_size = math.ceil(size_in_bytes / self.alignment) * self.alignment
-
-        if self.heap_offset + aligned_size > self.heap_size:
-            raise MemoryError("Heap out of memory")
-
-        start = self.heap_offset
-        self.heap_offset += aligned_size
-
-        sub_buffer = self.memory_pool[start : start + size_in_bytes].view(dtype)
-        return sub_buffer.reshape((num_elements,))
-
-    def __parse_size(self, size):
-        # Handle nested tuples/lists by flattening them recursively
-        while len(size) == 1 and isinstance(size[0], (tuple, list)):
-            size = size[0]
-        num_elements = math.prod(size)
-        return size, num_elements
-
     def zeros_like(
         self, input, *, dtype=None, layout=None, device=None, requires_grad=False, memory_format=torch.preserve_format
     ):
@@ -310,43 +330,16 @@ class Iris:
             >>> zeros_tensor = ctx.zeros_like(input_tensor)
             >>> print(zeros_tensor.shape)  # torch.Size([2, 3])
         """
-        self.debug(
-            f"zeros_like: input_shape = {input.shape}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
+        return tensor_creation.zeros_like(
+            self.heap,
+            self.get_device(),
+            input,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+            memory_format=memory_format,
         )
-
-        # Use input's properties as defaults if not specified
-        if dtype is None:
-            dtype = input.dtype
-        if layout is None:
-            layout = input.layout
-        if device is None:
-            device = input.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Get the size from input tensor
-        size = input.size()
-        num_elements = input.numel()
-
-        # Allocate new tensor with the same size
-        new_tensor = self.__allocate(num_elements, dtype)
-        new_tensor.zero_()
-
-        # Reshape to match input size
-        new_tensor = new_tensor.reshape(size)
-
-        # Apply the requested memory format
-        new_tensor = self.__apply_memory_format(new_tensor, size, memory_format, input)
-
-        # Apply the requested layout
-        new_tensor = self.__apply_layout(new_tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            new_tensor.requires_grad_()
-
-        return new_tensor
 
     def arange(
         self, start=0, end=None, step=1, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False
@@ -386,57 +379,22 @@ class Iris:
             >>> tensor = ctx.arange(0, 10, 2)  # [0, 2, 4, 6, 8]
             >>> print(tensor.shape)  # torch.Size([5])
         """
-        self.debug(f"arange: start = {start}, end = {end}, step = {step}, dtype = {dtype}, device = {device}")
-
         # Handle the case where only one argument is provided (end)
         if end is None:
             end = start
             start = 0
-
-        # Validate inputs
-        if step == 0:
-            raise ValueError("step must be non-zero")
-
-        # Validate step direction consistency
-        if step > 0 and start >= end:
-            raise ValueError(f"Invalid range: start >= end with positive step (start={start}, end={end}, step={step})")
-        elif step < 0 and start <= end:
-            raise ValueError(f"Invalid range: start <= end with negative step (start={start}, end={end}, step={step})")
-
-        # Calculate the number of elements
-        num_elements = math.ceil((end - start) / step)
-
-        # Infer dtype if not provided
-        if dtype is None:
-            if any(isinstance(x, float) for x in [start, end, step]):
-                dtype = torch.get_default_dtype()
-            else:
-                dtype = torch.int64
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            tensor = out
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-
-        target_device = tensor.device
-        arange_tensor = torch.arange(start, end, step, dtype=dtype, device=target_device)
-
-        tensor[:] = arange_tensor
-
-        tensor = self.__apply_layout(tensor, layout)
-
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
+        return tensor_creation.arange(
+            self.heap,
+            self.get_device(),
+            start,
+            end,
+            step,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+        )
 
     def zeros(self, *size, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -464,44 +422,16 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0., 0., 0.], device='cuda:0')
         """
-        self.debug(f"zeros: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Fill with zeros
-            out.zero_()
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with zeros
-            tensor.zero_()
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
+        return tensor_creation.zeros(
+            self.heap,
+            self.get_device(),
+            size,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+        )
 
     def randn(
         self,
@@ -560,48 +490,17 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([ 0.3982, -0.0059, -0.4365], device='cuda:0')
         """
-        self.debug(
-            f"randn: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}, pin_memory = {pin_memory}"
+        return tensor_creation.randn(
+            self.heap,
+            self.get_device(),
+            size,
+            generator=generator,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
         )
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Generate random data and copy to out tensor
-            random_data = torch.randn(num_elements, generator=generator, dtype=dtype, device=device, layout=layout)
-            out.copy_(random_data)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Generate random data and copy to tensor
-            random_data = torch.randn(num_elements, generator=generator, dtype=dtype, device=device, layout=layout)
-            tensor.copy_(random_data)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
 
     def ones(self, *size, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -629,44 +528,82 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([1., 1., 1.], device='cuda:0')
         """
-        self.debug(f"ones: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
+        return tensor_creation.ones(
+            self.heap,
+            self.get_device(),
+            size,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+        )
 
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
+    def as_symmetric(self, external_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Import an external PyTorch tensor into the symmetric heap.
 
-        # Use current device if none specified
-        if device is None:
-            device = self.device
+        This creates a new tensor in the symmetric heap that shares physical memory
+        with the external tensor. Any modifications to either tensor will be visible
+        in both. This is useful for importing pre-allocated tensors (e.g., model weights)
+        into the symmetric heap for RMA operations.
 
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
+        Note: This feature requires `allocator_type='vmem'`.
 
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
+        Args:
+            external_tensor (torch.Tensor): External PyTorch tensor to import.
+                Must be a CUDA tensor.
 
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Fill with ones
-            out.fill_(1)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with ones
-            tensor.fill_(1)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
+        Returns:
+            torch.Tensor: New tensor in symmetric heap sharing memory with external tensor
 
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
+        Raises:
+            RuntimeError: If allocator doesn't support imports or import fails
 
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
+        Example:
+            >>> ctx = iris.iris(allocator_type='vmem')
+            >>> # Create an external tensor
+            >>> external = torch.randn(1000, 1000, device='cuda')
+            >>> # Import it into symmetric heap
+            >>> symmetric = ctx.as_symmetric(external)
+            >>> # Verify they share memory
+            >>> external[0, 0] = 999.0
+            >>> assert symmetric[0, 0].item() == 999.0
+            >>> # Now you can use symmetric in RMA operations
+            >>> ctx.put(symmetric, peer_rank, remote_buffer)
+        """
+        return self.heap.as_symmetric(external_tensor)
 
-        return tensor
+    def is_symmetric(self, tensor: torch.Tensor) -> bool:
+        """
+        Check if a tensor is allocated on the symmetric heap.
+
+        This method checks whether a tensor resides in the symmetric heap, making it
+        accessible for RMA operations across ranks. Use this to validate tensors before
+        performing distributed operations.
+
+        Args:
+            tensor (torch.Tensor): PyTorch tensor to check
+
+        Returns:
+            bool: True if tensor is on the symmetric heap, False otherwise
+
+        Example:
+            >>> ctx = iris.iris(heap_size=2**30)
+            >>> # Create a symmetric tensor
+            >>> symmetric_tensor = ctx.zeros(1000, dtype=torch.float32)
+            >>> ctx.is_symmetric(symmetric_tensor)  # True
+            >>>
+            >>> # Create an external tensor (not on symmetric heap)
+            >>> external_tensor = torch.zeros(1000, dtype=torch.float32, device='cuda')
+            >>> ctx.is_symmetric(external_tensor)   # False
+            >>>
+            >>> # Import external tensor (only with vmem allocator)
+            >>> ctx_vmem = iris.iris(allocator_type='vmem')
+            >>> imported = ctx_vmem.as_symmetric(external_tensor)
+            >>> ctx_vmem.is_symmetric(imported)      # True
+        """
+        return self.heap.is_symmetric(tensor)
 
     def full(self, size, fill_value, *, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -694,53 +631,17 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([3.1400, 3.1400, 3.1400], device='cuda:0')
         """
-        self.debug(
-            f"full: size = {size}, fill_value = {fill_value}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
+        return tensor_creation.full(
+            self.heap,
+            self.get_device(),
+            size,
+            fill_value,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
         )
-
-        # Infer dtype from fill_value if not provided
-        if dtype is None:
-            if isinstance(fill_value, (int, float)):
-                if isinstance(fill_value, float):
-                    dtype = torch.get_default_dtype()
-                else:
-                    dtype = torch.int64
-            else:
-                # For other types (like tensors), use their dtype
-                dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Fill with the specified value
-            out.fill_(fill_value)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Fill with the specified value
-            tensor.fill_(fill_value)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
 
     def uniform(self, size, low=0.0, high=1.0, dtype=torch.float):
         """
@@ -761,11 +662,7 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0.1234, 0.5678, 0.9012], device='cuda:0')
         """
-        self.debug(f"uniform: size = {size}, low = {low}, high = {high}, dtype = {dtype}")
-        size, num_elements = self.__parse_size(size)
-        tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-        tensor.uniform_(low, high)
-        return tensor.reshape(size)
+        return tensor_creation.uniform(self.heap, self.get_device(), size, low, high, dtype)
 
     def empty(
         self,
@@ -811,45 +708,17 @@ class Iris:
             >>> tensor = ctx.empty(2, 3)
             >>> print(tensor.shape)  # torch.Size([2, 3])
         """
-        self.debug(
-            f"empty: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}, pin_memory = {pin_memory}"
+        return tensor_creation.empty(
+            self.heap,
+            self.get_device(),
+            size,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+            memory_format=memory_format,
         )
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Apply the requested memory format
-        tensor = self.__apply_memory_format(tensor, size, memory_format)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
 
     def randint(
         self, *args, generator=None, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False
@@ -881,64 +750,27 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([7, 2, 9], device='cuda:0')
         """
-        self.debug(f"randint: args = {args}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}")
-
         # Parse arguments to determine low, high, and size
-        # PyTorch randint signatures:
-        # randint(high, size) - where high is the upper bound and size is the shape
-        # randint(low, high, size) - where low and high are bounds, size is the shape
         if len(args) == 2:
-            # randint(high, size)
             high, size = args
             low = 0
         elif len(args) == 3:
-            # randint(low, high, size)
             low, high, size = args
         else:
             raise ValueError(f"randint expects 2 or 3 positional arguments, got {len(args)}")
-
-        # Use default dtype if None is provided
-        if dtype is None:
-            dtype = torch.int64
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Generate random integers using PyTorch's randint
-        # Use specified device or fall back to current device
-        target_device = device if device is not None else self.device
-
-        # Handle generator parameter
-        if generator is not None:
-            torch.randint(low, high, size, generator=generator, out=tensor, dtype=dtype, device=target_device)
-        else:
-            torch.randint(low, high, size, out=tensor, dtype=dtype, device=target_device)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
+        return tensor_creation.randint(
+            self.heap,
+            self.get_device(),
+            low,
+            high,
+            size,
+            generator=generator,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
+        )
 
     def linspace(self, start, end, steps, out=None, dtype=None, layout=torch.strided, device=None, requires_grad=False):
         """
@@ -967,73 +799,18 @@ class Iris:
             >>> tensor = ctx.linspace(0, 10, 5)  # [0, 2.5, 5, 7.5, 10]
             >>> print(tensor) # tensor([ 0.0000,  2.5000,  5.0000,  7.5000, 10.0000], device='cuda:0')
         """
-        self.debug(
-            f"linspace: start = {start}, end = {end}, steps = {steps}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}"
+        return tensor_creation.linspace(
+            self.heap,
+            self.get_device(),
+            start,
+            end,
+            steps,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
         )
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            # Check if start or end are complex numbers
-            start_is_complex = isinstance(start, complex) or (hasattr(start, "dtype") and torch.is_complex(start))
-            end_is_complex = isinstance(end, complex) or (hasattr(end, "dtype") and torch.is_complex(end))
-
-            if start_is_complex or end_is_complex:
-                # Infer complex dtype based on default dtype
-                dtype = torch.complex64 if torch.get_default_dtype() == torch.float32 else torch.complex128
-            else:
-                dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse steps and extract the integer value
-        if isinstance(steps, (tuple, list)):
-            if len(steps) == 1:
-                # Single-element tuple/list like (5,) or [5]
-                steps_int = steps[0]
-                # Handle nested tuples like ((5,),)
-                if isinstance(steps_int, (tuple, list)):
-                    steps_int = steps_int[0]
-            else:
-                # Multi-element tuple/list - use __parse_size for compatibility
-                size, num_elements = self.__parse_size(steps)
-                steps_int = num_elements
-        else:
-            # steps is a single integer
-            steps_int = steps
-
-        # Ensure steps_int is an integer
-        steps_int = int(steps_int)
-        size = (steps_int,)
-        num_elements = steps_int
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Generate linspace using PyTorch's linspace
-        # Use specified device or fall back to current device
-        target_device = device if device is not None else self.device
-        torch.linspace(start, end, steps_int, out=tensor, dtype=dtype, device=target_device)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
 
     def rand(
         self,
@@ -1074,51 +851,17 @@ class Iris:
             >>> print(tensor.shape)  # torch.Size([2, 3])
             >>> print(tensor[0])  # tensor([0.1234, 0.5678, 0.9012], device='cuda:0')
         """
-        self.debug(
-            f"rand: size = {size}, dtype = {dtype}, device = {device}, requires_grad = {requires_grad}, pin_memory = {pin_memory}"
+        return tensor_creation.rand(
+            self.heap,
+            self.get_device(),
+            size,
+            generator=generator,
+            out=out,
+            dtype=dtype,
+            layout=layout,
+            device=device,
+            requires_grad=requires_grad,
         )
-
-        # Use global default dtype if None is provided
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-
-        # Use current device if none specified
-        if device is None:
-            device = self.device
-
-        # Validate device compatibility with Iris
-        self.__throw_if_invalid_device(device)
-
-        # Parse size and calculate number of elements
-        size, num_elements = self.__parse_size(size)
-
-        # If out is provided, use it; otherwise allocate new tensor
-        if out is not None:
-            self.__throw_if_invalid_output_tensor(out, num_elements, dtype)
-            # Create a reshaped view of the out tensor
-            tensor = out.view(size)
-        else:
-            tensor = self.__allocate(num_elements=num_elements, dtype=dtype)
-            # Reshape to the desired size
-            tensor = tensor.reshape(size)
-
-        # Generate random numbers using PyTorch's rand
-        # Use specified device (already validated and set above)
-
-        # Handle generator parameter
-        if generator is not None:
-            torch.rand(size, generator=generator, out=tensor, dtype=dtype, device=device)
-        else:
-            torch.rand(size, out=tensor, dtype=dtype, device=device)
-
-        # Apply the requested layout
-        tensor = self.__apply_layout(tensor, layout)
-
-        # Set requires_grad if specified
-        if requires_grad:
-            tensor.requires_grad_()
-
-        return tensor
 
     def __deallocate(self, pointer):
         pass
@@ -1139,19 +882,83 @@ class Iris:
         """
         return self.heap_bases
 
-    def barrier(self, stream=None):
+    def get_device_context(self):
         """
-        Synchronize all ranks and their CUDA devices.
+        Get the device context tensor for DeviceContext initialization.
+
+        Returns a tensor encoding: [cur_rank, world_size, heap_base_0, heap_base_1, ...]
+        If tracing is enabled, also includes: [trace_enabled, max_events, trace_counter_ptr, trace_buffer_ptrs...]
+
+        This opaque format allows future extension without breaking the API.
+
+        Returns:
+            torch.Tensor: Encoded context data as int64 tensor on device
+
+        Example:
+            >>> import iris
+            >>> from iris import DeviceContext
+            >>> import triton
+            >>> import triton.language as tl
+            >>>
+            >>> ctx = iris.iris()
+            >>> context_tensor = shmem.get_device_context()
+            >>>
+            >>> @triton.jit
+            >>> def my_kernel(context_tensor, rank: tl.constexpr, world_size: tl.constexpr, ...):
+            >>>     ctx = DeviceContext.initialize(context_tensor, rank, world_size)
+            >>>     data = ctx.load(buffer, from_rank=1)
+        """
+        # Convert heap_bases to a list for concatenation
+        heap_bases_list = self.heap_bases.tolist()
+
+        # Create context tensor: [cur_rank, world_size, heap_base_0, heap_base_1, ...]
+        context_data = [self.cur_rank, self.num_ranks] + heap_bases_list
+
+        # Add tracing info if enabled
+        if self.tracing.enabled:
+            # Explicit buffer ordering (must match DeviceContext.initialize extraction order)
+            trace_buffer_ptrs = [
+                self.tracing.trace_buffers["event_id"].data_ptr(),
+                self.tracing.trace_buffers["pid"].data_ptr(),
+                self.tracing.trace_buffers["pid_m"].data_ptr(),
+                self.tracing.trace_buffers["pid_n"].data_ptr(),
+                self.tracing.trace_buffers["cur_rank"].data_ptr(),
+                self.tracing.trace_buffers["target_rank"].data_ptr(),
+                self.tracing.trace_buffers["xcc_id"].data_ptr(),
+                self.tracing.trace_buffers["cu_id"].data_ptr(),
+                self.tracing.trace_buffers["timestamp"].data_ptr(),
+                self.tracing.trace_buffers["address"].data_ptr(),
+                self.tracing.trace_buffers["duration_cycles"].data_ptr(),
+            ]
+            context_data += [
+                1,  # trace_enabled = 1 (true)
+                self.tracing.max_events,
+                self.tracing.trace_counter.data_ptr(),
+            ] + trace_buffer_ptrs
+        else:
+            context_data += [0]  # trace_enabled = 0 (false)
+
+        context_tensor = torch.tensor(context_data, dtype=torch.int64, device=self.device)
+
+        return context_tensor
+
+    def barrier(self, stream=None, group=None):
+        """
+        Synchronize ranks within the specified group and their CUDA devices.
 
         This first calls ``torch.cuda.synchronize()`` or ``stream.synchronize()`` to ensure the local GPU has
-        finished all queued work, then performs a global distributed barrier so that all
-        ranks reach the same point before proceeding.
+        finished all queued work, then performs a distributed barrier so that all
+        ranks in the group reach the same point before proceeding.
+
         Args:
             stream: If stream is given: wait only for that stream before barrier. If stream is None: legacy behavior (device-wide sync).
+            group (ProcessGroup, optional): The process group to synchronize.
+                If None, uses the default process group (all ranks).
 
         Example:
             >>> ctx = iris.iris(1 << 20)
             >>> ctx.barrier()  # Synchronize all ranks
+            >>> ctx.barrier(group=my_group)  # Synchronize only ranks in my_group
         """
         # Wait for all GPUs to finish work
         if stream is None:
@@ -1160,7 +967,7 @@ class Iris:
             stream.synchronize()
 
         # Distributed barrier
-        distributed_barrier()
+        distributed_barrier(group=group)
 
     def get_device(self):
         """
@@ -1174,7 +981,7 @@ class Iris:
             >>> device = ctx.get_device()
             >>> print(device)  # cuda:0
         """
-        return self.memory_pool.device
+        return self.heap.get_device()
 
     def get_cu_count(self):
         """
@@ -1218,292 +1025,14 @@ class Iris:
         """
         return self.num_ranks
 
-    def __throw_if_invalid_output_tensor(self, tensor: torch.Tensor, num_elements: int, dtype: torch.dtype):
-        if not self.__tensor_on_device(tensor):
-            raise RuntimeError(
-                f"The output tensor is not on the same device as the Iris instance. The Iris instance is on device {self.device} but the output tensor is on device {tensor.device}"
-            )
-        if not self.__on_symmetric_heap(tensor):
-            raise RuntimeError(
-                f"The output tensor is not on the symmetric heap. The Iris instance is on heap base {self.heap_bases[self.cur_rank]} but the output tensor is on heap base {tensor.data_ptr()}"
-            )
-        if tensor.numel() != num_elements:
-            raise RuntimeError(f"The output tensor has {tensor.numel()} elements, but {num_elements} are required")
-        if tensor.dtype != dtype:
-            raise RuntimeError(f"The output tensor has dtype {tensor.dtype}, but {dtype} is required")
-
-    def __throw_if_invalid_device(self, device):
-        """
-        Throw a RuntimeError if the requested device is not compatible with this Iris instance.
-
-        Args:
-            device: The requested device (can be string, torch.device, or None)
-
-        Raises:
-            RuntimeError: If the device is not compatible
-        """
-        if not self.__is_valid_device(device):
-            raise RuntimeError(
-                f"Device mismatch: requested device {device} but Iris instance is on device {self.device}. "
-                f"Iris only supports tensors on its own device."
-            )
-
-    def __apply_memory_format(
-        self, tensor: torch.Tensor, size: tuple, memory_format: torch.memory_format, input_tensor: torch.Tensor = None
-    ):
-        """
-        Apply the requested memory format to a tensor by setting appropriate strides.
-        This keeps the tensor on the symmetric heap while changing how PyTorch interprets the memory layout.
-
-        Args:
-            tensor: The tensor to modify
-            size: The tensor's size/dimensions
-            memory_format: The desired memory format
-            input_tensor: The original input tensor (needed for preserve_format detection)
-        """
-        if memory_format == torch.contiguous_format:
-            # Default format, no changes needed
-            return tensor
-        elif memory_format == torch.channels_last and len(size) == 4:
-            # For channels_last format: preserve shape (N, C, H, W) but change strides
-            # channels_last strides: [C*H*W, 1, C*W, C] for shape (N, C, H, W)
-            N, C, H, W = size[0], size[1], size[2], size[3]
-            # Keep the original shape (N, C, H, W) but use channels_last strides
-            tensor = self.__create_tensor_with_strides(tensor, size, (C * H * W, 1, C * W, C))
-            return tensor
-        elif memory_format == torch.channels_last_3d and len(size) == 5:
-            # For channels_last_3d format: preserve shape (N, C, D, H, W) but change strides
-            # channels_last_3d strides: [C*D*H*W, 1, C*D*W, C*W, C] for shape (N, C, D, H, W)
-            N, C, D, H, W = size[0], size[1], size[2], size[3], size[4]
-            # Keep the original shape (N, C, D, H, W) but use channels_last_3d strides
-            tensor = self.__create_tensor_with_strides(tensor, size, (C * D * H * W, 1, C * D * W, C * W, C))
-            return tensor
-        elif memory_format == torch.preserve_format:
-            # For preserve_format, we need to detect the input tensor's memory format
-            # and apply the same format to the output
-            if input_tensor is not None:
-                # Check the actual memory format of the input tensor
-                if len(size) == 4:
-                    # Check if input tensor is in channels_last format by examining strides
-                    # channels_last format has strides[1] == 1 (channels dimension is contiguous)
-                    input_strides = input_tensor.stride()
-                    if len(input_strides) == 4 and input_strides[1] == 1:
-                        # Input is in channels_last format, preserve it
-                        # Use the input tensor's actual shape, not the size parameter
-                        input_shape = input_tensor.shape
-                        if len(input_shape) == 4:
-                            # Input is already in channels_last format (N, H, W, C)
-                            new_size = input_shape
-                            # Use the input tensor's strides directly
-                            tensor = self.__create_tensor_with_strides(tensor, new_size, input_strides)
-                            return tensor
-                elif len(size) == 5:
-                    # Check if input tensor is in channels_last_3d format
-                    input_strides = input_tensor.stride()
-                    if len(input_strides) == 5 and input_strides[1] == 1:
-                        # Input is in channels_last_3d format, preserve it
-                        # Use the input tensor's actual shape, not the size parameter
-                        input_shape = input_tensor.shape
-                        if len(input_shape) == 5:
-                            # Input is already in channels_last_3d format (N, D, H, W, C)
-                            new_size = input_shape
-                            # Use the input tensor's strides directly
-                            tensor = self.__create_tensor_with_strides(tensor, new_size, input_strides)
-                            return tensor
-            # If no special format detected or no input tensor provided, use contiguous format
-            return tensor
-        else:
-            # Unsupported format or dimension combination
-            self.debug(
-                f"Warning: Memory format {memory_format} not supported for {len(size)}D tensor, using contiguous format"
-            )
-            # For unsupported formats, return the tensor as-is (contiguous)
-            return tensor
-
-    def __create_tensor_with_strides(self, original_tensor: torch.Tensor, size: tuple, strides: tuple) -> torch.Tensor:
-        """
-        Create a new tensor with the specified strides while keeping the data on the symmetric heap.
-
-        Args:
-            original_tensor: The original tensor (source of data and heap allocation)
-            size: The tensor's size/dimensions
-            strides: The desired strides for the new memory format
-
-        Returns:
-            A new tensor with the specified strides, data copied from original, on the same heap
-        """
-
-        # First, create a temporary tensor with the correct strides using PyTorch
-        temp_tensor = torch.empty_strided(size, strides, dtype=original_tensor.dtype, device=original_tensor.device)
-
-        # Handle different cases based on whether size changes and what the strides indicate
-        if size != original_tensor.shape:
-            # Size is different - this might be a format change that requires permutation
-            # Check if this is a channels_last format by comparing strides
-            if len(size) == 4:
-                # For channels_last: expected strides are [H*W*C, 1, W*C, C] for shape (N, H, W, C)
-                N, H, W, C = size[0], size[1], size[2], size[3]
-                expected_strides = (H * W * C, 1, W * C, C)
-                if strides == expected_strides:
-                    permuted = original_tensor.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
-                else:
-                    # If the size differs for other reasons, do not permute; just reshape if possible
-                    try:
-                        permuted = original_tensor.reshape(size)
-                    except Exception:
-                        raise ValueError(
-                            "Cannot safely permute or reshape tensor: size differs from original shape for unknown reason."
-                        )
-            elif len(size) == 5:
-                # For channels_last_3d: expected strides are [D*H*W*C, 1, H*W*C, W*C, C] for shape (N, D, H, W, C)
-                N, D, H, W, C = size[0], size[1], size[2], size[3], size[4]
-                expected_strides = (D * H * W * C, 1, H * W * C, W * C, C)
-                if strides == expected_strides:
-                    permuted = original_tensor.permute(0, 2, 3, 4, 1)  # (N, C, D, H, W) -> (N, D, H, W, C)
-                else:
-                    # If the size differs for other reasons, do not permute; just reshape if possible
-                    try:
-                        permuted = original_tensor.reshape(size)
-                    except Exception:
-                        raise ValueError(
-                            "Cannot safely permute or reshape tensor: size differs from original shape for unknown reason."
-                        )
-            else:
-                # For other dimensions, just try to reshape
-                try:
-                    permuted = original_tensor.reshape(size)
-                except Exception:
-                    raise ValueError(
-                        "Cannot safely permute or reshape tensor: size differs from original shape for unknown reason."
-                    )
-        else:
-            # Size is the same - this is a stride-only change (like channels_last with preserved shape)
-            # We need to reorder the data to match the new stride pattern
-            if len(size) == 4:
-                # Check if this is channels_last format with preserved shape
-                N, C, H, W = size[0], size[1], size[2], size[3]
-                expected_strides = (C * H * W, 1, C * W, C)
-                if strides == expected_strides:
-                    permuted = original_tensor
-                else:
-                    permuted = original_tensor
-            elif len(size) == 5:
-                # Check if this is channels_last_3d format with preserved shape
-                N, C, D, H, W = size[0], size[1], size[2], size[3], size[4]
-                expected_strides = (C * D * H * W, 1, C * D * W, C * W, C)
-                if strides == expected_strides:
-                    permuted = original_tensor
-                else:
-                    permuted = original_tensor
-            else:
-                permuted = original_tensor
-
-        # Copy the permuted data to the temporary tensor
-        temp_tensor.copy_(permuted)
-
-        # Now allocate a new tensor on our symmetric heap
-        num_elements = math.prod(size)
-        heap_tensor = self.__allocate(num_elements, original_tensor.dtype)
-
-        # Reshape to the desired size
-        heap_tensor = heap_tensor.reshape(size)
-
-        # Copy the data from the temporary tensor to our heap tensor
-        heap_tensor.copy_(temp_tensor)
-
-        # Clean up the temporary tensor
-        del temp_tensor
-
-        # Now we need to create a view with the correct strides
-        # We can't use as_strided directly on our heap tensor, but we can
-        # create a new tensor with the right strides and copy the data again
-        final_tensor = torch.as_strided(heap_tensor, size, strides)
-
-        return final_tensor
-
-    def __apply_layout(self, tensor: torch.Tensor, layout: torch.layout) -> torch.Tensor:
-        """
-        Apply the requested layout to a tensor.
-
-        Args:
-            tensor: The tensor to modify
-            layout: The desired layout
-
-        Returns:
-            Tensor with the requested layout
-        """
-
-        if layout == torch.strided:
-            # Strided layout is the default - no changes needed
-            return tensor
-        else:
-            # Only support strided layout for now
-            raise ValueError(f"Layout {layout} not supported. Only torch.strided is currently supported.")
-
-    def __tensor_on_device(self, tensor: torch.Tensor):
-        # Get the Iris device from memory_pool.device
-        iris_device = self.get_device()
-        tensor_device = tensor.device
-
-        # For CUDA devices, check if they're compatible
-        if tensor_device.type == "cuda" and iris_device.type == "cuda":
-            if iris_device.index is None:
-                return True
-            return tensor_device.index == iris_device.index
-
-        # For non-CUDA devices, they must be exactly equal
-        return tensor_device == iris_device
-
-    def __on_symmetric_heap(self, tensor: torch.Tensor):
-        # Special case for empty tensors - they might not have a valid data_ptr
-        if tensor.numel() == 0:
-            self.debug("Empty tensor detected, skipping heap check")
-            return True
-
-        # Convert CUDA pointer to integer for comparison
-        tensor_ptr = int(tensor.data_ptr())
-        heap_base = int(self.heap_bases[self.cur_rank])
-
-        result = tensor_ptr >= heap_base and tensor_ptr < heap_base + self.heap_size
-
-        return result
-
-    def __is_valid_device(self, device) -> bool:
-        """
-        Check if the requested device is compatible with this Iris instance.
-
-        Args:
-            device: The requested device (can be string, torch.device, or None)
-
-        Returns:
-            bool: True if the device is compatible, False otherwise
-        """
-        if device is None:
-            return True  # None means use default device
-
-        # Convert device strings to torch.device objects for proper comparison
-        requested_device = torch.device(device) if isinstance(device, str) else device
-        iris_device = self.get_device()
-
-        # Check if both are CUDA devices
-        if requested_device.type == "cuda" and iris_device.type == "cuda":
-            # Check if index matches or if requested is "cuda" (any index)
-            if requested_device.index is None:
-                return True
-            else:
-                return requested_device.index == iris_device.index
-
-        # For non-CUDA devices, always return False
-        return False
-
     class CCL:
         """
         Collective Communication Library (CCL) interface for Iris.
 
         Provides collective operations that can be called as methods on the Iris instance.
         Example usage:
-            >>> shmem = iris.iris()
-            >>> shmem.ccl.all_to_all(output_tensor, input_tensor)
+            >>> ctx = iris.iris()
+            >>> ctx.ccl.all_to_all(output_tensor, input_tensor)
         """
 
         def __init__(self, iris_instance):
@@ -1515,7 +1044,7 @@ class Iris:
             """
             self._iris = iris_instance
 
-        def all_to_all(self, output_tensor, input_tensor, config=None, async_op=False):
+        def all_to_all(self, output_tensor, input_tensor, group=None, async_op=False, config=None):
             """
             All-to-all collective operation.
 
@@ -1526,28 +1055,30 @@ class Iris:
             Args:
                 output_tensor: Output tensor of shape (M, N * world_size)
                 input_tensor: Input tensor of shape (M, N * world_size)
-                config: Config instance with kernel parameters (default: None).
-                        If None, uses default Config values.
+                group: ProcessGroup or None. If None, uses all ranks in shmem context.
+                       Default: None.
                 async_op: If False, performs a barrier at the end. If True, returns immediately.
                           Default: False.
+                config: Config instance with kernel parameters (default: None).
+                        If None, uses default Config values.
 
             Example:
-                >>> shmem = iris.iris()
-                >>> shmem.ccl.all_to_all(output_tensor, input_tensor)
+                >>> ctx = iris.iris()
+                >>> ctx.ccl.all_to_all(output_tensor, input_tensor)
 
                 >>> # Custom configuration
                 >>> from iris.ccl import Config
                 >>> config = Config(block_size_m=128, block_size_n=32)
-                >>> shmem.ccl.all_to_all(output_tensor, input_tensor, config=config)
+                >>> ctx.ccl.all_to_all(output_tensor, input_tensor, config=config)
 
                 >>> # Async operation (no barrier)
-                >>> shmem.ccl.all_to_all(output_tensor, input_tensor, async_op=True)
+                >>> ctx.ccl.all_to_all(output_tensor, input_tensor, async_op=True)
             """
             from iris.ccl.all_to_all import all_to_all as _all_to_all
 
-            _all_to_all(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
+            _all_to_all(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
 
-        def all_gather(self, output_tensor, input_tensor, config=None, async_op=False):
+        def all_gather(self, output_tensor, input_tensor, group=None, async_op=False, config=None):
             """
             All-gather collective operation.
 
@@ -1558,27 +1089,29 @@ class Iris:
             Args:
                 output_tensor: Output tensor of shape (world_size * M, N) - will contain concatenated inputs
                 input_tensor: Input tensor of shape (M, N) - local rank's data to send
-                config: Config instance with kernel parameters (default: None).
-                        If None, uses default Config values.
+                group: ProcessGroup or None. If None, uses all ranks in shmem context.
+                       Default: None.
                 async_op: If False, performs a barrier at the end. If True, returns immediately.
                           Default: False.
+                config: Config instance with kernel parameters (default: None).
+                        If None, uses default Config values.
 
             Example:
-                >>> shmem = iris.iris()
+                >>> ctx = iris.iris()
                 >>> # Input: (M, N), Output: (world_size * M, N)
-                >>> shmem.ccl.all_gather(output_tensor, input_tensor)
+                >>> ctx.ccl.all_gather(output_tensor, input_tensor)
 
                 >>> # Custom configuration
                 >>> from iris.ccl import Config
                 >>> config = Config(block_size_m=128, block_size_n=32)
-                >>> shmem.ccl.all_gather(output_tensor, input_tensor, config=config)
+                >>> ctx.ccl.all_gather(output_tensor, input_tensor, config=config)
 
                 >>> # Async operation (no barrier)
-                >>> shmem.ccl.all_gather(output_tensor, input_tensor, async_op=True)
+                >>> ctx.ccl.all_gather(output_tensor, input_tensor, async_op=True)
             """
             from iris.ccl.all_gather import all_gather as _all_gather
 
-            _all_gather(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
+            _all_gather(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
 
         def all_reduce_preamble(self, output_tensor, input_tensor, config=None, workspace=None):
             """
@@ -1603,7 +1136,9 @@ class Iris:
                 workspace=workspace,
             )
 
-        def all_reduce(self, output_tensor, input_tensor, config=None, async_op=False, workspace=None):
+        def all_reduce(
+            self, output_tensor, input_tensor, op=None, group=None, async_op=False, config=None, workspace=None
+        ):
             """
             All-reduce collective operation.
 
@@ -1613,42 +1148,53 @@ class Iris:
             Args:
                 output_tensor: Output tensor of shape (M, N) - will contain sum of all inputs
                 input_tensor: Input tensor of shape (M, N) - local rank's partial data
+                op: Reduction operation to apply. Currently only ReduceOp.SUM is supported.
+                    Default: ReduceOp.SUM.
+                group: ProcessGroup or None. If None, uses all ranks in shmem context.
+                       Default: None.
+                async_op: If False, performs a barrier at the end. If True, returns immediately.
+                          Default: False.
                 config: Config instance with kernel parameters (default: None).
                         If None, uses default Config values.
                         Set config.all_reduce_variant to choose variant: "atomic", "ring", or "two_shot"
-                async_op: If False, performs a barrier at the end. If True, returns immediately.
-                          Default: False.
                 workspace: Optional workspace prepared by ``all_reduce_preamble`` to
                            reuse internal buffers across invocations.
 
             Example:
-                >>> shmem = iris.iris()
-                >>> shmem.ccl.all_reduce(output_tensor, input_tensor)
+                >>> ctx = iris.iris()
+                >>> ctx.ccl.all_reduce(output_tensor, input_tensor)
 
                 >>> # Custom configuration with ring variant
                 >>> from iris.ccl import Config
                 >>> config = Config(all_reduce_variant="ring")
-                >>> shmem.ccl.all_reduce(output_tensor, input_tensor, config=config)
+                >>> ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
 
                 >>> # Two-shot variant with block distribution
                 >>> config = Config(all_reduce_variant="two_shot", all_reduce_distribution=1)
-                >>> shmem.ccl.all_reduce(output_tensor, input_tensor, config=config)
+                >>> ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
 
                 >>> # Async operation (no barrier)
-                >>> shmem.ccl.all_reduce(output_tensor, input_tensor, async_op=True)
+                >>> ctx.ccl.all_reduce(output_tensor, input_tensor, async_op=True)
             """
             from iris.ccl.all_reduce import all_reduce as _all_reduce
+            from iris.ccl import ReduceOp
+
+            # Default to SUM if not specified
+            if op is None:
+                op = ReduceOp.SUM
 
             return _all_reduce(
                 output_tensor,
                 input_tensor,
                 self._iris,
-                config=config,
+                op=op,
+                group=group,
                 async_op=async_op,
+                config=config,
                 workspace=workspace,
             )
 
-        def reduce_scatter(self, output_tensor, input_tensor, config=None, async_op=False):
+        def reduce_scatter(self, output_tensor, input_tensor, op=None, group=None, async_op=False, config=None):
             """
             Reduce-scatter collective operation.
 
@@ -1659,24 +1205,35 @@ class Iris:
             Args:
                 output_tensor: Output tensor of shape (M, N) - will contain reduced tiles for this rank
                 input_tensor: Input tensor of shape (M, N) - local rank's partial data
+                op: Reduction operation to apply. Currently only ReduceOp.SUM is supported.
+                    Default: ReduceOp.SUM.
+                group: ProcessGroup or None. If None, uses all ranks in shmem context.
+                       Default: None.
+                async_op: If False, performs a barrier at the end. If True, returns immediately.
+                          Default: False.
                 config: Config instance with kernel parameters (default: None).
                         If None, uses default Config values.
                         Only supports reduce_scatter_variant="two_shot".
-                async_op: If False, performs a barrier at the end. If True, returns immediately.
-                          Default: False.
 
             Example:
-                >>> shmem = iris.iris()
-                >>> shmem.ccl.reduce_scatter(output_tensor, input_tensor)
+                >>> ctx = iris.iris()
+                >>> ctx.ccl.reduce_scatter(output_tensor, input_tensor)
 
                 >>> # Custom configuration
                 >>> from iris.ccl import Config
                 >>> config = Config(reduce_scatter_variant="two_shot", all_reduce_distribution=1)
-                >>> shmem.ccl.reduce_scatter(output_tensor, input_tensor, config=config)
+                >>> ctx.ccl.reduce_scatter(output_tensor, input_tensor, config=config)
             """
             from iris.ccl.reduce_scatter import reduce_scatter as _reduce_scatter
+            from iris.ccl import ReduceOp
 
-            _reduce_scatter(output_tensor, input_tensor, self._iris, config=config, async_op=async_op)
+            # Default to SUM if not specified
+            if op is None:
+                op = ReduceOp.SUM
+
+            _reduce_scatter(
+                output_tensor, input_tensor, self._iris, op=op, group=group, async_op=async_op, config=config
+            )
 
 
 @triton.jit
@@ -1706,6 +1263,550 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
     # translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
     return translated_ptr
+
+
+@aggregate
+class DeviceContext:
+    """
+    Device-side context that encapsulates rank and heap_bases for ergonomic Iris operations.
+
+    This aggregate provides an object-oriented interface for Iris device operations,
+    eliminating the need to pass heap_bases to every function call.
+
+    Usage:
+        import iris
+        from iris import DeviceContext
+
+        # Host-side: Get encoded context tensor
+        shmem = iris.iris()
+        context_tensor = shmem.get_device_context()
+
+        @triton.jit
+        def my_kernel(context_tensor, rank: tl.constexpr, world_size: tl.constexpr, ...):
+            # Initialize device context from encoded tensor
+            ctx = DeviceContext.initialize(context_tensor, rank, world_size)
+
+            # Use object-oriented API
+            data = ctx.load(buffer + offsets, from_rank=1, mask=mask)
+            ctx.store(buffer + offsets, data, to_rank=1, mask=mask)
+            old_val = ctx.atomic_add(counter, 1, to_rank=1)
+
+    Attributes:
+        rank: Current rank (constexpr)
+        world_size: Total number of ranks (constexpr)
+        heap_bases: Heap base pointers for all ranks (tensor)
+        trace_enabled: Whether tracing is enabled (constexpr)
+        max_trace_events: Maximum number of trace events (constexpr)
+        trace_counter: Pointer to atomic event counter (tensor)
+        trace_buf_pid: Pointer to pid buffer (tensor)
+        trace_buf_pid_m: Pointer to pid_m buffer (tensor)
+        trace_buf_pid_n: Pointer to pid_n buffer (tensor)
+        trace_buf_cur_rank: Pointer to cur_rank buffer (tensor)
+        trace_buf_target_rank: Pointer to target_rank buffer (tensor)
+        trace_buf_xcc_id: Pointer to xcc_id buffer (tensor)
+        trace_buf_cu_id: Pointer to cu_id buffer (tensor)
+        trace_buf_timestamp: Pointer to timestamp buffer (tensor)
+        trace_buf_address: Pointer to address buffer (tensor)
+    """
+
+    rank: tl.constexpr
+    world_size: tl.constexpr
+    heap_bases: tl.tensor
+    tracing: DeviceTracing
+
+    @triton.constexpr_function
+    def __init__(self, rank, world_size, heap_bases, tracing):
+        """
+        Internal constructor - use DeviceContext.initialize() instead.
+
+        Args:
+            rank: Current rank (constexpr)
+            world_size: Total number of ranks (constexpr)
+            heap_bases: Heap base pointers for all ranks (tensor)
+            tracing: DeviceTracing instance
+        """
+        self.rank = tl.constexpr(rank)
+        self.world_size = tl.constexpr(world_size)
+        self.heap_bases = heap_bases
+        self.tracing = tracing
+
+    @staticmethod
+    @triton.jit
+    def initialize(context_tensor, rank, world_size, tracing: tl.constexpr = False):
+        """
+        Initialize DeviceContext from the encoded context tensor.
+
+        The context tensor has the format:
+        - [cur_rank, num_ranks, heap_base_0, ..., heap_base_N, trace_info...]
+        - If tracing=True: extracts trace buffer pointers from context_tensor
+
+        Args:
+            context_tensor: Pointer to encoded context data (from Iris.get_device_context())
+            rank: Current rank (must be constexpr in kernel signature)
+            world_size: Total number of ranks (must be constexpr in kernel signature)
+            tracing: Enable event tracing (constexpr, default: False)
+
+        Returns:
+            DeviceContext: Initialized device context
+
+        Example:
+            >>> import iris
+            >>> from iris import DeviceContext
+            >>>
+            >>> ctx = iris.iris()
+            >>> ctx.tracing.enable(max_events=1_000_000)
+            >>> context_tensor = ctx.get_device_context()
+            >>>
+            >>> @triton.jit
+            >>> def kernel(context_tensor, rank: tl.constexpr, world_size: tl.constexpr, ...):
+            >>>     # Without tracing
+            >>>     ctx = DeviceContext.initialize(context_tensor, rank, world_size)
+            >>>
+            >>>     # With tracing
+            >>>     ctx = DeviceContext.initialize(context_tensor, rank, world_size, tracing=True)
+            >>>     ctx.tracing.record_event_start(event_id=TraceEvent().put, target_rank=1, address=ptr)
+        """
+        # Extract heap bases (from index 2 onwards)
+        heap_bases = context_tensor + 2  # Offset pointer to start at heap bases
+
+        if tracing:
+            # Extract tracing info (starts after heap_bases)
+            trace_info_idx = 2 + world_size + 1  # Skip: cur_rank, num_ranks, heap_bases, trace_enabled flag
+            max_events = tl.load(context_tensor + trace_info_idx + 0)
+            trace_counter_ptr = tl.load(context_tensor + trace_info_idx + 1)
+
+            # Cast trace_counter_ptr to pointer type
+            trace_counter = tl.cast(trace_counter_ptr, tl.pointer_type(tl.int32))
+
+            # Extract trace buffer pointers (11 buffers)
+            base_idx = trace_info_idx + 2
+            trace_buf_event_id = tl.cast(tl.load(context_tensor + base_idx + 0), tl.pointer_type(tl.int32))
+            trace_buf_pid = tl.cast(tl.load(context_tensor + base_idx + 1), tl.pointer_type(tl.int32))
+            trace_buf_pid_m = tl.cast(tl.load(context_tensor + base_idx + 2), tl.pointer_type(tl.int32))
+            trace_buf_pid_n = tl.cast(tl.load(context_tensor + base_idx + 3), tl.pointer_type(tl.int32))
+            trace_buf_cur_rank = tl.cast(tl.load(context_tensor + base_idx + 4), tl.pointer_type(tl.int32))
+            trace_buf_target_rank = tl.cast(tl.load(context_tensor + base_idx + 5), tl.pointer_type(tl.int32))
+            trace_buf_xcc_id = tl.cast(tl.load(context_tensor + base_idx + 6), tl.pointer_type(tl.int32))
+            trace_buf_cu_id = tl.cast(tl.load(context_tensor + base_idx + 7), tl.pointer_type(tl.int32))
+            trace_buf_timestamp = tl.cast(tl.load(context_tensor + base_idx + 8), tl.pointer_type(tl.int64))
+            trace_buf_address = tl.cast(tl.load(context_tensor + base_idx + 9), tl.pointer_type(tl.int64))
+            trace_buf_duration_cycles = tl.cast(tl.load(context_tensor + base_idx + 10), tl.pointer_type(tl.int64))
+
+            # Create DeviceTracing instance
+            device_tracing = DeviceTracing(
+                enabled=tracing,
+                rank=rank,
+                max_events=max_events,
+                counter=trace_counter,
+                buf_event_id=trace_buf_event_id,
+                buf_pid=trace_buf_pid,
+                buf_pid_m=trace_buf_pid_m,
+                buf_pid_n=trace_buf_pid_n,
+                buf_cur_rank=trace_buf_cur_rank,
+                buf_target_rank=trace_buf_target_rank,
+                buf_xcc_id=trace_buf_xcc_id,
+                buf_cu_id=trace_buf_cu_id,
+                buf_timestamp=trace_buf_timestamp,
+                buf_address=trace_buf_address,
+                buf_duration_cycles=trace_buf_duration_cycles,
+            )
+
+            return DeviceContext(rank, world_size, heap_bases, device_tracing)
+        else:
+            # When tracing disabled, use dummy pointers (never dereferenced; we return early in record_*)
+            dummy_ptr_i32 = tl.cast(context_tensor, tl.pointer_type(tl.int32))
+            dummy_ptr_i64 = tl.cast(context_tensor, tl.pointer_type(tl.int64))
+            max_events_zero = tl.full((), 0, dtype=tl.int32)
+            device_tracing = DeviceTracing(
+                enabled=False,
+                rank=rank,
+                max_events=max_events_zero,
+                counter=dummy_ptr_i32,
+                buf_event_id=dummy_ptr_i32,
+                buf_pid=dummy_ptr_i32,
+                buf_pid_m=dummy_ptr_i32,
+                buf_pid_n=dummy_ptr_i32,
+                buf_cur_rank=dummy_ptr_i32,
+                buf_target_rank=dummy_ptr_i32,
+                buf_xcc_id=dummy_ptr_i32,
+                buf_cu_id=dummy_ptr_i32,
+                buf_timestamp=dummy_ptr_i64,
+                buf_address=dummy_ptr_i64,
+                buf_duration_cycles=dummy_ptr_i64,
+            )
+
+            return DeviceContext(rank, world_size, heap_bases, device_tracing)
+
+    @triton.jit
+    def _translate(self, ptr, from_rank, to_rank):
+        """Internal pointer translation between rank address spaces."""
+        return __translate(ptr, from_rank, to_rank, self.heap_bases)
+
+    @triton.jit
+    def load(self, pointer, from_rank, mask=None):
+        """
+        Loads a value from the specified rank's memory location.
+
+        This method performs a memory read operation by translating the pointer
+        from the current rank's address space to the `from_rank`'s address space and loading
+        data from the target memory location. If the current rank and `from_rank` are the same,
+        this performs a local load operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that will be translated to the `from_rank`'s address space.
+            from_rank (int): The rank ID from which to read the data.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address pointer[idx]. Defaults to None.
+
+        Returns:
+            Block: The loaded value from the target memory location.
+
+        Example:
+            >>> data = ctx.load(buffer + offsets, from_rank=1, mask=mask)
+        """
+        translated_ptr = self._translate(pointer, self.rank, from_rank)
+        result = tl.load(translated_ptr, mask=mask)
+        return result
+
+    @triton.jit
+    def store(self, pointer, value, to_rank, mask=None):
+        """
+        Writes data to the specified rank's memory location.
+
+        This method performs a memory write operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and storing
+        the provided data to the target memory location. If the current rank and `to_rank` are the same,
+        this performs a local store operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that will be translated to the `to_rank`'s address space.
+            value (Block): The tensor of elements to be stored.
+            to_rank (int): The rank ID to which the data will be written.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not store the data at address pointer[idx]. Defaults to None.
+
+        Returns:
+            None
+
+        Example:
+            >>> ctx.store(buffer + offsets, values, to_rank=1, mask=mask)
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        tl.store(translated_ptr, value, mask=mask)
+
+    @triton.jit
+    def get(self, from_ptr, to_ptr, from_rank, mask=None):
+        """
+        Copies data from the specified rank's memory into current rank's local memory.
+
+        This method performs a remote load operation by translating `from_ptr` from the current
+        rank's address space to the `from_rank`'s address space, loading the data, and storing
+        it to `to_ptr` in the current rank's local memory. If the current rank and `from_rank`
+        are the same, this performs a local copy operation.
+
+        Args:
+            from_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that references memory in `from_rank`.
+            to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer to local memory in current rank where the data will be written.
+            from_rank (int): The rank ID from which to read the data.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not load from from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
+
+        Returns:
+            None
+
+        Example:
+            >>> ctx.get(remote_ptr + offsets, local_ptr + offsets, from_rank=1, mask=mask)
+        """
+        translated_from_ptr = self._translate(from_ptr, self.rank, from_rank)
+        data = tl.load(translated_from_ptr, mask=mask)
+        tl.store(to_ptr, data, mask=mask)
+
+    @triton.jit
+    def put(self, from_ptr, to_ptr, to_rank, mask=None):
+        """
+        Copies data from current rank's local memory to the specified rank's memory.
+
+        This method performs a remote store operation by loading data from `from_ptr` in the
+        current rank's local memory, translating `to_ptr` from the current rank's address space
+        to the `to_rank`'s address space, and storing the data to the target memory location.
+        If the current rank and `to_rank` are the same, this performs a local copy operation.
+
+        Args:
+            from_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer to local memory in current rank from which to read data.
+            to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that references memory in `to_rank`.
+            to_rank (int): The rank ID to which the data will be written.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not load from from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
+
+        Returns:
+            None
+
+        Example:
+            >>> ctx.put(local_ptr + offsets, remote_ptr + offsets, to_rank=1, mask=mask)
+        """
+        translated_to_ptr = self._translate(to_ptr, self.rank, to_rank)
+        data = tl.load(from_ptr, mask=mask)
+        tl.store(translated_to_ptr, data, mask=mask)
+
+    @triton.jit
+    def copy(self, src_ptr, dst_ptr, from_rank, to_rank, mask=None):
+        """
+        Copies data from one rank's memory to another rank's memory.
+
+        This method performs a data transfer by translating `src_ptr` from the current rank's
+        address space to the `from_rank`'s address space, performing a masked load from the
+        translated source, translating `dst_ptr` to the `to_rank`'s address space, and storing
+        the loaded data to the target memory location. If `from_rank` and `to_rank` are the same,
+        this performs a local copy operation. It is undefined behaviour if the current rank is
+        neither `from_rank` nor `to_rank`.
+
+        Args:
+            src_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that references `from_rank`'s local memory.
+            dst_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that references `to_rank`'s local memory.
+            from_rank (int): The rank ID that owns `src_ptr` (source rank).
+            to_rank (int): The rank ID that will receive the data (destination rank).
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not load from src_ptr[idx] and do not store to dst_ptr[idx]. Defaults to None.
+
+        Returns:
+            None
+
+        Example:
+            >>> ctx.copy(src_ptr + offsets, dst_ptr + offsets, from_rank=1, to_rank=0, mask=mask)
+        """
+        cur_base = tl.load(self.heap_bases + self.rank)
+        from_base = tl.load(self.heap_bases + from_rank)
+        to_base = tl.load(self.heap_bases + to_rank)
+
+        src_ptr_int = tl.cast(src_ptr, tl.uint64)
+        src_offset = src_ptr_int - cur_base
+
+        dst_ptr_int = tl.cast(dst_ptr, tl.uint64)
+        dst_offset = dst_ptr_int - cur_base
+
+        from_base_byte = tl.cast(from_base, tl.pointer_type(tl.int8))
+        to_base_byte = tl.cast(to_base, tl.pointer_type(tl.int8))
+
+        translated_src = tl.cast(from_base_byte + src_offset, src_ptr.dtype)
+        translated_dst = tl.cast(to_base_byte + dst_offset, src_ptr.dtype)
+
+        data = tl.load(translated_src, mask=mask)
+        tl.store(translated_dst, data, mask=mask)
+
+    @triton.jit
+    def atomic_add(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic add at the specified rank's memory location.
+
+        This method performs an atomic addition operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        adding the provided data to the `to_rank` memory location. If the current rank and
+        `to_rank` are the same, this performs a local atomic addition operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block of dtype=pointer.dtype.element_ty): The values with which to perform the atomic operation.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel" (stands for "ACQUIRE_RELEASE"), and "relaxed". If not provided, the function defaults to using "acq_rel" semantics.
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect of the atomic operation. Acceptable values are "gpu" (default), "cta" (cooperative thread array, thread block), or "sys" (stands for "SYSTEM"). The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+
+        Example:
+            >>> old_val = ctx.atomic_add(counter, 1, to_rank=1)
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_add(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_sub(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Atomically subtracts data from the specified rank's memory location.
+
+        This method performs an atomic subtraction operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        subtracting the provided data from the `to_rank` memory location. If the current rank
+        and `to_rank` are the same, this performs a local atomic subtraction operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The tensor of elements to be subtracted atomically.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_sub(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_cas(self, pointer, cmp, val, to_rank, sem=None, scope=None):
+        """
+        Performs an atomic compare-and-swap at the specified rank's memory location.
+
+        This method performs an atomic compare-and-swap operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        comparing the value at the memory location with `cmp`. If they match, it replaces the
+        value with `val`. If the current rank and `to_rank` are the same, this performs a local
+        atomic CAS operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory location in the current rank's address space that will be translated to the `to_rank`'s address space.
+            cmp (Block): The expected value to compare against.
+            val (Block): The new value to store if comparison succeeds.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_cas(translated_ptr, cmp, val, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_xchg(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic exchange at the specified rank's memory location.
+
+        This method performs an atomic exchange operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        swapping the value at the memory location with `val`. If the current rank and `to_rank`
+        are the same, this performs a local atomic exchange operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The new values to store.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_xchg(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_xor(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic XOR at the specified rank's memory location.
+
+        This method performs an atomic bitwise XOR operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        XOR'ing the value at the memory location with `val`. If the current rank and `to_rank`
+        are the same, this performs a local atomic XOR operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The values to XOR with.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_xor(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_and(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic AND at the specified rank's memory location.
+
+        This method performs an atomic bitwise AND operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        AND'ing the value at the memory location with `val`. If the current rank and `to_rank`
+        are the same, this performs a local atomic AND operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The values to AND with.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_and(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_or(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic OR at the specified rank's memory location.
+
+        This method performs an atomic bitwise OR operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        OR'ing the value at the memory location with `val`. If the current rank and `to_rank`
+        are the same, this performs a local atomic OR operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The values to OR with.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_or(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_min(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic minimum at the specified rank's memory location.
+
+        This method performs an atomic minimum operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        updating the memory location to the minimum of its current value and `val`. If the
+        current rank and `to_rank` are the same, this performs a local atomic min operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The values to compare with.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_min(translated_ptr, val, mask=mask, sem=sem, scope=scope)
+
+    @triton.jit
+    def atomic_max(self, pointer, val, to_rank, mask=None, sem=None, scope=None):
+        """
+        Performs an atomic maximum at the specified rank's memory location.
+
+        This method performs an atomic maximum operation by translating the pointer
+        from the current rank's address space to the `to_rank`'s address space and atomically
+        updating the memory location to the maximum of its current value and `val`. If the
+        current rank and `to_rank` are the same, this performs a local atomic max operation.
+
+        Args:
+            pointer (triton.PointerType, or block of dtype=triton.PointerType): The memory locations in the current rank's address space that will be translated to the `to_rank`'s address space.
+            val (Block): The values to compare with.
+            to_rank (int): The rank ID to which the atomic operation will be performed.
+            mask (Block of triton.int1, optional): If mask[idx] is false, do not perform the atomic operation at address pointer[idx]. Defaults to None.
+            sem (str, optional): Specifies the memory semantics for the operation. Acceptable values are "acquire", "release", "acq_rel", and "relaxed". Defaults to "acq_rel".
+            scope (str, optional): Defines the scope of threads that observe the synchronizing effect. Acceptable values are "gpu" (default), "cta", or "sys". The default value is "gpu".
+
+        Returns:
+            Block: The data stored at pointer before the atomic operation.
+        """
+        translated_ptr = self._translate(pointer, self.rank, to_rank)
+        return tl.atomic_max(translated_ptr, val, mask=mask, sem=sem, scope=scope)
 
 
 @triton.jit
@@ -2221,19 +2322,25 @@ def atomic_max(pointer, val, from_rank, to_rank, heap_bases, mask=None, sem=None
     return tl.atomic_max(translated_ptr, val, mask=mask, sem=sem, scope=scope)
 
 
-def iris(heap_size=1 << 30):
+def iris(heap_size=1 << 30, allocator_type="torch"):
     """
     Create and return an Iris instance with the specified heap size.
 
     Args:
         heap_size (int): Size of the heap in bytes. Defaults to 1GB.
+        allocator_type (str): Type of allocator to use. Options: "torch" (default), "vmem".
+                              Can be overridden with IRIS_ALLOCATOR environment variable.
 
     Returns:
         Iris: An initialized Iris instance.
 
     Example:
         >>> import iris
-        >>> iris_ctx = iris.iris(2**30)  # 1GB heap
+        >>> iris_ctx = iris.iris(2**30)  # 1GB heap with default (torch) allocator
+        >>> tensor = iris_ctx.zeros(1024, 1024)
+
+        >>> # Use VMem allocator
+        >>> iris_ctx = iris.iris(2**30, allocator_type="vmem")
         >>> tensor = iris_ctx.zeros(1024, 1024)
     """
-    return Iris(heap_size)
+    return Iris(heap_size, allocator_type)

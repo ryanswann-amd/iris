@@ -9,6 +9,8 @@ results/
 build/
 rocSHMEM/
 *.sif
+*.sif.checksum
+apptainer/images/
 .vscode/
 __pycache__/
 *.so
@@ -45,3 +47,10 @@ __pycache__/
 *.pywz
 *.pyzw
 *.pyzwz
+
+!.devcontainer/devcontainer.json
+
+
+resources/
+gpucore.*
+logs/

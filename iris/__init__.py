@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 """
 Iris: Multi-GPU Communication and Memory Management Framework
@@ -41,11 +41,11 @@ Quick Start (Gluon API - Experimental):
     >>>     ctx.load(buffer, 1)
 """
 
-# __init__.py
-
 from .iris import (
     Iris,
     iris,
+    DeviceContext,
+    TraceEvent,
     load,
     store,
     copy,
@@ -65,12 +65,15 @@ from .util import (
     do_bench,
 )
 
+from .tensor_utils import (
+    CUDAArrayInterface,
+    tensor_from_ptr,
+)
+
 from . import hip
-
-# Import experimental features (optional, for users who want experimental APIs)
 from . import experimental
-
-# Import logging functionality
+from . import ops
+from . import tensor_creation
 from .logging import (
     set_logger_level,
     logger,
@@ -80,11 +83,11 @@ from .logging import (
     ERROR,
 )
 
-# Launcher functionality is now user code - see examples and documentation
-
 __all__ = [
     "Iris",
     "iris",
+    "DeviceContext",
+    "TraceEvent",
     "load",
     "store",
     "copy",
@@ -99,8 +102,12 @@ __all__ = [
     "atomic_min",
     "atomic_max",
     "do_bench",
+    "CUDAArrayInterface",
+    "tensor_from_ptr",
     "hip",
-    "experimental",  # Experimental features including iris_gluon
+    "experimental",
+    "ops",
+    "tensor_creation",
     "set_logger_level",
     "logger",
     "DEBUG",
