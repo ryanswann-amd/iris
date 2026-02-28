@@ -259,7 +259,7 @@ def _worker(rank: int, world_size: int, init_url: str, args):
             dist.all_gather_into_tensor(y_tri, z_dp_local.contiguous())
 
             if args.breakdown:
-                N_BREAKDOWN_ITERS = 5
+                N_BREAKDOWN_ITERS = 10
                 stage_ms = {}
                 for _ in range(N_BREAKDOWN_ITERS):
                     shmem.heap.allocator.heap_offset = sweep_heap_base
@@ -281,9 +281,15 @@ def _worker(rank: int, world_size: int, init_url: str, args):
                             ms = td[j - 1][1].elapsed_time(td[j][1])
                             stage_ms.setdefault(key, []).append(ms)
                 if rank == 0:
+                    total_avg = sum(sum(v)/len(v) for v in stage_ms.values())
+                    parts = []
+                    for k, v in stage_ms.items():
+                        avg = sum(v) / len(v)
+                        pct = 100 * avg / total_avg if total_avg > 0 else 0
+                        parts.append("{}={:.2f}ms ({:.1f}%)".format(k, avg, pct))
                     print(
-                        "  [breakdown bpe={}] ".format(bpe)
-                        + "  ".join("{}={:.2f}ms".format(k, sum(v) / len(v)) for k, v in stage_ms.items())
+                        "  [breakdown bpe={} total={:.2f}ms] ".format(bpe, total_avg)
+                        + "  ".join(parts)
                     )
 
             result = {

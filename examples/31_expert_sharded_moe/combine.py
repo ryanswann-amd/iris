@@ -54,6 +54,7 @@ def _convert_ep_to_dp(
     dst_indx_local = dst_indx_global - dst_rank * n_slots_per_rank
 
     offs_n = tl.arange(0, BLOCK)
+    offs_n = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK), BLOCK)
     for start_n in range(0, src_shape_n, BLOCK):
         mask_n = start_n + offs_n < src_shape_n
         src = tl.load(
@@ -64,7 +65,7 @@ def _convert_ep_to_dp(
         dst_off = dst_indx_local * dst_stride_m + start_n + offs_n
         for r in tl.static_range(N_RANKS):
             if dst_rank == r:
-                iris.store(dst_ptr + dst_off, src, SRC_RANK, r, heap_bases, mask=mask_n)
+                iris.store(dst_ptr + dst_off, src, SRC_RANK, r, heap_bases, mask=mask_n, hint=16)
 
 
 def convert_ep_to_dp(src, expt_assignment, expt_indx, topk_indx, shmem):

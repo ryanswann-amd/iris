@@ -131,7 +131,7 @@ def _fused_exp_matmul_ep_to_dp_kernel(
             if r == SRC_RANK:
                 tl.store(dst_ptrs_2d, out, mask=store_mask)
             else:
-                iris.store(dst_ptrs_2d, out, SRC_RANK, r, heap_bases, mask=store_mask)
+                iris.store(dst_ptrs_2d, out, SRC_RANK, r, heap_bases, mask=store_mask, hint=(1, 16))
 
 
 def fused_exp_matmul_ep_to_dp(
@@ -213,8 +213,9 @@ def fused_exp_matmul_ep_to_dp(
         N_RANKS=shmem.get_num_ranks(),
         num_warps=8,
         num_stages=2,
+        matrix_instr_nonkdim=16,
+        kpack=1,
     )
 
-    torch.cuda.synchronize()
     shmem.barrier()
     return dst_local

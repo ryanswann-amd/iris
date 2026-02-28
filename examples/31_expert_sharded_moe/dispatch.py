@@ -42,6 +42,7 @@ def _convert_dp_to_ep(
     off_m_local = pid_m
 
     offs_n = tl.arange(0, BLOCK)
+    offs_n = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK), BLOCK)
 
     for act in tl.static_range(N_EXPT_ACT):
         dst_row = tl.load(dst_row_indx_ptr + off_m_global * dst_row_indx_stride_m + act)
@@ -66,7 +67,7 @@ def _convert_dp_to_ep(
                 dst_off = dst_row * dst_stride_m + start_n + offs_n
                 for r in tl.static_range(N_RANKS):
                     if dst_rank == r:
-                        iris.store(dst_ptr + dst_off, src, SRC_RANK, r, heap_bases, mask=mask_n)
+                        iris.store(dst_ptr + dst_off, src, SRC_RANK, r, heap_bases, mask=mask_n, hint=16)
 
 
 def convert_dp_to_ep(src, expt_assignment, expt_indx, gate_indx, shmem):

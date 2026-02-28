@@ -45,10 +45,12 @@ def _allgather_push_kernel(
 ):
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
+    offs = tl.max_contiguous(tl.multiple_of(offs, BLOCK), BLOCK)
     mask = offs < src_numel
     data = tl.load(src_ptr + offs, mask=mask)
     for r in tl.static_range(N_RANKS):
-        iris.store(dst_ptr + dst_offset + offs, data, CUR_RANK, r, heap_bases, mask=mask)
+        dst = dst_ptr + dst_offset + offs
+        iris.store(dst, data, CUR_RANK, r, heap_bases, mask=mask, hint=16)
 
 
 def _allgather_iris(local_tensor, shmem):
@@ -288,8 +290,6 @@ def mixture_of_expt_epsharded(
     # ------------------------------------------------------------------
     flat_expt_indx = active_indx.to(torch.int32).reshape(-1)
     if fusion_config.fuse_grouped_matmul_convert_ep_to_dp:
-        torch.cuda.synchronize()
-        shmem.barrier()
         y_dp_local = fused_exp_matmul_ep_to_dp(
             y_ep_local,
             w_ep_local,
