@@ -138,6 +138,12 @@ def parse_args():
         ],
         help="MoE fusion mode selector",
     )
+    parser.add_argument(
+        "--gemm_sms",
+        type=int,
+        default=None,
+        help="Override GEMM_SMS for WG-specialized variant (default: auto)",
+    )
     return parser.parse_args()
 
 
@@ -163,6 +169,7 @@ def _run_dist_once(
     n_expts_act,
     shmem,
     fusion_config,
+    gemm_sms=None,
 ):
     return mixture_of_expt_epsharded(
         x_dp_local,
@@ -173,6 +180,7 @@ def _run_dist_once(
         n_expts_act,
         shmem,
         fusion_config=fusion_config,
+        gemm_sms=gemm_sms,
     )
 
 
@@ -249,6 +257,7 @@ def _worker(rank: int, world_size: int, init_url: str, args):
                 args.n_expts_act,
                 shmem,
                 fusion_config,
+                args.gemm_sms,
             )
 
             if args.validate or args.compare_single_gpu:
@@ -275,6 +284,7 @@ def _worker(rank: int, world_size: int, init_url: str, args):
                         shmem,
                         fusion_config=fusion_config,
                         timing_dict=td,
+                        gemm_sms=args.gemm_sms,
                     )
                     if rank == 0:
                         for j in range(1, len(td)):

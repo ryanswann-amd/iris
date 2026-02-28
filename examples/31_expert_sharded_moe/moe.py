@@ -209,6 +209,7 @@ def mixture_of_expt_epsharded(
     shmem,
     fusion_config: MoeFusionConfig | None = None,
     timing_dict: dict | None = None,
+    gemm_sms: int | None = None,
 ):
     """Expert-parallel MoE forward using iris symmetric heap.
 
@@ -342,6 +343,7 @@ def mixture_of_expt_epsharded(
                 combine_indx,
                 shmem,
                 ragged_metadata=y_ep_local_metadata,
+                gemm_sms=gemm_sms,
             )
             _tick("wg_fused_matmul_scatter")
         else:
