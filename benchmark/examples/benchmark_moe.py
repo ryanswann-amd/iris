@@ -133,6 +133,7 @@ def parse_args():
             "unfused",
             "fused_grouped_matmul_convert_ep_to_dp",
             "fused_convert_dp_to_ep_grouped_matmul",
+            "wg_fused_grouped_matmul_convert_ep_to_dp",
             "fused_convert_dp_to_ep_grouped_matmul__grouped_matmul_convert_ep_to_dp",
         ],
         help="MoE fusion mode selector",

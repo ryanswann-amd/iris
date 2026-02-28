@@ -24,6 +24,8 @@ from dispatch import convert_dp_to_ep
 from combine import convert_ep_to_dp
 from grouped_matmul import grouped_matmul
 from fused_exp_matmul_ep_to_dp import fused_exp_matmul_ep_to_dp
+from fused_exp_matmul_ep_to_dp_wg import wg_fused_exp_matmul_ep_to_dp
+from fused_dp_to_ep_matmul import fused_dp_to_ep_matmul
 from reduce import reduce
 
 
@@ -165,6 +167,7 @@ class MoeFusionConfig:
 
     fuse_convert_dp_to_ep_grouped_matmul: bool = False
     fuse_grouped_matmul_convert_ep_to_dp: bool = False
+    fuse_grouped_matmul_convert_ep_to_dp_wg: bool = False
 
     def mode_name(self) -> str:
         parts: list[str] = []
@@ -172,6 +175,8 @@ class MoeFusionConfig:
             parts.append("convert_dp_to_ep_grouped_matmul")
         if self.fuse_grouped_matmul_convert_ep_to_dp:
             parts.append("grouped_matmul_convert_ep_to_dp")
+        if self.fuse_grouped_matmul_convert_ep_to_dp_wg:
+            parts.append("wg_grouped_matmul_convert_ep_to_dp")
         if not parts:
             return "unfused"
         return "fused_" + "__".join(parts)
@@ -184,6 +189,8 @@ class MoeFusionConfig:
             return MoeFusionConfig(fuse_grouped_matmul_convert_ep_to_dp=True)
         if name == "fused_convert_dp_to_ep_grouped_matmul":
             return MoeFusionConfig(fuse_convert_dp_to_ep_grouped_matmul=True)
+        if name == "wg_fused_grouped_matmul_convert_ep_to_dp":
+            return MoeFusionConfig(fuse_grouped_matmul_convert_ep_to_dp_wg=True)
         if name == "fused_convert_dp_to_ep_grouped_matmul__grouped_matmul_convert_ep_to_dp":
             return MoeFusionConfig(
                 fuse_convert_dp_to_ep_grouped_matmul=True,
@@ -264,47 +271,33 @@ def mixture_of_expt_epsharded(
     _tick("metadata")
 
     # ------------------------------------------------------------------
-    # Step 4: DP -> EP dispatch (all-to-all via iris.store)
-    # ------------------------------------------------------------------
-    y_ep_local = convert_dp_to_ep(
-        x_dp_local,
-        expt_assignment,
-        active_indx,
-        dispatch_indx,
-        shmem,
-    )
-    _tick("dispatch")
-
-    # ------------------------------------------------------------------
-    # Step 5: Remap ragged metadata to local expert view
+    # Step 4-6: Dispatch, matmul, combine (select fused/unfused variants)
     # ------------------------------------------------------------------
     expt_map = expt_assignment.expt_map[rank, :].contiguous()
     y_ep_local_metadata = remap_ragged_tensor_metadata(x_global_metadata, expt_map)
 
     fusion_config = fusion_config or MoeFusionConfig()
-    if fusion_config.fuse_convert_dp_to_ep_grouped_matmul:
-        raise NotImplementedError("Fusion mode convert_dp_to_ep_grouped_matmul is not implemented yet.")
+    n_fusions_active = sum([
+        fusion_config.fuse_convert_dp_to_ep_grouped_matmul,
+        fusion_config.fuse_grouped_matmul_convert_ep_to_dp,
+        fusion_config.fuse_grouped_matmul_convert_ep_to_dp_wg,
+    ])
+    if n_fusions_active > 1:
+        raise ValueError("At most one fusion mode may be enabled at a time.")
 
-    # ------------------------------------------------------------------
-    # grouped_matmul + convert_ep_to_dp (select fused/unfused variant)
-    # ------------------------------------------------------------------
     flat_expt_indx = active_indx.to(torch.int32).reshape(-1)
-    if fusion_config.fuse_grouped_matmul_convert_ep_to_dp:
-        y_dp_local = fused_exp_matmul_ep_to_dp(
-            y_ep_local,
+
+    if fusion_config.fuse_convert_dp_to_ep_grouped_matmul:
+        y_ep_local = fused_dp_to_ep_matmul(
+            x_dp_local,
             w_ep_local,
             b_ep_local,
-            expt_assignment,
-            expt_map,
-            flat_expt_indx,
             combine_indx,
+            n_expts_act,
             shmem,
             ragged_metadata=y_ep_local_metadata,
         )
-        _tick("fused_matmul_scatter")
-    else:
-        y_ep_local = grouped_matmul(y_ep_local, w_ep_local, b_ep_local, y_ep_local_metadata)
-        _tick("matmul")
+        _tick("fused_gather_matmul")
         y_dp_local = convert_ep_to_dp(
             y_ep_local,
             expt_assignment,
@@ -313,6 +306,53 @@ def mixture_of_expt_epsharded(
             shmem,
         )
         _tick("combine")
+    else:
+        y_ep_local = convert_dp_to_ep(
+            x_dp_local,
+            expt_assignment,
+            active_indx,
+            dispatch_indx,
+            shmem,
+        )
+        _tick("dispatch")
+
+        if fusion_config.fuse_grouped_matmul_convert_ep_to_dp:
+            y_dp_local = fused_exp_matmul_ep_to_dp(
+                y_ep_local,
+                w_ep_local,
+                b_ep_local,
+                expt_assignment,
+                expt_map,
+                flat_expt_indx,
+                combine_indx,
+                shmem,
+                ragged_metadata=y_ep_local_metadata,
+            )
+            _tick("fused_matmul_scatter")
+        elif fusion_config.fuse_grouped_matmul_convert_ep_to_dp_wg:
+            y_dp_local = wg_fused_exp_matmul_ep_to_dp(
+                y_ep_local,
+                w_ep_local,
+                b_ep_local,
+                expt_assignment,
+                expt_map,
+                flat_expt_indx,
+                combine_indx,
+                shmem,
+                ragged_metadata=y_ep_local_metadata,
+            )
+            _tick("wg_fused_matmul_scatter")
+        else:
+            y_ep_local = grouped_matmul(y_ep_local, w_ep_local, b_ep_local, y_ep_local_metadata)
+            _tick("matmul")
+            y_dp_local = convert_ep_to_dp(
+                y_ep_local,
+                expt_assignment,
+                flat_expt_indx,
+                combine_indx,
+                shmem,
+            )
+            _tick("combine")
 
     # ------------------------------------------------------------------
     # Step 8: Reduce (unweighted sum, masked)
