@@ -37,7 +37,15 @@ MOE = _load_module("moe_31_moe", EXAMPLE_DIR / "moe.py")
 
 
 @pytest.mark.parametrize("n_tokens,d_model,n_expts_act", [(128, 64, 2)])
-@pytest.mark.parametrize("fusion_mode", ["unfused", "fused_grouped_matmul_convert_ep_to_dp", "fused_convert_dp_to_ep_grouped_matmul", "wg_fused_grouped_matmul_convert_ep_to_dp"])
+@pytest.mark.parametrize(
+    "fusion_mode",
+    [
+        "unfused",
+        "fused_grouped_matmul_convert_ep_to_dp",
+        "fused_convert_dp_to_ep_grouped_matmul",
+        "wg_fused_grouped_matmul_convert_ep_to_dp",
+    ],
+)
 def test_expert_sharded_moe_matches_reference(n_tokens, d_model, n_expts_act, fusion_mode):
     if not dist.is_initialized():
         pytest.skip("torch.distributed not initialized")

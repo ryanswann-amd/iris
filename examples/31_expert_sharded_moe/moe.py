@@ -277,11 +277,13 @@ def mixture_of_expt_epsharded(
     y_ep_local_metadata = remap_ragged_tensor_metadata(x_global_metadata, expt_map)
 
     fusion_config = fusion_config or MoeFusionConfig()
-    n_fusions_active = sum([
-        fusion_config.fuse_convert_dp_to_ep_grouped_matmul,
-        fusion_config.fuse_grouped_matmul_convert_ep_to_dp,
-        fusion_config.fuse_grouped_matmul_convert_ep_to_dp_wg,
-    ])
+    n_fusions_active = sum(
+        [
+            fusion_config.fuse_convert_dp_to_ep_grouped_matmul,
+            fusion_config.fuse_grouped_matmul_convert_ep_to_dp,
+            fusion_config.fuse_grouped_matmul_convert_ep_to_dp_wg,
+        ]
+    )
     if n_fusions_active > 1:
         raise ValueError("At most one fusion mode may be enabled at a time.")
 
