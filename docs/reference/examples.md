@@ -28,6 +28,21 @@ We've curated a growing collection of practical examples that showcase the power
 - **[16_all_reduce_ring_based](https://github.com/ROCm/iris/tree/main/examples/16_all_reduce_ring_based)**: Ring-based all-reduce operation
 - **[20_gemm_all_scatter_independent](https://github.com/ROCm/iris/tree/main/examples/20_gemm_all_scatter_independent)**: Independent GEMM and all-scatter operations with support for CSV input configurations
 - **[21_gemm_one_shot_all_reduce_independent](https://github.com/ROCm/iris/tree/main/examples/21_gemm_one_shot_all_reduce_independent)**: Independent GEMM and all-reduce operations with support for CSV input configurations and selective execution
+- **[22_gemm_one_shot_reduce_scatter_wg_specialization](https://github.com/ROCm/iris/tree/main/examples/22_gemm_one_shot_reduce_scatter_wg_specialization)**: GEMM + ReduceScatter with workgroup specialization
+- **[23_gemm_all_scatter_tracing](https://github.com/ROCm/iris/tree/main/examples/23_gemm_all_scatter_tracing)**: GEMM with all-scatter and device tracing support for performance analysis
+
+### Collective Communication Library (CCL) Operations
+- **[24_ccl_all_reduce](https://github.com/ROCm/iris/tree/main/examples/24_ccl_all_reduce)**: All-reduce collective operation using iris.ccl
+- **[25_ccl_all_gather](https://github.com/ROCm/iris/tree/main/examples/25_ccl_all_gather)**: All-gather collective operation using iris.ccl
+- **[26_ccl_all_to_all](https://github.com/ROCm/iris/tree/main/examples/26_ccl_all_to_all)**: All-to-all collective operation using iris.ccl
+
+### Fused Operations (iris.ops)
+- **[28_ops_matmul_all_reduce](https://github.com/ROCm/iris/tree/main/examples/28_ops_matmul_all_reduce)**: Fused GEMM + all-reduce: output = all_reduce(A @ B)
+- **[29_ops_all_gather_matmul](https://github.com/ROCm/iris/tree/main/examples/29_ops_all_gather_matmul)**: Fused all-gather + GEMM with column-sharded input
+- **[30_ops_matmul_all_gather](https://github.com/ROCm/iris/tree/main/examples/30_ops_matmul_all_gather)**: Fused GEMM + all-gather with row-sharded input
+
+### Advanced Examples
+- **[31_expert_sharded_moe](https://github.com/ROCm/iris/tree/main/examples/31_expert_sharded_moe)**: Expert-sharded Mixture of Experts (MoE) implementation with expert parallelism
 
 ### Utilities
 - **[benchmark](https://github.com/ROCm/iris/tree/main/examples/benchmark)**: Benchmarking utilities and performance testing tools
