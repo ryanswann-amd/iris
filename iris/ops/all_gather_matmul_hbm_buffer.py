@@ -502,7 +502,8 @@ def all_gather_matmul_hbm_buffer(
     if trace:
         torch.cuda.synchronize()
         workspace.trace_data = _extract_wg_trace(
-            shmem, grid_size,
+            shmem,
+            grid_size,
             num_fetch_sms=num_fetch_sms,
             num_fetch_stages=num_fetch_stages,
             total_fetch_wgs=total_fetch_wgs,
