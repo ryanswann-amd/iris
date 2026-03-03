@@ -200,6 +200,9 @@ def wg_fused_exp_matmul_ep_to_dp(
     shmem,
     ragged_metadata: RaggedTensorMetadata | None = None,
     gemm_sms: int | None = None,
+    block_m: int | None = None,
+    block_n: int | None = None,
+    block_k: int | None = None,
 ) -> torch.Tensor:
     """WG-specialized fused expert matmul + EP->DP scatter.
 
@@ -217,6 +220,11 @@ def wg_fused_exp_matmul_ep_to_dp(
         shmem: iris.Iris instance.
         ragged_metadata: local-expert-view ragged metadata.
         gemm_sms: Number of CUs for GEMM path. Default: 2^floor(log2(cu_count)).
+        block_m: GEMM tile size along the M (token) dimension. Default: 128.
+        block_n: GEMM tile size along the N (output) dimension.
+            Default: min(triton.next_power_of_2(N), 128).
+        block_k: GEMM tile size along the K (reduction) dimension.
+            Default: min(triton.next_power_of_2(K), 64).
 
     Returns:
         (n_slots_per_rank, d_model) DP-local combined output.
@@ -228,9 +236,9 @@ def wg_fused_exp_matmul_ep_to_dp(
     K = d_model
     N = d_model
 
-    BLOCK_M = 128
-    BLOCK_N = min(triton.next_power_of_2(N), 128)
-    BLOCK_K = min(triton.next_power_of_2(K), 64)
+    BLOCK_M = block_m if block_m is not None else 128
+    BLOCK_N = block_n if block_n is not None else min(triton.next_power_of_2(N), 128)
+    BLOCK_K = block_k if block_k is not None else min(triton.next_power_of_2(K), 64)
 
     max_slice_size = int(ragged_metadata.slice_sizes.max().item())
     max_m_tiles = triton.cdiv(max_slice_size, BLOCK_M)
