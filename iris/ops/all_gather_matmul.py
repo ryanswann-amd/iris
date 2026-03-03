@@ -293,7 +293,6 @@ def all_gather_matmul(
             use_bias,
             even_k,
             config.allow_tf32,
-            matrix_instr_nonkdim=16,
         )
 
     if not async_op:
