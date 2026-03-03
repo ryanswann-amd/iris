@@ -16,7 +16,7 @@ jobs:
       contents: read
       pull-requests: read
 
-    timeout-minutes: 59
+    timeout-minutes: 600
 
     steps:
       - name: Checkout repository
