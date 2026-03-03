@@ -29,7 +29,6 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-import triton
 import importlib.util
 
 import iris
@@ -402,7 +401,9 @@ def parse_args():
         "--output_dir", type=str, default="/tmp/gemm_as_sweep_results", help="Directory for per-config JSON results."
     )
     parser.add_argument("--chart_only", action="store_true", help="Skip benchmarking; only regenerate the chart.")
-    parser.add_argument("--chart_path", type=str, default=None, help="Output PNG path (default: <output_dir>/chart.png)")
+    parser.add_argument(
+        "--chart_path", type=str, default=None, help="Output PNG path (default: <output_dir>/chart.png)"
+    )
     return parser.parse_args()
 
 

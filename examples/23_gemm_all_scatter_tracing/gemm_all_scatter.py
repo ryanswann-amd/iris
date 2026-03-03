@@ -144,7 +144,9 @@ def persistent_gemm_all_scatter(
             if remote_rank == cur_rank:
                 # For the current rank, apply alignment hint for the global C pointer so the
                 # compiler can emit wider vector stores (same benefit as ctx.put hint below).
-                c_global_hinted = tl.max_contiguous(tl.multiple_of(c_global + global_offset, (1, BLOCK_SIZE_N)), (1, BLOCK_SIZE_N))
+                c_global_hinted = tl.max_contiguous(
+                    tl.multiple_of(c_global + global_offset, (1, BLOCK_SIZE_N)), (1, BLOCK_SIZE_N)
+                )
                 tl.store(c_global_hinted, c, mask=sub_mask)
             else:
                 # Record duration event around remote store (compiles away if tracing=False)
