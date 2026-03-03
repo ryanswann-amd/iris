@@ -36,6 +36,7 @@ from iris.ops import FusedConfig
 _DERIVE_AVAILABLE = False
 try:
     import sys as _sys
+
     _script_dir = os.path.dirname(os.path.abspath(__file__))
     if _script_dir not in _sys.path:
         _sys.path.insert(0, _script_dir)
@@ -47,19 +48,30 @@ try:
         DEFAULT_L2_SIZE_BYTES,
         DEFAULT_SCHEDULING_FACTOR,
     )
+
     _DERIVE_AVAILABLE = True
 except Exception:
     pass
 
 _MODEL_PARAMS = (
-    "block_size_m", "block_size_n", "block_size_k", "group_size_m",
-    "num_fetch_sms", "k_per_flag", "num_warps",
-    "num_fetch_stages", "first_stage_fetch_sms",
+    "block_size_m",
+    "block_size_n",
+    "block_size_k",
+    "group_size_m",
+    "num_fetch_sms",
+    "k_per_flag",
+    "num_warps",
+    "num_fetch_stages",
+    "first_stage_fetch_sms",
 )
 
 _FALLBACK_DEFAULTS = {
-    "block_size_m": 256, "block_size_n": 64, "block_size_k": 64,
-    "group_size_m": 1, "k_per_flag": 1, "num_fetch_stages": 1,
+    "block_size_m": 256,
+    "block_size_n": 64,
+    "block_size_k": 64,
+    "group_size_m": 1,
+    "k_per_flag": 1,
+    "num_fetch_stages": 1,
 }
 
 torch.manual_seed(123)
@@ -268,7 +280,9 @@ def parse_args():
     parser.add_argument("--a_col_major", action="store_true", help="A col-major (M-contiguous)")
     parser.add_argument("--single-run", action="store_true", help="1 iteration (for profiling)")
     parser.add_argument("--num_fetch_sms", type=int, default=None, help="Fetcher SMs (auto if None)")
-    parser.add_argument("--k_per_flag", type=int, default=None, help="K-blocks per ready flag (model-derived if omitted)")
+    parser.add_argument(
+        "--k_per_flag", type=int, default=None, help="K-blocks per ready flag (model-derived if omitted)"
+    )
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
     parser.add_argument(
@@ -283,7 +297,12 @@ def parse_args():
         default=None,
         help="Fetcher WGs for stage 0 (fills first GPU wave; defaults to num_fetch_sms)",
     )
-    parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=True, help="Collect per-workgroup trace and save Gantt chart PNG")
+    parser.add_argument(
+        "--trace",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Collect per-workgroup trace and save Gantt chart PNG",
+    )
     parser.add_argument("--trace_output", type=str, default="trace.png", help="Output path for trace plot")
     return vars(parser.parse_args())
 
@@ -297,7 +316,10 @@ def _apply_model_defaults(args, world_size, dtype_bytes=2):
     if _DERIVE_AVAILABLE:
         try:
             p = _derive_params(
-                args["m"], args["n"], args["k"], world_size,
+                args["m"],
+                args["n"],
+                args["k"],
+                world_size,
                 link_bw=50.0,
                 num_cus=DEFAULT_NUM_CUS,
                 peak_tflops=DEFAULT_PEAK_TFLOPS_FP16,

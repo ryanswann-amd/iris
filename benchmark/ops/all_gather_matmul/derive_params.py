@@ -61,8 +61,7 @@ def profile_link_bandwidth(world_size=DEFAULT_WORLD_SIZE):
     n_gpus = torch.cuda.device_count()
     if n_gpus < 2:
         raise RuntimeError(
-            f"Need >= 2 visible GPUs for bandwidth profiling, found {n_gpus}. "
-            f"Pass --link_bw explicitly instead."
+            f"Need >= 2 visible GPUs for bandwidth profiling, found {n_gpus}. Pass --link_bw explicitly instead."
         )
 
     n_peers = min(world_size, n_gpus) - 1
@@ -113,6 +112,7 @@ def profile_link_bandwidth(world_size=DEFAULT_WORLD_SIZE):
 
 # ── Tile / block size heuristics ──────────────────────────────────────────
 
+
 def _choose_block_sizes(M, N, K, K_local):
     """Heuristic tile-size selection for MI300X MFMA."""
     bk = 64
@@ -156,8 +156,8 @@ def _choose_k_per_flag(num_k_blocks, num_k_blocks_local, target_groups=8):
 
 # ── Per-tile roofline model ──────────────────────────────────────────────
 
-def _tile_roofline(bm, bn, bk, M, K, N, dtype_bytes,
-                   peak_tflops, hbm_bw_gbps, l2_size):
+
+def _tile_roofline(bm, bn, bk, M, K, N, dtype_bytes, peak_tflops, hbm_bw_gbps, l2_size):
     """Compute achievable per-CU TFLOPS from tile arithmetic intensity.
 
     staged_a is always >> L2, so A tiles come from HBM.  B may fit in L2
@@ -188,8 +188,8 @@ def _tile_roofline(bm, bn, bk, M, K, N, dtype_bytes,
 
 # ── Per-WG execution time models ────────────────────────────────────────
 
-def _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups,
-                      roofline_tflops, num_cus):
+
+def _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups, roofline_tflops, num_cus):
     """Estimate per-WG GEMM execution time in microseconds.
 
     Uses the per-tile roofline to get the per-CU throughput, then applies
@@ -213,8 +213,7 @@ def _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups,
     return ideal_us * occupancy_factor + flag_us
 
 
-def _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw,
-                       dtype_bytes, num_fgs_per_wg):
+def _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw, dtype_bytes, num_fgs_per_wg):
     """Estimate per-fetcher-WG execution time in microseconds.
 
     Each flag group fetches kpf K-blocks (each BM × BK) from one rank.
@@ -240,17 +239,15 @@ def _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw,
 
 # ── Kernel time estimation ───────────────────────────────────────────────
 
-def _estimate_kernel_time(total_gemm_wgs, gemm_wg_us,
-                           total_fetch_wgs, fetch_wg_us,
-                           num_cus, scheduling_factor):
+
+def _estimate_kernel_time(total_gemm_wgs, gemm_wg_us, total_fetch_wgs, fetch_wg_us, num_cus, scheduling_factor):
     """Estimate kernel wall-clock time from the CU work queue model.
 
     total_CU_work / num_CUs gives the ideal (work-conserving) lower
     bound.  The scheduling_factor captures GPU dispatch overhead,
     cross-XCD coherence, and pipeline bubble effects measured on MI300X.
     """
-    total_cu_work_us = (total_gemm_wgs * gemm_wg_us +
-                        total_fetch_wgs * fetch_wg_us)
+    total_cu_work_us = total_gemm_wgs * gemm_wg_us + total_fetch_wgs * fetch_wg_us
 
     ideal_ms = total_cu_work_us / num_cus / 1e3
     estimated_ms = ideal_ms * scheduling_factor
@@ -259,8 +256,8 @@ def _estimate_kernel_time(total_gemm_wgs, gemm_wg_us,
 
 # ── Pipeline stage selection ─────────────────────────────────────────────
 
-def _choose_fetch_stages(num_m_tiles, num_tiles_n, group_size_m,
-                          comm_time_ms, compute_time_ms, num_cus):
+
+def _choose_fetch_stages(num_m_tiles, num_tiles_n, group_size_m, comm_time_ms, compute_time_ms, num_cus):
     """Choose num_fetch_stages for good pipeline efficiency while keeping
     m_per_stage divisible by group_size_m."""
     ratio = comm_time_ms / compute_time_ms if compute_time_ms > 0 else 999
@@ -275,16 +272,14 @@ def _choose_fetch_stages(num_m_tiles, num_tiles_n, group_size_m,
         ideal_stages = 4
 
     min_gemm_tiles = max(num_cus // 4, 32)
-    min_m_per_stage = max(group_size_m,
-                          math.ceil(min_gemm_tiles / max(num_tiles_n, 1)))
+    min_m_per_stage = max(group_size_m, math.ceil(min_gemm_tiles / max(num_tiles_n, 1)))
     max_stages = max(1, num_m_tiles // min_m_per_stage)
     num_stages = min(ideal_stages, max_stages)
     num_stages = max(1, num_stages)
 
     m_per_stage = math.ceil(num_m_tiles / num_stages)
     if m_per_stage % group_size_m != 0:
-        m_per_stage = ((m_per_stage + group_size_m - 1)
-                       // group_size_m) * group_size_m
+        m_per_stage = ((m_per_stage + group_size_m - 1) // group_size_m) * group_size_m
         num_stages = max(1, math.ceil(num_m_tiles / m_per_stage))
 
     m_per_stage = math.ceil(num_m_tiles / num_stages)
@@ -293,10 +288,21 @@ def _choose_fetch_stages(num_m_tiles, num_tiles_n, group_size_m,
 
 # ── num_fetch_sms optimisation ───────────────────────────────────────────
 
-def _choose_num_fetch_sms(m_per_stage, group_size_m, num_flag_groups_k,
-                           link_bw, world_size, num_cus,
-                           bm, bk, kpf, dtype_bytes,
-                           gemm_wg_us, gemm_tiles_per_stage):
+
+def _choose_num_fetch_sms(
+    m_per_stage,
+    group_size_m,
+    num_flag_groups_k,
+    link_bw,
+    world_size,
+    num_cus,
+    bm,
+    bk,
+    kpf,
+    dtype_bytes,
+    gemm_wg_us,
+    gemm_tiles_per_stage,
+):
     """Choose num_fetch_sms for good pipeline overlap.
 
     Balances three constraints:
@@ -324,8 +330,7 @@ def _choose_num_fetch_sms(m_per_stage, group_size_m, num_flag_groups_k,
     gemm_waves = math.ceil(gemm_tiles_per_stage / num_cus)
     stage_gemm_us = gemm_waves * gemm_wg_us
     if per_fg_us > 0:
-        balance_min = max(1, math.ceil(
-            total_fg_per_stage * per_fg_us / stage_gemm_us))
+        balance_min = max(1, math.ceil(total_fg_per_stage * per_fg_us / stage_gemm_us))
     else:
         balance_min = 1
 
@@ -338,8 +343,8 @@ def _choose_num_fetch_sms(m_per_stage, group_size_m, num_flag_groups_k,
 
 # ── Main derivation ──────────────────────────────────────────────────────
 
-def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
-           hbm_bw_gbps, l2_size, scheduling_factor, dtype_bytes):
+
+def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops, hbm_bw_gbps, l2_size, scheduling_factor, dtype_bytes):
     K_local = K // world_size
 
     # 1. Tile sizes
@@ -352,7 +357,8 @@ def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
 
     # 2. Per-tile roofline
     roofline_tflops, intensity, ridge, b_in_l2 = _tile_roofline(
-        bm, bn, bk, M, K, N, dtype_bytes, peak_tflops, hbm_bw_gbps, l2_size)
+        bm, bn, bk, M, K, N, dtype_bytes, peak_tflops, hbm_bw_gbps, l2_size
+    )
 
     # 3. Communication model (link-limited)
     total_remote_bytes = M * K_local * (world_size - 1) * dtype_bytes
@@ -370,32 +376,37 @@ def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
     num_flag_groups_k = num_k_blocks // kpf
 
     # 6. Pipeline stages
-    num_stages, m_per_stage = _choose_fetch_stages(
-        num_m_tiles, num_tiles_n, gm, comm_time_ms, compute_time_ms, num_cus)
+    num_stages, m_per_stage = _choose_fetch_stages(num_m_tiles, num_tiles_n, gm, comm_time_ms, compute_time_ms, num_cus)
     gemm_tiles_per_stage = m_per_stage * num_tiles_n
 
     # 7. first_stage_fetch_sms: use all CUs to fill the pipeline ASAP
     fsf = num_cus
 
     # 8. Per-WG timing
-    gemm_wg_us_val = _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups_k,
-                                       roofline_tflops, num_cus)
+    gemm_wg_us_val = _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups_k, roofline_tflops, num_cus)
 
     # 9. Choose num_fetch_sms
     nf = _choose_num_fetch_sms(
-        m_per_stage, gm, num_flag_groups_k,
-        link_bw, world_size, num_cus,
-        bm, bk, kpf, dtype_bytes,
-        gemm_wg_us_val, gemm_tiles_per_stage)
+        m_per_stage,
+        gm,
+        num_flag_groups_k,
+        link_bw,
+        world_size,
+        num_cus,
+        bm,
+        bk,
+        kpf,
+        dtype_bytes,
+        gemm_wg_us_val,
+        gemm_tiles_per_stage,
+    )
 
     # 10. Compute per-WG fetch times
     total_fg_per_stage = num_flag_groups_k * m_per_stage
     fgs_per_wg_stg0 = max(1, math.ceil(total_fg_per_stage / fsf))
     fgs_per_wg_rest = max(1, math.ceil(total_fg_per_stage / nf))
-    fetch_us_stg0 = _fetch_wg_time_us(bm, bk, kpf, world_size,
-                                       link_bw, dtype_bytes, fgs_per_wg_stg0)
-    fetch_us_rest = _fetch_wg_time_us(bm, bk, kpf, world_size,
-                                       link_bw, dtype_bytes, fgs_per_wg_rest)
+    fetch_us_stg0 = _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw, dtype_bytes, fgs_per_wg_stg0)
+    fetch_us_rest = _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw, dtype_bytes, fgs_per_wg_rest)
 
     # 11. Grid geometry
     first_stage_size = fsf + gemm_tiles_per_stage
@@ -405,19 +416,16 @@ def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
     total_gemm_wgs = gemm_tiles_per_stage * num_stages
 
     # 12. Kernel time estimate (CU-work model)
-    avg_fetch_us = (fsf * fetch_us_stg0 + nf * max(0, num_stages - 1) * fetch_us_rest)
+    avg_fetch_us = fsf * fetch_us_stg0 + nf * max(0, num_stages - 1) * fetch_us_rest
     avg_fetch_us /= max(total_fetch_wgs, 1)
     est_kernel_ms, est_ideal_ms = _estimate_kernel_time(
-        total_gemm_wgs, gemm_wg_us_val,
-        total_fetch_wgs, avg_fetch_us,
-        num_cus, scheduling_factor)
+        total_gemm_wgs, gemm_wg_us_val, total_fetch_wgs, avg_fetch_us, num_cus, scheduling_factor
+    )
 
     # 13. Link-limited pipeline estimate (simple model for comparison)
     stage_m = m_per_stage * bm
-    stage_comm_ms = (stage_m * K_local * (world_size - 1) * dtype_bytes
-                     / (total_link_bw * 1e9) * 1e3)
-    stage_compute_ms = (2 * stage_m * N * K
-                        / (roofline_tflops * 1e12) * 1e3)
+    stage_comm_ms = stage_m * K_local * (world_size - 1) * dtype_bytes / (total_link_bw * 1e9) * 1e3
+    stage_compute_ms = 2 * stage_m * N * K / (roofline_tflops * 1e12) * 1e3
     startup_ms = stage_comm_ms
     steady_ms = max(stage_comm_ms, stage_compute_ms) * max(0, num_stages - 1)
     drain_ms = stage_compute_ms
@@ -433,29 +441,46 @@ def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
     staged_a_gb = M * K * dtype_bytes / (1024**3)
 
     return dict(
-        block_size_m=bm, block_size_n=bn, block_size_k=bk,
-        group_size_m=gm, num_warps=nw,
-        num_fetch_sms=nf, k_per_flag=kpf,
-        num_fetch_stages=num_stages, first_stage_fetch_sms=fsf,
+        block_size_m=bm,
+        block_size_n=bn,
+        block_size_k=bk,
+        group_size_m=gm,
+        num_warps=nw,
+        num_fetch_sms=nf,
+        k_per_flag=kpf,
+        num_fetch_stages=num_stages,
+        first_stage_fetch_sms=fsf,
         # derived
-        K_local=K_local, num_m_tiles=num_m_tiles, num_tiles_n=num_tiles_n,
-        num_k_blocks=num_k_blocks, num_flag_groups_k=num_flag_groups_k,
-        m_per_stage=m_per_stage, gemm_tiles_per_stage=gemm_tiles_per_stage,
-        grid_size=grid_size, total_fetch_wgs=total_fetch_wgs,
+        K_local=K_local,
+        num_m_tiles=num_m_tiles,
+        num_tiles_n=num_tiles_n,
+        num_k_blocks=num_k_blocks,
+        num_flag_groups_k=num_flag_groups_k,
+        m_per_stage=m_per_stage,
+        gemm_tiles_per_stage=gemm_tiles_per_stage,
+        grid_size=grid_size,
+        total_fetch_wgs=total_fetch_wgs,
         total_gemm_wgs=total_gemm_wgs,
         # roofline
-        roofline_tflops=roofline_tflops, tile_intensity=intensity,
-        ridge_point=ridge, b_in_l2=b_in_l2,
+        roofline_tflops=roofline_tflops,
+        tile_intensity=intensity,
+        ridge_point=ridge,
+        b_in_l2=b_in_l2,
         # per-WG timing
         gemm_wg_us=gemm_wg_us_val,
         fetch_wg_us_stg0=fetch_us_stg0,
         fetch_wg_us_rest=fetch_us_rest,
         # estimates
-        total_remote_bytes=total_remote_bytes, total_link_bw=total_link_bw,
-        comm_time_ms=comm_time_ms, total_flops=total_flops,
-        compute_time_ms=compute_time_ms, ratio=ratio,
-        stage_comm_ms=stage_comm_ms, stage_compute_ms=stage_compute_ms,
-        pipeline_ms=pipeline_ms, sequential_ms=sequential_ms,
+        total_remote_bytes=total_remote_bytes,
+        total_link_bw=total_link_bw,
+        comm_time_ms=comm_time_ms,
+        total_flops=total_flops,
+        compute_time_ms=compute_time_ms,
+        ratio=ratio,
+        stage_comm_ms=stage_comm_ms,
+        stage_compute_ms=stage_compute_ms,
+        pipeline_ms=pipeline_ms,
+        sequential_ms=sequential_ms,
         est_kernel_ms=est_kernel_ms,
         est_ideal_ms=est_ideal_ms,
         standalone_gemm_ms=standalone_gemm_ms,
@@ -466,6 +491,7 @@ def derive(M, N, K, world_size, link_bw, num_cus, peak_tflops,
 
 
 # ── Formatting helpers ───────────────────────────────────────────────────
+
 
 def _fmt_bytes(n):
     if n >= 1024**3:
@@ -487,8 +513,8 @@ def _fmt_tflops(t):
 
 # ── Analysis output ──────────────────────────────────────────────────────
 
-def print_analysis(M, N, K, world_size, link_bw, p, passthrough_args,
-                   bw_profiled=False):
+
+def print_analysis(M, N, K, world_size, link_bw, p, passthrough_args, bw_profiled=False):
     K_local = p["K_local"]
     dtype_bytes = 2
     bound = "COMM-BOUND" if p["ratio"] > 1.0 else "COMPUTE-BOUND"
@@ -517,32 +543,30 @@ def print_analysis(M, N, K, world_size, link_bw, p, passthrough_args,
     # ── Per-tile roofline ─────────────────────────────────────────────
     print(f"\n── Roofline {'─' * 59}")
     print(f"{'Tile':>14}:  ({p['block_size_m']}, {p['block_size_n']}, {p['block_size_k']})")
-    print(f"{'Intensity':>14}:  {p['tile_intensity']:.0f} FLOPs/byte "
-          f"{'(B in L2)' if p['b_in_l2'] else '(B from HBM)'}")
+    print(f"{'Intensity':>14}:  {p['tile_intensity']:.0f} FLOPs/byte {'(B in L2)' if p['b_in_l2'] else '(B from HBM)'}")
     print(f"{'Ridge point':>14}:  {p['ridge_point']:.0f} FLOPs/byte")
     region = "COMPUTE" if p["tile_intensity"] >= p["ridge_point"] else "MEMORY"
     print(f"{'Roofline':>14}:  {_fmt_tflops(p['roofline_tflops'])}  ({region}-bound tiles)")
 
     # ── Communication ─────────────────────────────────────────────────
     print(f"\n── Communication {'─' * 54}")
-    print(f"{'Remote bytes':>14}:  {_fmt_bytes(p['total_remote_bytes'])}  "
-          f"(from {world_size - 1} peers)")
+    print(f"{'Remote bytes':>14}:  {_fmt_bytes(p['total_remote_bytes'])}  (from {world_size - 1} peers)")
     bw_src = "profiled" if bw_profiled else "user"
-    print(f"{'Link BW':>14}:  {link_bw:.1f} GB/s/link × {world_size - 1} links "
-          f"= {p['total_link_bw']:.0f} GB/s aggregate  ({bw_src})")
+    print(
+        f"{'Link BW':>14}:  {link_bw:.1f} GB/s/link × {world_size - 1} links "
+        f"= {p['total_link_bw']:.0f} GB/s aggregate  ({bw_src})"
+    )
     print(f"{'Comm time':>14}:  {p['comm_time_ms']:.3f} ms  (link-limited)")
 
     # ── Compute ───────────────────────────────────────────────────────
     print(f"\n── Compute {'─' * 60}")
     print(f"{'Total FLOPs':>14}:  {_fmt_flops(p['total_flops'])}")
-    print(f"{'Roofline time':>14}:  {p['compute_time_ms']:.3f} ms  "
-          f"(at {_fmt_tflops(p['roofline_tflops'])})")
+    print(f"{'Roofline time':>14}:  {p['compute_time_ms']:.3f} ms  (at {_fmt_tflops(p['roofline_tflops'])})")
     print(f"{'Comm/Compute':>14}:  {p['ratio']:.2f}x  →  {bound}")
 
     # ── Per-WG timing ─────────────────────────────────────────────────
     print(f"\n── Per-WG Model {'─' * 55}")
-    print(f"{'GEMM WG':>14}:  {p['gemm_wg_us']:.0f} us  "
-          f"({p['total_flops'] / p['total_gemm_wgs'] / 1e9:.2f} GFLOPs/WG)")
+    print(f"{'GEMM WG':>14}:  {p['gemm_wg_us']:.0f} us  ({p['total_flops'] / p['total_gemm_wgs'] / 1e9:.2f} GFLOPs/WG)")
     print(f"{'Fetch WG stg0':>14}:  {p['fetch_wg_us_stg0']:.0f} us")
     if p["num_fetch_stages"] > 1:
         print(f"{'Fetch WG rest':>14}:  {p['fetch_wg_us_rest']:.0f} us")
@@ -552,43 +576,47 @@ def print_analysis(M, N, K, world_size, link_bw, p, passthrough_args,
     print(f"\n── Pipeline {'─' * 59}")
     print(f"{'Stages (S)':>14}:  {S}")
     print(f"{'M tiles/stage':>14}:  {p['m_per_stage']}  ({p['m_per_stage'] * p['block_size_m']} rows)")
-    print(f"{'GEMM WGs/stg':>14}:  {p['gemm_tiles_per_stage']}  "
-          f"({p['m_per_stage']} m-tiles × {p['num_tiles_n']} n-tiles)")
-    print(f"{'K flag groups':>14}:  {p['num_flag_groups_k']}  "
-          f"(k_per_flag={p['k_per_flag']})")
+    print(
+        f"{'GEMM WGs/stg':>14}:  {p['gemm_tiles_per_stage']}  ({p['m_per_stage']} m-tiles × {p['num_tiles_n']} n-tiles)"
+    )
+    print(f"{'K flag groups':>14}:  {p['num_flag_groups_k']}  (k_per_flag={p['k_per_flag']})")
     print(f"{'Stage comm':>14}:  {p['stage_comm_ms']:.3f} ms")
     print(f"{'Stage compute':>14}:  {p['stage_compute_ms']:.3f} ms")
 
     # ── Grid ──────────────────────────────────────────────────────────
     print(f"\n── Grid Layout {'─' * 56}")
-    print(f"{'Stage 0':>14}:  {p['first_stage_fetch_sms']} fetchers + "
-          f"{p['gemm_tiles_per_stage']} GEMM  = "
-          f"{p['first_stage_fetch_sms'] + p['gemm_tiles_per_stage']} WGs")
+    print(
+        f"{'Stage 0':>14}:  {p['first_stage_fetch_sms']} fetchers + "
+        f"{p['gemm_tiles_per_stage']} GEMM  = "
+        f"{p['first_stage_fetch_sms'] + p['gemm_tiles_per_stage']} WGs"
+    )
     if S > 1:
-        print(f"{'Stages 1..{}'.format(S - 1):>14}:  {p['num_fetch_sms']} fetchers + "
-              f"{p['gemm_tiles_per_stage']} GEMM  = "
-              f"{p['num_fetch_sms'] + p['gemm_tiles_per_stage']} WGs  (×{S - 1})")
-    print(f"{'Total grid':>14}:  {p['grid_size']} WGs  "
-          f"({p['total_fetch_wgs']} fetch + {p['total_gemm_wgs']} GEMM)")
+        print(
+            f"{'Stages 1..{}'.format(S - 1):>14}:  {p['num_fetch_sms']} fetchers + "
+            f"{p['gemm_tiles_per_stage']} GEMM  = "
+            f"{p['num_fetch_sms'] + p['gemm_tiles_per_stage']} WGs  (×{S - 1})"
+        )
+    print(f"{'Total grid':>14}:  {p['grid_size']} WGs  ({p['total_fetch_wgs']} fetch + {p['total_gemm_wgs']} GEMM)")
 
     # ── Time estimates ────────────────────────────────────────────────
     print(f"\n── Time Estimates {'─' * 53}")
-    print(f"{'CU-work lower':>14}:  {p['est_ideal_ms']:.1f} ms  "
-          f"(total WG time / {DEFAULT_NUM_CUS} CUs)")
-    print(f"{'Fused kernel':>14}:  {p['est_kernel_ms']:.1f} ms  "
-          f"(×{p['scheduling_factor']:.1f} scheduling overhead)")
+    print(f"{'CU-work lower':>14}:  {p['est_ideal_ms']:.1f} ms  (total WG time / {DEFAULT_NUM_CUS} CUs)")
+    print(f"{'Fused kernel':>14}:  {p['est_kernel_ms']:.1f} ms  (×{p['scheduling_factor']:.1f} scheduling overhead)")
     est_tflops = p["total_flops"] / (p["est_kernel_ms"] * 1e-3) / 1e12
-    print(f"{'Est. TFLOPS':>14}:  {est_tflops:.0f} TFLOPS  "
-          f"({est_tflops / p['roofline_tflops'] * 100:.0f}% of roofline)")
+    print(
+        f"{'Est. TFLOPS':>14}:  {est_tflops:.0f} TFLOPS  ({est_tflops / p['roofline_tflops'] * 100:.0f}% of roofline)"
+    )
     print(f"{'':>14}")
-    print(f"{'PyTorch est.':>14}:  {p['pytorch_est_ms']:.1f} ms  "
-          f"(all_gather {p['comm_time_ms']:.1f} + matmul {p['standalone_gemm_ms']:.1f})")
+    print(
+        f"{'PyTorch est.':>14}:  {p['pytorch_est_ms']:.1f} ms  "
+        f"(all_gather {p['comm_time_ms']:.1f} + matmul {p['standalone_gemm_ms']:.1f})"
+    )
     if p["est_kernel_ms"] < p["pytorch_est_ms"]:
         speedup = p["pytorch_est_ms"] / p["est_kernel_ms"]
         print(f"{'Fused speedup':>14}:  {speedup:.2f}x over sequential PyTorch")
     else:
         slowdown = p["est_kernel_ms"] / p["pytorch_est_ms"]
-        print(f"{'Fused speedup':>14}:  {1/slowdown:.2f}x (slower than sequential by {slowdown:.2f}x)")
+        print(f"{'Fused speedup':>14}:  {1 / slowdown:.2f}x (slower than sequential by {slowdown:.2f}x)")
 
     # ── Recommended parameters ────────────────────────────────────────
     print(f"\n── Recommended Kernel Parameters {'─' * 38}")
@@ -639,20 +667,22 @@ def main():
     parser.add_argument("-m", type=int, required=True, help="M dimension (rows of output)")
     parser.add_argument("-n", type=int, required=True, help="N dimension (cols of output)")
     parser.add_argument("-k", type=int, required=True, help="K dimension (total reduction dim)")
-    parser.add_argument("--world_size", type=int, default=DEFAULT_WORLD_SIZE,
-                        help="Number of GPUs")
-    parser.add_argument("--link_bw", type=float, default=None,
-                        help="Per-link XGMI bandwidth in GB/s (one direction). "
-                             "Omit to auto-profile via GPU-to-GPU copies.")
-    parser.add_argument("--num_cus", type=int, default=DEFAULT_NUM_CUS,
-                        help="Number of compute units")
-    parser.add_argument("--peak_tflops", type=float, default=DEFAULT_PEAK_TFLOPS_FP16,
-                        help="Peak fp16 TFLOPS")
-    parser.add_argument("--hbm_bw", type=float, default=DEFAULT_HBM_BW_GBPS,
-                        help="HBM bandwidth in GB/s")
-    parser.add_argument("--scheduling_factor", type=float,
-                        default=DEFAULT_SCHEDULING_FACTOR,
-                        help="CU scheduling overhead factor (calibrated from traces)")
+    parser.add_argument("--world_size", type=int, default=DEFAULT_WORLD_SIZE, help="Number of GPUs")
+    parser.add_argument(
+        "--link_bw",
+        type=float,
+        default=None,
+        help="Per-link XGMI bandwidth in GB/s (one direction). Omit to auto-profile via GPU-to-GPU copies.",
+    )
+    parser.add_argument("--num_cus", type=int, default=DEFAULT_NUM_CUS, help="Number of compute units")
+    parser.add_argument("--peak_tflops", type=float, default=DEFAULT_PEAK_TFLOPS_FP16, help="Peak fp16 TFLOPS")
+    parser.add_argument("--hbm_bw", type=float, default=DEFAULT_HBM_BW_GBPS, help="HBM bandwidth in GB/s")
+    parser.add_argument(
+        "--scheduling_factor",
+        type=float,
+        default=DEFAULT_SCHEDULING_FACTOR,
+        help="CU scheduling overhead factor (calibrated from traces)",
+    )
 
     args, passthrough = parser.parse_known_args()
 
@@ -670,13 +700,21 @@ def main():
             print("  Falling back to --link_bw 50 (MI300X default)\n")
             link_bw = 50.0
 
-    p = derive(args.m, args.n, args.k, args.world_size, link_bw,
-               args.num_cus, args.peak_tflops, args.hbm_bw,
-               DEFAULT_L2_SIZE_BYTES, args.scheduling_factor,
-               dtype_bytes=2)
+    p = derive(
+        args.m,
+        args.n,
+        args.k,
+        args.world_size,
+        link_bw,
+        args.num_cus,
+        args.peak_tflops,
+        args.hbm_bw,
+        DEFAULT_L2_SIZE_BYTES,
+        args.scheduling_factor,
+        dtype_bytes=2,
+    )
 
-    print_analysis(args.m, args.n, args.k, args.world_size, link_bw,
-                   p, passthrough, bw_profiled=bw_profiled)
+    print_analysis(args.m, args.n, args.k, args.world_size, link_bw, p, passthrough, bw_profiled=bw_profiled)
 
 
 if __name__ == "__main__":
