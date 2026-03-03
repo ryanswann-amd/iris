@@ -64,6 +64,10 @@ class matmul(torch.autograd.Function):
         COLLECT_TIMESTAMPS: bool = False,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
+        num_warps: int = 8,
+        mfma: int = 16,
+        kpack: int = 1,
+        waves_per_eu: int = 0,
     ):
         # checks constraints
         assert a.shape[1] == b.shape[0], "incompatible dimensions"
@@ -71,12 +75,6 @@ class matmul(torch.autograd.Function):
         _, N = b.shape
 
         num_xcds = matmul._num_xcds
-
-        # TODO: Use arch-specific values.
-        num_warps = 8
-        waves_per_eu = 0
-        mfma = 16
-        kpack = 1
 
         even_k = K % BLK_K == 0
         use_bias = False
@@ -152,6 +150,10 @@ class matmul(torch.autograd.Function):
         COLLECT_TIMESTAMPS: bool = False,
         mm_begin_timestamp: torch.Tensor = None,
         mm_end_timestamp: torch.Tensor = None,
+        num_warps: int = 8,
+        mfma: int = 16,
+        kpack: int = 1,
+        waves_per_eu: int = 0,
     ):
         matmul._call(
             a=a,
@@ -173,5 +175,9 @@ class matmul(torch.autograd.Function):
             COLLECT_TIMESTAMPS=COLLECT_TIMESTAMPS,
             mm_begin_timestamp=mm_begin_timestamp,
             mm_end_timestamp=mm_end_timestamp,
+            num_warps=num_warps,
+            mfma=mfma,
+            kpack=kpack,
+            waves_per_eu=waves_per_eu,
         )
         return c
