@@ -135,35 +135,37 @@ def persistent_gemm_all_scatter(
             timestamp = read_realtime()
             tl.atomic_max(mm_end_timestamp_ptr + tile_id, timestamp)
 
-        # Store local result first (needed for put operations)
+        # Store local result to C (needed by callers that consume the rank-local output).
         C_ptr = C + rm[:, None] * stride_cm + rn[None, :] * stride_cn
         tl.store(C_ptr, c, mask=sub_mask)
 
-        # Store data to the global result using DeviceContext
+        # Scatter accumulator directly from registers to c_global on every rank.
+        # Using ctx.store(pointer, value, to_rank) instead of ctx.put(from_ptr, to_ptr, to_rank)
+        # avoids the unnecessary HBM roundtrip that ctx.put incurs:
+        #   ctx.put  = tl.load(C_ptr)   ← HBM read (BLK_M*BLK_N fp16 elements per rank)
+        #              + tl.store(remote)
+        #   ctx.store = tl.store(remote, c)   ← scatter directly from accumulator registers
+        # This eliminates 7 × BLK_M × BLK_N × 2 bytes of HBM reads per output tile.
+        c_global_ptr = c_global + global_offset
         for remote_rank in range(world_size):
             if remote_rank == cur_rank:
                 # For the current rank, apply alignment hint for the global C pointer so the
-                # compiler can emit wider vector stores (same benefit as ctx.put hint below).
-                c_global_hinted = tl.max_contiguous(
-                    tl.multiple_of(c_global + global_offset, (1, BLOCK_SIZE_N)), (1, BLOCK_SIZE_N)
-                )
+                # compiler can emit wider vector stores (same benefit as ctx.store hint below).
+                c_global_hinted = tl.max_contiguous(tl.multiple_of(c_global_ptr, (1, BLOCK_SIZE_N)), (1, BLOCK_SIZE_N))
                 tl.store(c_global_hinted, c, mask=sub_mask)
             else:
                 # Record duration event around remote store (compiles away if tracing=False)
-                # Pass 2D pointer tensor; record_event_start takes min as representative address
                 handle = ctx.tracing.record_event_start(
                     event_id=TraceEvent().put,
                     target_rank=remote_rank,
-                    address=c_global + global_offset,
+                    address=c_global_ptr,
                     pid_m=pid_m,
                     pid_n=pid_n,
                 )
 
-                # Use DeviceContext.put for remote stores
-                # Put from local C to remote c_global
-                # hint=(1, BLOCK_SIZE_N) tells the backend that the N-dimension is contiguous
-                # and aligned to BLOCK_SIZE_N elements, enabling wider vector stores.
-                ctx.put(C_ptr, c_global + global_offset, to_rank=remote_rank, mask=sub_mask, hint=(1, BLOCK_SIZE_N))
+                # Scatter accumulator registers directly to remote c_global.
+                # hint=(1, BLOCK_SIZE_N) enables 128-bit vectorised global_store_dwordx4.
+                ctx.store(c_global_ptr, c, to_rank=remote_rank, mask=sub_mask, hint=(1, BLOCK_SIZE_N))
 
                 # End duration event
                 ctx.tracing.record_event_end(handle)
