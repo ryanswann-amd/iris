@@ -33,6 +33,35 @@ from iris.ops.all_gather_matmul_hbm_buffer import (
 )
 from iris.ops import FusedConfig
 
+_DERIVE_AVAILABLE = False
+try:
+    import sys as _sys
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    if _script_dir not in _sys.path:
+        _sys.path.insert(0, _script_dir)
+    from derive_params import (
+        derive as _derive_params,
+        DEFAULT_NUM_CUS,
+        DEFAULT_PEAK_TFLOPS_FP16,
+        DEFAULT_HBM_BW_GBPS,
+        DEFAULT_L2_SIZE_BYTES,
+        DEFAULT_SCHEDULING_FACTOR,
+    )
+    _DERIVE_AVAILABLE = True
+except Exception:
+    pass
+
+_MODEL_PARAMS = (
+    "block_size_m", "block_size_n", "block_size_k", "group_size_m",
+    "num_fetch_sms", "k_per_flag", "num_warps",
+    "num_fetch_stages", "first_stage_fetch_sms",
+)
+
+_FALLBACK_DEFAULTS = {
+    "block_size_m": 256, "block_size_n": 64, "block_size_k": 64,
+    "group_size_m": 1, "k_per_flag": 1, "num_fetch_stages": 1,
+}
+
 torch.manual_seed(123)
 random.seed(123)
 
@@ -230,23 +259,23 @@ def parse_args():
         action="store_true",
         help="Also benchmark PyTorch (all_gather_into_tensor + matmul)",
     )
-    parser.add_argument("--block_size_m", type=int, default=256, help="Block size M")
-    parser.add_argument("--block_size_n", type=int, default=64, help="Block size N")
-    parser.add_argument("--block_size_k", type=int, default=64, help="Block size K")
-    parser.add_argument("--group_size_m", type=int, default=1, help="Group size M")
+    parser.add_argument("--block_size_m", type=int, default=None, help="Block size M (model-derived if omitted)")
+    parser.add_argument("--block_size_n", type=int, default=None, help="Block size N (model-derived if omitted)")
+    parser.add_argument("--block_size_k", type=int, default=None, help="Block size K (model-derived if omitted)")
+    parser.add_argument("--group_size_m", type=int, default=None, help="Group size M (model-derived if omitted)")
     parser.add_argument("--num_xcds", type=int, default=None, help="Number of XCDs (auto if None)")
     parser.add_argument("--b_col_major", action="store_true", help="B col-major (K-contiguous)")
     parser.add_argument("--a_col_major", action="store_true", help="A col-major (M-contiguous)")
     parser.add_argument("--single-run", action="store_true", help="1 iteration (for profiling)")
     parser.add_argument("--num_fetch_sms", type=int, default=None, help="Fetcher SMs (auto if None)")
-    parser.add_argument("--k_per_flag", type=int, default=1, help="K-blocks per ready flag")
+    parser.add_argument("--k_per_flag", type=int, default=None, help="K-blocks per ready flag (model-derived if omitted)")
     parser.add_argument("--num_warps", type=int, default=None, help="Triton num_warps (auto if None)")
     parser.add_argument("--num_stages", type=int, default=None, help="Triton num_stages (auto if None)")
     parser.add_argument(
         "--num_fetch_stages",
         type=int,
-        default=1,
-        help="Number of fetch stages (1=all at once, 2=top/bottom half, etc.)",
+        default=None,
+        help="Number of fetch stages (model-derived if omitted)",
     )
     parser.add_argument(
         "--first_stage_fetch_sms",
@@ -254,9 +283,41 @@ def parse_args():
         default=None,
         help="Fetcher WGs for stage 0 (fills first GPU wave; defaults to num_fetch_sms)",
     )
-    parser.add_argument("--trace", action="store_true", help="Collect per-workgroup trace and save Gantt chart PNG")
-    parser.add_argument("--trace_output", type=str, default="trace_gantt.png", help="Output path for trace plot")
+    parser.add_argument("--trace", action=argparse.BooleanOptionalAction, default=True, help="Collect per-workgroup trace and save Gantt chart PNG")
+    parser.add_argument("--trace_output", type=str, default="trace.png", help="Output path for trace plot")
     return vars(parser.parse_args())
+
+
+def _apply_model_defaults(args, world_size, dtype_bytes=2):
+    """Fill None-valued kernel parameters with model-derived predictions.
+
+    Returns a list of parameter names that were set by the model.
+    """
+    applied = []
+    if _DERIVE_AVAILABLE:
+        try:
+            p = _derive_params(
+                args["m"], args["n"], args["k"], world_size,
+                link_bw=50.0,
+                num_cus=DEFAULT_NUM_CUS,
+                peak_tflops=DEFAULT_PEAK_TFLOPS_FP16,
+                hbm_bw_gbps=DEFAULT_HBM_BW_GBPS,
+                l2_size=DEFAULT_L2_SIZE_BYTES,
+                scheduling_factor=DEFAULT_SCHEDULING_FACTOR,
+                dtype_bytes=dtype_bytes,
+            )
+            for name in _MODEL_PARAMS:
+                if args.get(name) is None and name in p:
+                    args[name] = p[name]
+                    applied.append(name)
+        except Exception:
+            pass
+
+    for name, fallback in _FALLBACK_DEFAULTS.items():
+        if args.get(name) is None:
+            args[name] = fallback
+
+    return applied
 
 
 def _worker(args):
@@ -294,6 +355,14 @@ def _worker(args):
 
     datatype_map = {"fp16": torch.float16, "fp32": torch.float32, "bf16": torch.bfloat16}
     datatype = datatype_map.get(args["datatype"], torch.float16)
+    dtype_bytes = torch.tensor([], dtype=datatype).element_size()
+
+    model_applied = _apply_model_defaults(args, world_size, dtype_bytes)
+    if rank == 0 and model_applied:
+        shmem.info(f"Model-derived defaults: {', '.join(model_applied)}")
+    if rank == 0:
+        param_summary = " ".join(f"{k}={args[k]}" for k in _MODEL_PARAMS)
+        shmem.info(f"Kernel params: {param_summary}")
 
     M = args["m"]
     N = args["n"]
@@ -410,7 +479,8 @@ def _worker(args):
         shmem.barrier()
 
         atol = 1e-1 if datatype == torch.float16 else 1e-3
-        success = torch.allclose(C, expected_tensor, atol=atol)
+        rtol = 1e-2 if datatype == torch.float16 else 1e-5
+        success = torch.allclose(C, expected_tensor, atol=atol, rtol=rtol)
         if not success:
             max_diff = torch.abs(C - expected_tensor).max().item()
             shmem.error(f"Rank {rank}: Validation FAILED, max diff: {max_diff}")

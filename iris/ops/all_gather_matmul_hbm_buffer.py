@@ -135,7 +135,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                         k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
 
                         rk = k_block_global * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-                        staged_ptrs = staged_a + rm[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                        staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
                         for compile_rank in range(world_size):
                             if src_rank_idx == compile_rank:
@@ -143,8 +143,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                                 tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
                     flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-                    # tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-                    tl.store(flags_ptr + flag_idx, 1, cache_modifier=".wt")
+                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
 
         if TRACE:
             tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
@@ -193,8 +192,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                 rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
-                # Use parameterized strides for staged_a
-                a_ptrs = staged_a + rm[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
                 a = tl.load(a_ptrs)
 
                 B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
