@@ -142,8 +142,10 @@ def persistent_gemm_all_scatter(
         # Store data to the global result using DeviceContext
         for remote_rank in range(world_size):
             if remote_rank == cur_rank:
-                # For the current rank, we can use store
-                tl.store(c_global + global_offset, c, mask=sub_mask)
+                # For the current rank, apply alignment hint for the global C pointer so the
+                # compiler can emit wider vector stores (same benefit as ctx.put hint below).
+                c_global_hinted = tl.max_contiguous(tl.multiple_of(c_global + global_offset, (1, BLOCK_SIZE_N)), (1, BLOCK_SIZE_N))
+                tl.store(c_global_hinted, c, mask=sub_mask)
             else:
                 # Record duration event around remote store (compiles away if tracing=False)
                 # Pass 2D pointer tensor; record_event_start takes min as representative address
@@ -157,7 +159,9 @@ def persistent_gemm_all_scatter(
 
                 # Use DeviceContext.put for remote stores
                 # Put from local C to remote c_global
-                ctx.put(C_ptr, c_global + global_offset, to_rank=remote_rank, mask=sub_mask)
+                # hint=(1, BLOCK_SIZE_N) tells the backend that the N-dimension is contiguous
+                # and aligned to BLOCK_SIZE_N elements, enabling wider vector stores.
+                ctx.put(C_ptr, c_global + global_offset, to_rank=remote_rank, mask=sub_mask, hint=(1, BLOCK_SIZE_N))
 
                 # End duration event
                 ctx.tracing.record_event_end(handle)
