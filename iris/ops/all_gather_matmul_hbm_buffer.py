@@ -16,7 +16,8 @@ import triton.language as tl
 import iris
 import iris.x
 
-from iris.device_utils import read_realtime, get_xcc_id
+from iris.device_utils import read_realtime
+from iris.tracing.events import TraceEvent
 from .config import FusedConfig
 from .workspace import FusedWorkspace
 
@@ -62,19 +63,13 @@ def _hbm_buffer_all_gather_matmul_kernel(
     NUM_FETCH_STAGES: tl.constexpr,
     GEMM_TILES_PER_STAGE: tl.constexpr,
     FIRST_STAGE_FETCH_SMS: tl.constexpr,
-    trace_start_ptr,
-    trace_end_ptr,
-    trace_wait_ptr,
-    trace_xcd_ptr,
     TRACE: tl.constexpr,
 ):
     pid = tl.program_id(0)
     acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
     zero = tl.program_id(0) * 0
 
-    if TRACE:
-        tl.store(trace_start_ptr + pid, read_realtime())
-        tl.store(trace_xcd_ptr + pid, get_xcc_id())
+    ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=TRACE)
 
     # Interleaved layout with asymmetric first stage:
     #   [fetch0 (P)] [gemm0 (G)] [fetch1 (F)] [gemm1 (G)] ...
@@ -101,7 +96,15 @@ def _hbm_buffer_all_gather_matmul_kernel(
         # ==============================================================
         stage_pid = local_pid
 
-        ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size)
+        if TRACE:
+            _trace_handle = ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_fetch,
+                target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1),
+                pid_m=pid,
+                pid_n=my_stage,
+            )
+
         src_view = iris.x.make_tensor_view(A_sharded, M, K_local, stride_am, stride_ak)
 
         tiles_per_m_group = NUM_FLAG_GROUPS_K * GROUP_SIZE_M
@@ -146,8 +149,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                     tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
 
         if TRACE:
-            tl.store(trace_wait_ptr + pid, zero.to(tl.int64), cache_modifier=".wt")
-            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
+            ctx.tracing.record_event_end(_trace_handle)
 
     else:
         # ==============================================================
@@ -173,6 +175,13 @@ def _hbm_buffer_all_gather_matmul_kernel(
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
         if TRACE:
+            _trace_handle = ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_gemm,
+                target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1),
+                pid_m=pid,
+                pid_n=my_stage,
+            )
             _wt = zero.to(tl.int64)
 
         for k_fg in range(NUM_FLAG_GROUPS_K):
@@ -213,8 +222,14 @@ def _hbm_buffer_all_gather_matmul_kernel(
         tl.store(C_ptrs, c, mask=c_mask, cache_modifier=".wt")
 
         if TRACE:
-            tl.store(trace_wait_ptr + pid, _wt)
-            tl.store(trace_end_ptr + pid, read_realtime(), cache_modifier=".wt")
+            ctx.tracing.record_event_end(_trace_handle)
+            ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_gemm_wait,
+                target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1),
+                pid_m=pid,
+                pid_n=_wt.to(tl.int32),
+            )
 
 
 # ==========================================================================
@@ -283,6 +298,45 @@ def all_gather_matmul_hbm_buffer_preamble(
 
     shmem.barrier()
     return ws
+
+
+_WG_FETCH = 14
+_WG_GEMM = 15
+_WG_GEMM_WAIT = 16
+
+
+def _extract_wg_trace(shmem, grid_size, **metadata):
+    """Reconstruct per-workgroup trace arrays from DeviceTracing events."""
+    import numpy as np
+
+    bufs = shmem.tracing.trace_buffers
+    n = min(shmem.tracing.trace_counter.item(), shmem.tracing.max_events)
+
+    event_ids = bufs["event_id"][:n].cpu().numpy()
+    pids = bufs["pid"][:n].cpu().numpy()
+    timestamps = bufs["timestamp"][:n].cpu().numpy().astype(np.int64)
+    end_ts = bufs["duration_cycles"][:n].cpu().numpy().astype(np.int64)
+    xcc_ids = bufs["xcc_id"][:n].cpu().numpy().astype(np.int32)
+    pid_ns = bufs["pid_n"][:n].cpu().numpy()
+
+    starts = torch.zeros(grid_size, dtype=torch.int64)
+    ends = torch.zeros(grid_size, dtype=torch.int64)
+    waits = torch.zeros(grid_size, dtype=torch.int64)
+    xcds = torch.zeros(grid_size, dtype=torch.int32)
+
+    for i in range(n):
+        eid = int(event_ids[i])
+        wg = int(pids[i])
+        if wg >= grid_size:
+            continue
+        if eid == _WG_FETCH or eid == _WG_GEMM:
+            starts[wg] = int(timestamps[i])
+            ends[wg] = int(end_ts[i])
+            xcds[wg] = int(xcc_ids[i])
+        elif eid == _WG_GEMM_WAIT:
+            waits[wg] = int(pid_ns[i])
+
+    return {"start": starts, "end": ends, "wait": waits, "xcd": xcds, "grid_size": grid_size, **metadata}
 
 
 def all_gather_matmul_hbm_buffer(
@@ -385,17 +439,12 @@ def all_gather_matmul_hbm_buffer(
     total_fetch_wgs = first_stage_fetch_sms + num_fetch_sms * max(0, num_fetch_stages - 1)
     grid_size = first_stage_size + rest_stage_size * max(0, num_fetch_stages - 1)
 
-    # Trace buffers
     if trace:
-        trace_start = torch.zeros(grid_size, dtype=torch.int64, device=device)
-        trace_end = torch.zeros(grid_size, dtype=torch.int64, device=device)
-        trace_wait = torch.zeros(grid_size, dtype=torch.int64, device=device)
-        trace_xcd = torch.zeros(grid_size, dtype=torch.int32, device=device)
-    else:
-        trace_start = torch.empty(1, dtype=torch.int64, device=device)
-        trace_end = torch.empty(1, dtype=torch.int64, device=device)
-        trace_wait = torch.empty(1, dtype=torch.int64, device=device)
-        trace_xcd = torch.empty(1, dtype=torch.int32, device=device)
+        max_trace_events = grid_size * 4
+        if not shmem.tracing.enabled:
+            shmem.tracing.enable(max_events=max_trace_events)
+        else:
+            shmem.tracing.reset()
 
     launch_kwargs = {"matrix_instr_nonkdim": 16}
     if num_warps is not None:
@@ -443,10 +492,6 @@ def all_gather_matmul_hbm_buffer(
         num_fetch_stages,
         gemm_tiles_per_stage,
         first_stage_fetch_sms,
-        trace_start,
-        trace_end,
-        trace_wait,
-        trace_xcd,
         trace,
         **launch_kwargs,
     )
@@ -456,21 +501,17 @@ def all_gather_matmul_hbm_buffer(
 
     if trace:
         torch.cuda.synchronize()
-        workspace.trace_data = {
-            "start": trace_start.cpu(),
-            "end": trace_end.cpu(),
-            "wait": trace_wait.cpu(),
-            "xcd": trace_xcd.cpu(),
-            "grid_size": grid_size,
-            "num_fetch_sms": num_fetch_sms,
-            "num_fetch_stages": num_fetch_stages,
-            "total_fetch_wgs": total_fetch_wgs,
-            "num_m_tiles": num_m_tiles,
-            "num_tiles_n": num_tiles_n,
-            "first_stage_fetch_sms": first_stage_fetch_sms,
-            "first_stage_size": first_stage_size,
-            "rest_stage_size": rest_stage_size,
-            "gemm_tiles_per_stage": gemm_tiles_per_stage,
-        }
+        workspace.trace_data = _extract_wg_trace(
+            shmem, grid_size,
+            num_fetch_sms=num_fetch_sms,
+            num_fetch_stages=num_fetch_stages,
+            total_fetch_wgs=total_fetch_wgs,
+            num_m_tiles=num_m_tiles,
+            num_tiles_n=num_tiles_n,
+            first_stage_fetch_sms=first_stage_fetch_sms,
+            first_stage_size=first_stage_size,
+            rest_stage_size=rest_stage_size,
+            gemm_tiles_per_stage=gemm_tiles_per_stage,
+        )
 
     return workspace
