@@ -13,6 +13,7 @@ Use `gather` when you want to consume the tile immediately without materializing
 
 import triton
 import triton.language as tl
+import iris
 from iris.iris import DeviceContext
 from .core import Tile, TensorView
 
@@ -50,25 +51,16 @@ def gather(
     src_tile_ptr, mask = src_view.tile_ptr(tile)
 
     if source_rank == ctx.rank:
-        # Local load - can use vectorization hints since alignment is guaranteed
-        local_ptr = tl.multiple_of(src_tile_ptr, (1, tile.block_n))
-        local_ptr = tl.max_contiguous(local_ptr, (1, tile.block_n))
-        tile_data = tl.load(local_ptr, mask=mask)
+        # Local load
+        tile_data = tl.load(src_tile_ptr, mask=mask, other=0.0)
     else:
-        # Remote load using RMA - inline translation and apply hints AFTER translation
-        # Hints must be applied to the translated pointer because pointer arithmetic
-        # (cast to uint64, subtract, add, cast back) destroys hint metadata.
-        # Alignment IS preserved because symmetric heaps are all page-aligned.
-        from_base = tl.load(ctx.heap_bases + ctx.rank)
-        to_base = tl.load(ctx.heap_bases + source_rank)
-        ptr_int = tl.cast(src_tile_ptr, tl.uint64)
-        offset = ptr_int - from_base
-        to_base_byte = tl.cast(to_base, tl.pointer_type(tl.int8))
-        translated_ptr_byte = to_base_byte + offset
-        translated_ptr = tl.cast(translated_ptr_byte, src_tile_ptr.dtype)
-        # Apply vectorization hints AFTER translation
-        translated_ptr = tl.multiple_of(translated_ptr, (1, tile.block_n))
-        translated_ptr = tl.max_contiguous(translated_ptr, (1, tile.block_n))
-        tile_data = tl.load(translated_ptr, mask=mask)
+        # Remote load using RMA
+        tile_data = iris.load(
+            src_tile_ptr,
+            ctx.rank,  # to_rank (current rank)
+            source_rank,  # from_rank (source rank)
+            ctx.heap_bases,
+            mask=mask,
+        )
 
     return tile_data
