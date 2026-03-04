@@ -1910,10 +1910,12 @@ def put(
     stride_tn,
     stride_fm,
     stride_fn,
-    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr, #TODO Needed??
     BLOCK_SIZE_N: tl.constexpr,
     mask=None,
     USE_COPY_ENGINE: tl.constexpr = False,
+    from_base_ptr=None,
+    to_base_ptr=None,
 ):
     """
     Copies data from the current rank's local memory to the specified rank's memory.
@@ -1928,17 +1930,30 @@ def put(
         from_rank (int): The current rank ID from which to read the data.
         to_rank (int): The `to_rank` ID to which the data will be written.
         heap_bases (triton.PointerType): Array containing the heap base addresses for all ranks.
+        copy_engine_ctx (tl.tensor): Copy engine context for SDMA operations.
+        stride_tm (int): Stride in M dimension for destination buffer.
+        stride_tn (int): Stride in N dimension for destination buffer.
+        stride_fm (int): Stride in M dimension for source buffer.
+        stride_fn (int): Stride in N dimension for source buffer.
+        BLOCK_SIZE_M (tl.constexpr): Block size in M dimension.
+        BLOCK_SIZE_N (tl.constexpr): Block size in N dimension.
         mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
+        USE_COPY_ENGINE (tl.constexpr, optional): Whether to use SDMA copy engine. Defaults to False.
+        from_base_ptr (triton.PointerType, optional): Base pointer of the source buffer. Required when USE_COPY_ENGINE is True.
+        to_base_ptr (triton.PointerType, optional): Base pointer of the destination buffer. Required when USE_COPY_ENGINE is True.
 
     Returns:
         None
 
     Example:
         >>> @triton.jit
-        >>> def kernel(local_ptr, remote_ptr, heap_bases):
+        >>> def kernel(local_ptr, remote_ptr, heap_bases, copy_engine_ctx):
         >>>     from_rank = 0
         >>>     to_rank = 1
-        >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases)
+        >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases,
+        >>>              copy_engine_ctx, stride_m, stride_n, stride_m, stride_n,
+        >>>              BLOCK_M, BLOCK_N, mask=None, USE_COPY_ENGINE=True,
+        >>>              from_base_ptr=base_ptr, to_base_ptr=base_ptr)
     """
     translated_to_ptr = __translate(to_ptr, from_rank, to_rank, heap_bases)
 
@@ -2020,35 +2035,61 @@ def put(
         # tl.device_print("num strides: ", num_strides)
         # tl.device_print("size_bytes per stride", size_bytes)
 
-        # workaround to avoid padding
-        command_in_bytes_u32 = 32
+        # Use sub-window copy packet to copy entire tile with a single packet
+        # Sub-window copy packet is 80 bytes (20 DWORDs)
+        # Requires from_base_ptr and to_base_ptr to be provided
+        command_in_bytes_u32 = 80
         command_in_bytes = command_in_bytes_u32.to(tl.uint64)
-        # TODO wrap-around seems broken
-        # Overwrite here
-        # num_strides = 8
-        required_bytes = command_in_bytes * num_strides
-        # queue_offsets = (command_in_bytes // 4) * tl.arange(0, num_strides)
-        # if tl.program_id(axis=0) == 23 and to_rank == 0:
-        # if to_rank == 7:
-        # if tl.program_id(axis=0) == 230:
-        #     tl.device_print("required_bytes", required_bytes)
-        # Acquire space
+        required_bytes = command_in_bytes
+
+        # Calculate base addresses and offsets for sub-window copy
+        src_base = from_base_ptr.to(tl.uint64)
+        dst_base = __translate(to_base_ptr, from_rank, to_rank, heap_bases).to(tl.uint64)
+
+        # Calculate tile offset from base
+        # offset_bytes = src_ptr_val0 - src_base
+        # For 2D: offset_bytes = (y * stride_bytes) + (x * element_size_bytes)
+        # Decompose into x and y offsets
+        tile_offset_bytes = src_ptr_val0 - src_base
+        src_y_val = (tile_offset_bytes // src_stride).to(tl.uint32)
+        src_x_val = (tile_offset_bytes % src_stride).to(tl.uint32)
+
+        tile_offset_bytes_dst = dst_ptr_val0 - dst_base
+        dst_y_val = (tile_offset_bytes_dst // dst_stride).to(tl.uint32)
+        dst_x_val = (tile_offset_bytes_dst % dst_stride).to(tl.uint32)
+
+        # Acquire space (returns base index and wraparound offset)
         base = anvil.acquire(
             queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
         )
 
-        # Place command
-        for stride in range(0, num_strides):
-            # slot_ptr_u32 = queue_ptr_u32 + (base // 4) + (stride * 7)
-            offset_bytes = base + (stride * command_in_bytes)
-            anvil.place_copy_packet(
-                queue_ptr_u32,
-                offset_bytes,
-                size_bytes,
-                src_ptr_val0 + (src_stride * stride),
-                dst_ptr_val0 + (dst_stride * stride),
-            )
-            # anvil.place_copy_packet(queue_ptr_u32, offset_bytes, size_bytes, src_ptr_val0, dst_ptr_val0)
+        # Write padding NOPs if we wrapped around
+        # TODO move
+        # if offset > 0:
+        #     num_offset_dwords = (offset // 4).to(tl.int32)
+        #     base_ring_pos = anvil.wrap_into_ring(base)
+        #     base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
+        #     for i in range(num_offset_dwords):
+        #         tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+
+        # Calculate packet position (base + offset for wraparound)
+        packet_offset_bytes = base #+ offset
+
+        # Place single sub-window copy command for entire tile
+        anvil.place_sub_window_copy_packet(
+            queue_ptr_u32,
+            packet_offset_bytes,
+            src_base,
+            dst_base,
+            tile_width=size_bytes,
+            tile_height=num_strides,
+            src_buffer_pitch=src_stride,
+            dst_buffer_pitch=dst_stride,
+            src_x=src_x_val,
+            src_y=src_y_val,
+            dst_x=dst_x_val,
+            dst_y=dst_y_val,
+        )
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
@@ -2217,14 +2258,26 @@ def atomic_add(
         dst_ptr_val = translated_ptr.to(tl.uint64)
 
         command_in_bytes = 32
-        # Acquire space
+        # Acquire space (returns base index and wraparound offset)
+        # base, offset = anvil.acquire(
         base = anvil.acquire(
             queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
         )
+        # tl.device_print("offset ", offset)
+
+        # Write padding NOPs if we wrapped around
+        # if offset > 0:
+        #     num_offset_dwords = (offset // 4).to(tl.int32)
+        #     base_ring_pos = anvil.wrap_into_ring(base)
+        #     base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
+        #     for i in range(num_offset_dwords):
+        #         tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+
+        # Calculate packet position (base + offset for wraparound)
+        packet_offset_bytes = base # + offset
 
         # Place command packet
-        # slot_ptr_u32  = queue_ptr_u32 + (base // 4)
-        anvil.place_atomic_packet(queue_ptr_u32, base, dst_ptr_val)
+        anvil.place_atomic_packet(queue_ptr_u32, packet_offset_bytes, dst_ptr_val)
 
         # Submit command
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
