@@ -568,6 +568,7 @@ def get_address_range(ptr):
 
 # Constants for VMem APIs
 hipMemAllocationTypePinned = 0x1
+hipMemAllocationTypeUncached = 0x40000000  # AMD ROCm extension; may not be supported by hipMemCreate
 hipMemHandleTypePosixFileDescriptor = 0x1
 hipMemLocationTypeDevice = 0x1
 hipMemAllocationGranularityRecommended = 0x1
@@ -648,13 +649,17 @@ def get_allocation_granularity(device_id):
     return granularity.value
 
 
-def mem_create(size, device_id):
+def mem_create(size, device_id, alloc_type=None):
     """
     Create a physical memory allocation.
 
     Args:
         size: Size in bytes (should be aligned to granularity)
         device_id: Device ID
+        alloc_type: hipMemAllocationType constant (default: hipMemAllocationTypePinned).
+            Pass hipMemAllocationTypeUncached (0x40000000) to request uncached
+            (fine-grained) physical memory — this is an AMD ROCm extension and may
+            return hipErrorNotSupported on some driver versions.
 
     Returns:
         hipMemGenericAllocationHandle_t handle
@@ -665,8 +670,11 @@ def mem_create(size, device_id):
     if not _is_amd_backend:
         raise RuntimeError("VMem only supported on AMD/HIP backend")
 
+    if alloc_type is None:
+        alloc_type = hipMemAllocationTypePinned
+
     prop = hipMemAllocationProp()
-    prop.type = hipMemAllocationTypePinned
+    prop.type = alloc_type
     prop.location.type = hipMemLocationTypeDevice
     prop.location.id = device_id
     prop.requestedHandleType = hipMemHandleTypePosixFileDescriptor

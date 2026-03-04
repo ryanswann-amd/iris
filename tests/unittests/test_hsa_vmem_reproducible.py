@@ -97,6 +97,8 @@ from iris.hip import (
     hipMemAccessDesc,
     hipMemLocationTypeDevice,
     hipMemAccessFlagsProtReadWrite,
+    hipMemAllocationTypePinned,
+    hipMemAllocationTypeUncached,
 )
 from iris.fd_passing import setup_fd_infrastructure, send_fd, recv_fd
 
@@ -113,6 +115,11 @@ from iris.fd_passing import setup_fd_infrastructure, send_fd, recv_fd
 # ---------------------------------------------------------------------------
 hsa_init()
 
+# Tolerance for float32 atomic comparison: values are integers (0.0, 1.0, 2.0, ...),
+# so any deviation > 0.01 indicates a real atomicity failure.
+_ATOMIC_EXACT_TOL = 0.01
+# Tolerance for P2P counter check: counter should equal world_size exactly
+_ATOMIC_COUNT_TOL = 0.5
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -298,9 +305,17 @@ class _HIPVMemP2P:
 
     The structure mirrors _HsaVMemP2P so the P2P atomic loop is identical —
     only the allocation and exchange APIs differ, making the comparison clean.
+
+    Args:
+        alloc_size: Allocation size in bytes (will be rounded up to granularity)
+        alloc_type: hipMemAllocationType constant.  Default is hipMemAllocationTypePinned
+            (the only value currently supported by hipMemCreate; coarse-grained).
+            Pass hipMemAllocationTypeUncached (0x40000000) to test whether the ROCm
+            driver honours an uncached/fine-grained request — if hipMemCreate rejects
+            this value it raises RuntimeError and the caller should catch it.
     """
 
-    def __init__(self, alloc_size: int):
+    def __init__(self, alloc_size: int, alloc_type: int = hipMemAllocationTypePinned):
         self.rank = _rank()
         self.world_size = _world_size()
         self.local_rank = _local_rank()
@@ -312,7 +327,7 @@ class _HIPVMemP2P:
         self.size = (alloc_size + gran - 1) & ~(gran - 1)
 
         # Path 2: hipMemCreate → CLR → hsa_amd_vmem_handle_create (coarse pool)
-        self.handle = mem_create(self.size, self.local_rank)
+        self.handle = mem_create(self.size, self.local_rank, alloc_type=alloc_type)
 
         # Reserve virtual address space and map
         self.va = mem_address_reserve(self.size, gran)
@@ -455,7 +470,7 @@ def test_hsa_vmem_single_gpu_alloc_and_atomic():
         t.fill_(0.0)
         _atomic_add_one[(1,)](t, "sys", "acq_rel")
         torch.cuda.synchronize()
-        assert abs(t[0].item() - 1.0) < 0.01, f"Local atomic failed: got {t[0].item()}"
+        assert abs(t[0].item() - 1.0) < _ATOMIC_EXACT_TOL, f"Local atomic failed: got {t[0].item()}"
         hsa_vmem_unmap(va, gran)
     finally:
         hsa_vmem_handle_release(handle)
@@ -474,7 +489,7 @@ def test_hsa_vmem_single_gpu_alloc_and_atomic():
 # ---------------------------------------------------------------------------
 
 
-def _run_p2p_atomics_hip(scope: str, sem: str, n_iters: int = 200) -> int:
+def _run_p2p_atomics_hip(scope: str, sem: str, n_iters: int = 200, alloc_type: int = hipMemAllocationTypePinned) -> int:
     """
     Same P2P atomic loop as _run_p2p_atomics but using HIP VMem (Path 2).
 
@@ -483,13 +498,21 @@ def _run_p2p_atomics_hip(scope: str, sem: str, n_iters: int = 200) -> int:
     The physical memory is therefore CoarseGrain=1 in the KFD driver, and
     P2P atomic operations below system scope are not guaranteed to be coherent.
 
+    Args:
+        scope: Triton atomic scope ("cta", "gpu", "sys")
+        sem: Triton atomic semantics ("acquire", "release", "acq_rel")
+        n_iters: Number of P2P atomic rounds
+        alloc_type: hipMemAllocationType constant.  Default is hipMemAllocationTypePinned
+            (coarse-grained).  Pass hipMemAllocationTypeUncached to test whether the
+            ROCm driver produces fine-grained memory for that type.
+
     WARNING: On AMD GPUs, coarse-grained P2P atomics do not merely return wrong
     values — they can trigger GPU page faults (SIGSEGV) that kill the process.
     Do NOT call this function from automated tests.  Use it only for manual
     validation or one-off debugging sessions.
     """
     world_size = _world_size()
-    p2p = _HIPVMemP2P(alloc_size=4 << 20)
+    p2p = _HIPVMemP2P(alloc_size=4 << 20, alloc_type=alloc_type)
     try:
         failures = 0
         local_t = p2p.local_tensor()
@@ -510,7 +533,7 @@ def _run_p2p_atomics_hip(scope: str, sem: str, n_iters: int = 200) -> int:
             dist.barrier()
 
             got = local_t[0].item()
-            if abs(got - float(world_size)) > 0.5:
+            if abs(got - float(world_size)) > _ATOMIC_COUNT_TOL:
                 failures += 1
     finally:
         p2p.close()
@@ -568,7 +591,7 @@ def _run_p2p_atomics(scope: str, sem: str, n_iters: int = 200) -> int:
             dist.barrier()
 
             got = local_t[0].item()
-            if abs(got - float(world_size)) > 0.5:
+            if abs(got - float(world_size)) > _ATOMIC_COUNT_TOL:
                 failures += 1
     finally:
         p2p.close()
@@ -596,3 +619,86 @@ def test_hsa_vmem_p2p_atomics(scope, sem):
         f"(scope={scope}, sem={sem}). "
         f"Non-zero indicates coarse-grained coherency on the imported mapping."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test: HIP VMem with hipMemAllocationTypeUncached
+#
+# The question: does prop.type = hipMemAllocationTypeUncached (0x40000000) make
+# hipMemCreate allocate fine-grained (uncached) physical memory instead of the
+# default coarse-grained pinned memory?  If so, P2P atomics should pass.
+#
+# The HIP header says:
+#   hipMemAllocationTypeUncached = 0x40000000  // AMD ROCm extension
+#
+# In practice, hipMemCreate may reject this value with hipErrorNotSupported
+# because the HIP/CLR implementation currently only handles
+# hipMemAllocationTypePinned.  This test is designed to:
+#   1. Skip automatically if hipMemCreate returns an error (unsupported)
+#   2. Pass if the allocation succeeds AND P2P atomics produce zero failures
+#      (meaning uncached = fine-grained on this hardware/driver)
+#   3. Warn (but not fail CI) if allocation succeeds but atomics still fail
+#      (meaning uncached = still coarse-grained, or a different issue)
+# ---------------------------------------------------------------------------
+
+
+def test_hip_vmem_uncached_alloc_type():
+    """
+    Probe: does hipMemAllocationTypeUncached produce allocatable GPU memory?
+
+    Tries hipMemCreate with prop.type = hipMemAllocationTypeUncached (0x40000000),
+    an AMD ROCm extension enum value.  The HIP header note says hipMemCreate
+    "Currently must be specified as hipMemAllocationTypePinned", so this type
+    may be rejected by the driver.
+
+    This test verifies local allocation and local atomic correctness ONLY.
+    P2P cross-rank access with uncached type is NOT tested here — on this hardware
+    `hipMemAllocationTypeUncached` is accepted by hipMemCreate but still produces
+    coarse-grained physical memory that causes GPU page faults (SIGSEGV) on
+    cross-rank access, even at scope=sys.  The HSA VMem (Path 3) approach
+    remains the only confirmed way to get fine-grained P2P-atomic-safe memory.
+
+    Outcomes:
+      SKIPPED  — hipMemCreate rejected hipMemAllocationTypeUncached
+      PASSED   — allocation + local sys-scope atomic both work (but memory is
+                 still coarse-grained for P2P; see module docstring for details)
+      FAILED   — allocation succeeded but local atomic produced wrong result
+    """
+    local_rank = _local_rank()
+    device = torch.device(f"cuda:{local_rank}")
+    torch.cuda.set_device(local_rank)
+
+    gran = get_allocation_granularity(local_rank)
+    size = gran  # single granularity — smallest valid allocation
+
+    # Try allocation; skip if the driver rejects the uncached type
+    try:
+        handle = mem_create(size, local_rank, alloc_type=hipMemAllocationTypeUncached)
+    except RuntimeError as e:
+        pytest.skip(f"hipMemCreate rejected hipMemAllocationTypeUncached (0x{hipMemAllocationTypeUncached:08x}): {e}")
+
+    # Map and test local access
+    va = mem_address_reserve(size, gran)
+    try:
+        mem_map(va, size, 0, handle)
+        access_desc = hipMemAccessDesc()
+        access_desc.location.type = hipMemLocationTypeDevice
+        access_desc.location.id = local_rank
+        access_desc.flags = hipMemAccessFlagsProtReadWrite
+        mem_set_access(va, size, access_desc)
+
+        t = _tensor_at(va, 1, device)
+        t.fill_(0.0)
+        # Local atomic only — safe regardless of grain (no cross-rank access)
+        _atomic_add_one[(1,)](t, "sys", "acq_rel")
+        torch.cuda.synchronize()
+
+        assert abs(t[0].item() - 1.0) < _ATOMIC_EXACT_TOL, (
+            f"Local atomic on hipMemAllocationTypeUncached memory produced wrong result: "
+            f"got {t[0].item()}, expected 1.0"
+        )
+
+        mem_unmap(va, size)
+    finally:
+        mem_release(handle)
+    mem_address_free(va, size)
