@@ -478,6 +478,91 @@ def get_address_range(ptr):
 
 
 # ============================================================================
+# GPU Memory Paths for P2P Atomic Operations — Architecture Overview
+# ============================================================================
+#
+# For correct cross-GPU (peer-to-peer, P2P) atomic operations in Triton/AMDGPU,
+# the physical memory backing the symmetric heap must be **fine-grained**.
+# This module supports three distinct paths, each with different trade-offs:
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ PATH 1: hipExtMallocWithFlags (Fine-Grained malloc)                     │
+# │                                                                         │
+# │  API:  hipExtMallocWithFlags(ptr, size, hipDeviceMallocFinegrained)     │
+# │  HSA:  hsa_amd_memory_pool_allocate on fine-grained device pool         │
+# │  KFD:  hsaKmtAllocMemory with CoarseGrain=0                            │
+# │                                                                         │
+# │  + Fine-grained → P2P atomics (scope=cta/gpu/sys) work correctly       │
+# │  + Simple single call, no VA management needed                          │
+# │  - Physical address is KFD-assigned; no control over virtual layout     │
+# │  - Heap is a single contiguous region; can't interleave with imports    │
+# │                                                                         │
+# │  Used by:  VMemAllocator (current), TorchAllocator                     │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ PATH 2: HIP Virtual Memory APIs (hipMemCreate + hipMemAddressReserve)  │
+# │                                                                         │
+# │  APIs: hipMemAddressReserve → hipMemCreate → hipMemMap →               │
+# │        hipMemSetAccess                                                  │
+# │  HIP→CLR: amd::SvmBuffer::malloc with ROCCLR_MEM_PHYMEM               │
+# │  CLR→HSA: hsa_amd_vmem_handle_create on COARSE-GRAINED device pool     │
+# │  KFD:  hsaKmtAllocMemory with CoarseGrain=1, NoAddress=1               │
+# │                                                                         │
+# │  + Full virtual address space control (reserve large VA, map segments) │
+# │  + Can map and unmap independently; supports oversubscription          │
+# │  - ALWAYS coarse-grained → P2P atomics (scope=cta/gpu) FAIL           │
+# │    (HIP hardcodes the coarse-grained GPU pool for hipMemCreate)        │
+# │                                                                         │
+# │  Used by:  Legacy VMemAllocator (removed; replaced by Path 1 or 3)    │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ PATH 3: HSA Virtual Memory APIs (direct, fine-grained pool)            │
+# │                                                                         │
+# │  APIs: hsa_amd_vmem_address_reserve → hsa_amd_vmem_handle_create on    │
+# │        FINE-GRAINED device pool → hsa_amd_vmem_map →                  │
+# │        hsa_amd_vmem_set_access                                         │
+# │  KFD:  hsaKmtAllocMemory with CoarseGrain=0 (from fine-grained pool),  │
+# │         NoAddress=1 (physical-only handle)                              │
+# │                                                                         │
+# │  + Fine-grained → P2P atomics (scope=cta/gpu/sys) work correctly       │
+# │  + Full virtual address space control (same as Path 2)                 │
+# │  + Can map segments with different physical backing independently       │
+# │  - Requires enumerating HSA agents and pools at init time              │
+# │  - More complex setup (iterate agents, find fine-grained GPU pool)     │
+# │                                                                         │
+# │  The key difference from Path 2: we call hsa_amd_vmem_handle_create   │
+# │  with the fine-grained GPU pool (global_flags & FINE_GRAINED ≠ 0)     │
+# │  instead of letting HIP choose the coarse-grained pool.               │
+# │                                                                         │
+# │  Used by:  HsaVMemAllocator (iris/allocators/hsa_vmem_allocator.py)   │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Stack diagram (HIP eventually calls HSA, which calls KFD):
+#
+#   hipExtMallocWithFlags  │  hipMemCreate          │  hsa_amd_vmem_handle_create
+#        (Path 1)          │   (Path 2)             │       (Path 3, direct)
+#             │            │       │                │              │
+#             ▼            │       ▼                │              ▼
+#   hsa_amd_memory_pool_   │  SvmBuffer::malloc     │  hsa_amd_vmem_handle_create
+#   allocate (fine pool)   │  ROCCLR_MEM_PHYMEM     │  (caller chooses pool type!)
+#             │            │       │                │              │
+#             │            │       ▼                │              │
+#             │            │  hsa_amd_vmem_         │              │
+#             │            │  handle_create         │              │
+#             │            │  (coarse pool!)        │              │
+#             │            │       │                │              │
+#             └────────────┼───────┘                │              │
+#                          │                        └──────────────┘
+#                          │           HSA Runtime (libhsa-runtime64.so)
+#                          ▼
+#                    KFD Driver (hsaKmtAllocMemory)
+#                          │
+#                          ▼
+#                    AMDGPU DRM Driver (amdgpu_cs_ioctl)
+#
+# ============================================================================
 # HIP Virtual Memory (VMem) Management APIs
 # ============================================================================
 
@@ -837,3 +922,556 @@ def mem_set_access(ptr, size, desc_or_list):
     gpu_runtime.hipMemSetAccess.restype = ctypes.c_int
 
     gpu_try(gpu_runtime.hipMemSetAccess(ctypes.c_void_p(ptr), size, desc_array, count))
+
+
+# ============================================================================
+# HSA Virtual Memory (VMem) Management APIs — Path 3 (fine-grained VMem)
+#
+# These APIs provide direct access to the HSA runtime, bypassing HIP/CLR.
+# The key advantage over HIP VMem (Path 2) is that HSA allows choosing
+# any memory pool for hsa_amd_vmem_handle_create, including fine-grained
+# GPU local pools, which is required for correct P2P atomic operations.
+#
+# HIP's hipMemCreate internally always uses the coarse-grained GPU pool,
+# making it impossible to get fine-grained VMem via the HIP API layer.
+# By going directly to HSA, we can enumerate GPU memory pools and select
+# the fine-grained pool (HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_FINE_GRAINED).
+# ============================================================================
+
+# Lazy-loaded HSA runtime handle
+_hsa_runtime = None
+
+
+def _get_hsa_runtime():
+    """Load and return the HSA runtime library handle."""
+    global _hsa_runtime
+    if _hsa_runtime is None:
+        _hsa_runtime = ctypes.cdll.LoadLibrary("libhsa-runtime64.so")
+    return _hsa_runtime
+
+
+def _hsa_try(status, fn_name="HSA"):
+    """Check HSA status code and raise RuntimeError on failure."""
+    if status != 0:  # HSA_STATUS_SUCCESS = 0
+        rt = _get_hsa_runtime()
+        rt.hsa_status_string.restype = ctypes.c_int
+        rt.hsa_status_string.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_char_p)]
+        msg_ptr = ctypes.c_char_p()
+        rt.hsa_status_string(ctypes.c_uint32(status), ctypes.byref(msg_ptr))
+        msg = msg_ptr.value.decode("utf-8") if msg_ptr.value else f"error code {status:#x}"
+        raise RuntimeError(f"HSA {fn_name} error: {msg}")
+
+
+# HSA status constants
+HSA_STATUS_SUCCESS = 0
+HSA_STATUS_INFO_BREAK = 0x1  # Non-error: stop iteration
+
+# HSA device type constants
+HSA_DEVICE_TYPE_GPU = 1
+
+# HSA agent info enum values
+HSA_AGENT_INFO_DEVICE = 17  # hsa_device_type_t
+
+# HSA memory pool info enum values
+HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS = 1  # uint32_t bitmask
+HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALLOWED = 5  # bool
+HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_GRANULE = 6  # size_t
+HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_REC_GRANULE = 18  # size_t
+
+# HSA memory pool global flags (bitmask)
+HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_FINE_GRAINED = 2
+HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_COARSE_GRAINED = 4
+HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_EXTENDED_SCOPE_FINE_GRAINED = 8
+
+# HSA memory type for vmem handle creation
+HSA_AMD_MEMORY_TYPE_NONE = 0
+HSA_AMD_MEMORY_TYPE_PINNED = 1
+
+# HSA access permissions
+HSA_ACCESS_PERMISSION_RW = 3
+
+# HSA VMem address reserve flags
+HSA_AMD_VMEM_ADDRESS_NO_REGISTER = 1 << 0
+
+
+class hsa_agent_t(ctypes.Structure):
+    """Opaque HSA agent handle (uint64_t)."""
+
+    _fields_ = [("handle", ctypes.c_uint64)]
+
+
+class hsa_amd_memory_pool_t(ctypes.Structure):
+    """Opaque HSA memory pool handle (uint64_t)."""
+
+    _fields_ = [("handle", ctypes.c_uint64)]
+
+
+class hsa_amd_vmem_alloc_handle_t(ctypes.Structure):
+    """Opaque HSA VMem allocation handle (uint64_t)."""
+
+    _fields_ = [("handle", ctypes.c_uint64)]
+
+
+class hsa_amd_memory_access_desc_t(ctypes.Structure):
+    """HSA memory access descriptor for hsa_amd_vmem_set_access."""
+
+    _fields_ = [
+        ("permissions", ctypes.c_uint32),  # hsa_access_permission_t
+        ("agent_handle", hsa_agent_t),
+    ]
+
+
+def hsa_init():
+    """
+    Initialize the HSA runtime.
+
+    Must be called before any other HSA functions. The HSA runtime maintains a
+    reference count — each hsa_init() must be paired with hsa_shut_down().
+
+    Raises:
+        RuntimeError: If initialization fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_init.argtypes = []
+    rt.hsa_init.restype = ctypes.c_uint32
+    _hsa_try(rt.hsa_init(), "hsa_init")
+
+
+def hsa_shut_down():
+    """
+    Shut down the HSA runtime.
+
+    Decrements the reference count. Runtime is fully released when count hits 0.
+
+    Raises:
+        RuntimeError: If shutdown fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_shut_down.argtypes = []
+    rt.hsa_shut_down.restype = ctypes.c_uint32
+    _hsa_try(rt.hsa_shut_down(), "hsa_shut_down")
+
+
+def hsa_get_gpu_agents():
+    """
+    Enumerate all GPU agents in the system.
+
+    Returns:
+        List of hsa_agent_t handles for all GPU agents (one per GPU device).
+
+    Raises:
+        RuntimeError: If agent iteration fails
+    """
+    rt = _get_hsa_runtime()
+
+    gpu_agents = []
+
+    # Callback signature: hsa_status_t callback(hsa_agent_t agent, void* data)
+    CALLBACK_TYPE = ctypes.CFUNCTYPE(ctypes.c_uint32, hsa_agent_t, ctypes.c_void_p)
+
+    def agent_callback(agent, data):
+        # Query device type
+        rt.hsa_agent_get_info.argtypes = [hsa_agent_t, ctypes.c_uint32, ctypes.c_void_p]
+        rt.hsa_agent_get_info.restype = ctypes.c_uint32
+        device_type = ctypes.c_uint32(0)
+        status = rt.hsa_agent_get_info(agent, HSA_AGENT_INFO_DEVICE, ctypes.byref(device_type))
+        if status == HSA_STATUS_SUCCESS and device_type.value == HSA_DEVICE_TYPE_GPU:
+            gpu_agents.append(hsa_agent_t(handle=agent.handle))
+        return HSA_STATUS_SUCCESS  # Continue iteration
+
+    cb = CALLBACK_TYPE(agent_callback)
+    rt.hsa_iterate_agents.argtypes = [CALLBACK_TYPE, ctypes.c_void_p]
+    rt.hsa_iterate_agents.restype = ctypes.c_uint32
+    status = rt.hsa_iterate_agents(cb, None)
+    if status != HSA_STATUS_SUCCESS:
+        _hsa_try(status, "hsa_iterate_agents")
+
+    return gpu_agents
+
+
+def hsa_get_fine_grained_pool(agent: hsa_agent_t) -> hsa_amd_memory_pool_t:
+    """
+    Find the fine-grained GPU local memory pool for the given agent.
+
+    Path 3 requires using the fine-grained device pool (one where
+    HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_FINE_GRAINED is set in the global flags).
+    This is the pool that hsa_amd_vmem_handle_create should use to create
+    fine-grained physical memory handles for correct P2P atomic operations.
+
+    Args:
+        agent: HSA agent handle for the target GPU
+
+    Returns:
+        hsa_amd_memory_pool_t handle for the fine-grained pool
+
+    Raises:
+        RuntimeError: If no fine-grained allocatable pool is found
+    """
+    rt = _get_hsa_runtime()
+
+    found_pool = [None]
+
+    POOL_CALLBACK = ctypes.CFUNCTYPE(ctypes.c_uint32, hsa_amd_memory_pool_t, ctypes.c_void_p)
+
+    def pool_callback(pool, data):
+        rt.hsa_amd_memory_pool_get_info.argtypes = [
+            hsa_amd_memory_pool_t,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        rt.hsa_amd_memory_pool_get_info.restype = ctypes.c_uint32
+
+        # Check if allocation is allowed
+        alloc_allowed = ctypes.c_bool(False)
+        status = rt.hsa_amd_memory_pool_get_info(
+            pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_ALLOWED, ctypes.byref(alloc_allowed)
+        )
+        if status != HSA_STATUS_SUCCESS or not alloc_allowed.value:
+            return HSA_STATUS_SUCCESS
+
+        # Check global flags for fine-grained
+        global_flags = ctypes.c_uint32(0)
+        status = rt.hsa_amd_memory_pool_get_info(
+            pool, HSA_AMD_MEMORY_POOL_INFO_GLOBAL_FLAGS, ctypes.byref(global_flags)
+        )
+        if status != HSA_STATUS_SUCCESS:
+            return HSA_STATUS_SUCCESS
+
+        if global_flags.value & HSA_AMD_MEMORY_POOL_GLOBAL_FLAG_FINE_GRAINED:
+            found_pool[0] = hsa_amd_memory_pool_t(handle=pool.handle)
+            return HSA_STATUS_INFO_BREAK  # Stop iteration
+
+        return HSA_STATUS_SUCCESS
+
+    cb = POOL_CALLBACK(pool_callback)
+    rt.hsa_amd_agent_iterate_memory_pools.argtypes = [hsa_agent_t, POOL_CALLBACK, ctypes.c_void_p]
+    rt.hsa_amd_agent_iterate_memory_pools.restype = ctypes.c_uint32
+    status = rt.hsa_amd_agent_iterate_memory_pools(agent, cb, None)
+    if status not in (HSA_STATUS_SUCCESS, HSA_STATUS_INFO_BREAK):
+        _hsa_try(status, "hsa_amd_agent_iterate_memory_pools")
+
+    if found_pool[0] is None:
+        raise RuntimeError("No fine-grained allocatable GPU memory pool found for agent")
+
+    return found_pool[0]
+
+
+def hsa_get_pool_granularity(pool: hsa_amd_memory_pool_t) -> int:
+    """
+    Get the recommended allocation granularity for an HSA memory pool.
+
+    Args:
+        pool: HSA memory pool handle
+
+    Returns:
+        Recommended allocation granularity in bytes
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_memory_pool_get_info.argtypes = [
+        hsa_amd_memory_pool_t,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    rt.hsa_amd_memory_pool_get_info.restype = ctypes.c_uint32
+
+    granule = ctypes.c_size_t(0)
+    _hsa_try(
+        rt.hsa_amd_memory_pool_get_info(
+            pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_REC_GRANULE, ctypes.byref(granule)
+        ),
+        "hsa_amd_memory_pool_get_info(REC_GRANULE)",
+    )
+    if granule.value == 0:
+        # Fall back to minimum granule
+        _hsa_try(
+            rt.hsa_amd_memory_pool_get_info(
+                pool, HSA_AMD_MEMORY_POOL_INFO_RUNTIME_ALLOC_GRANULE, ctypes.byref(granule)
+            ),
+            "hsa_amd_memory_pool_get_info(GRANULE)",
+        )
+    return granule.value
+
+
+def hsa_vmem_address_reserve(size: int, align: int = 0) -> int:
+    """
+    Reserve a virtual address range (Path 3).
+
+    Equivalent to HIP's hipMemAddressReserve, but called directly via HSA.
+
+    Args:
+        size: Size in bytes of the virtual address range to reserve
+        align: Optional alignment hint (0 = use default)
+
+    Returns:
+        Integer base address of the reserved virtual address range
+
+    Raises:
+        RuntimeError: If reservation fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_address_reserve.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),  # void** va
+        ctypes.c_size_t,  # size_t size
+        ctypes.c_uint64,  # uint64_t address (hint, 0 = any)
+        ctypes.c_uint64,  # uint64_t flags
+    ]
+    rt.hsa_amd_vmem_address_reserve.restype = ctypes.c_uint32
+
+    va = ctypes.c_void_p()
+    _hsa_try(
+        rt.hsa_amd_vmem_address_reserve(ctypes.byref(va), size, 0, 0),
+        "hsa_amd_vmem_address_reserve",
+    )
+    return va.value
+
+
+def hsa_vmem_address_free(va: int, size: int):
+    """
+    Free a previously reserved virtual address range (Path 3).
+
+    Args:
+        va: Base address returned by hsa_vmem_address_reserve
+        size: Size in bytes (must match reservation size)
+
+    Raises:
+        RuntimeError: If free fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_address_free.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    rt.hsa_amd_vmem_address_free.restype = ctypes.c_uint32
+    _hsa_try(
+        rt.hsa_amd_vmem_address_free(ctypes.c_void_p(va), size),
+        "hsa_amd_vmem_address_free",
+    )
+
+
+def hsa_vmem_handle_create(
+    pool: hsa_amd_memory_pool_t,
+    size: int,
+    memory_type: int = HSA_AMD_MEMORY_TYPE_NONE,
+) -> hsa_amd_vmem_alloc_handle_t:
+    """
+    Create a physical memory handle from an HSA pool (Path 3).
+
+    This is the KEY difference from HIP's hipMemCreate (Path 2):
+    - hipMemCreate ALWAYS uses the coarse-grained GPU pool
+    - This function takes an EXPLICIT pool, so we can use the fine-grained pool
+
+    By passing the fine-grained GPU pool (from hsa_get_fine_grained_pool),
+    the KFD driver allocates with CoarseGrain=0, enabling correct P2P atomics.
+
+    Args:
+        pool: HSA memory pool (use fine-grained pool from hsa_get_fine_grained_pool)
+        size: Size in bytes (must be granularity-aligned)
+        memory_type: HSA_AMD_MEMORY_TYPE_NONE (default) or HSA_AMD_MEMORY_TYPE_PINNED
+
+    Returns:
+        hsa_amd_vmem_alloc_handle_t handle for the physical allocation
+
+    Raises:
+        RuntimeError: If handle creation fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_handle_create.argtypes = [
+        hsa_amd_memory_pool_t,
+        ctypes.c_size_t,
+        ctypes.c_uint32,  # hsa_amd_memory_type_t
+        ctypes.c_uint64,  # flags (currently unused, must be 0)
+        ctypes.POINTER(hsa_amd_vmem_alloc_handle_t),
+    ]
+    rt.hsa_amd_vmem_handle_create.restype = ctypes.c_uint32
+
+    handle = hsa_amd_vmem_alloc_handle_t()
+    _hsa_try(
+        rt.hsa_amd_vmem_handle_create(pool, size, memory_type, 0, ctypes.byref(handle)),
+        "hsa_amd_vmem_handle_create",
+    )
+    return handle
+
+
+def hsa_vmem_handle_release(handle: hsa_amd_vmem_alloc_handle_t):
+    """
+    Release a physical memory handle created by hsa_vmem_handle_create (Path 3).
+
+    Args:
+        handle: Handle returned by hsa_vmem_handle_create
+
+    Raises:
+        RuntimeError: If release fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_handle_release.argtypes = [hsa_amd_vmem_alloc_handle_t]
+    rt.hsa_amd_vmem_handle_release.restype = ctypes.c_uint32
+    _hsa_try(rt.hsa_amd_vmem_handle_release(handle), "hsa_amd_vmem_handle_release")
+
+
+def hsa_vmem_map(va: int, size: int, handle: hsa_amd_vmem_alloc_handle_t, offset: int = 0):
+    """
+    Map a physical memory handle to a virtual address range (Path 3).
+
+    Maps the physical memory backing @p handle to [@p va, @p va + @p size).
+    After mapping, hsa_vmem_set_access must be called to make it accessible.
+
+    Args:
+        va: Virtual address (from hsa_vmem_address_reserve)
+        size: Size in bytes to map
+        handle: Physical memory handle (from hsa_vmem_handle_create)
+        offset: Offset within the handle's physical allocation (default 0)
+
+    Raises:
+        RuntimeError: If mapping fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_map.argtypes = [
+        ctypes.c_void_p,  # void* va
+        ctypes.c_size_t,  # size_t size
+        ctypes.c_size_t,  # size_t in_offset
+        hsa_amd_vmem_alloc_handle_t,  # memory handle
+        ctypes.c_uint64,  # flags (must be 0)
+    ]
+    rt.hsa_amd_vmem_map.restype = ctypes.c_uint32
+    _hsa_try(
+        rt.hsa_amd_vmem_map(ctypes.c_void_p(va), size, offset, handle, 0),
+        "hsa_amd_vmem_map",
+    )
+
+
+def hsa_vmem_unmap(va: int, size: int):
+    """
+    Unmap a previously mapped virtual address range (Path 3).
+
+    Args:
+        va: Virtual address that was mapped
+        size: Size in bytes that was mapped
+
+    Raises:
+        RuntimeError: If unmapping fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_unmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    rt.hsa_amd_vmem_unmap.restype = ctypes.c_uint32
+    _hsa_try(rt.hsa_amd_vmem_unmap(ctypes.c_void_p(va), size), "hsa_amd_vmem_unmap")
+
+
+def hsa_vmem_set_access(va: int, size: int, agents_or_descs):
+    """
+    Set access permissions for a mapped virtual address range (Path 3).
+
+    Makes the mapped memory accessible to the specified agents.
+    This must be called after hsa_vmem_map before the memory can be accessed.
+
+    Note: Like hipMemSetAccess, this must be called cumulatively from the
+    base address for the full mapped range (see ROCm issue #2667).
+
+    Args:
+        va: Virtual address (base of mapped range)
+        size: Size in bytes
+        agents_or_descs: Single hsa_agent_t, list of hsa_agent_t, or list of
+                         hsa_amd_memory_access_desc_t with permissions per agent
+
+    Raises:
+        RuntimeError: If setting access fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_set_access.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(hsa_amd_memory_access_desc_t),
+        ctypes.c_size_t,
+    ]
+    rt.hsa_amd_vmem_set_access.restype = ctypes.c_uint32
+
+    # Build descriptor list
+    if isinstance(agents_or_descs, hsa_amd_memory_access_desc_t):
+        descs = [agents_or_descs]
+    elif isinstance(agents_or_descs, hsa_agent_t):
+        desc = hsa_amd_memory_access_desc_t()
+        desc.permissions = HSA_ACCESS_PERMISSION_RW
+        desc.agent_handle = agents_or_descs
+        descs = [desc]
+    elif isinstance(agents_or_descs, list):
+        descs = []
+        for item in agents_or_descs:
+            if isinstance(item, hsa_agent_t):
+                desc = hsa_amd_memory_access_desc_t()
+                desc.permissions = HSA_ACCESS_PERMISSION_RW
+                desc.agent_handle = item
+                descs.append(desc)
+            else:
+                descs.append(item)
+    else:
+        raise TypeError(f"Expected hsa_agent_t, hsa_amd_memory_access_desc_t, or list; got {type(agents_or_descs)}")
+
+    desc_array = (hsa_amd_memory_access_desc_t * len(descs))(*descs)
+    _hsa_try(
+        rt.hsa_amd_vmem_set_access(ctypes.c_void_p(va), size, desc_array, len(descs)),
+        "hsa_amd_vmem_set_access",
+    )
+
+
+def hsa_vmem_export_shareable_handle(handle: hsa_amd_vmem_alloc_handle_t) -> int:
+    """
+    Export an HSA VMem handle as a DMA-BUF file descriptor (Path 3).
+
+    The exported fd can be passed to another process (via SCM_RIGHTS) and
+    imported there using hsa_vmem_import_shareable_handle. This is used
+    for multi-rank symmetric heap setup.
+
+    Args:
+        handle: Physical memory handle from hsa_vmem_handle_create
+
+    Returns:
+        File descriptor (int) for the DMA-BUF shareable handle
+
+    Raises:
+        RuntimeError: If export fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_export_shareable_handle.argtypes = [
+        ctypes.POINTER(ctypes.c_int),  # int* dmabuf_fd
+        hsa_amd_vmem_alloc_handle_t,  # memory handle
+        ctypes.c_uint64,  # flags (must be 0)
+    ]
+    rt.hsa_amd_vmem_export_shareable_handle.restype = ctypes.c_uint32
+
+    fd = ctypes.c_int(-1)
+    _hsa_try(
+        rt.hsa_amd_vmem_export_shareable_handle(ctypes.byref(fd), handle, 0),
+        "hsa_amd_vmem_export_shareable_handle",
+    )
+    return fd.value
+
+
+def hsa_vmem_import_shareable_handle(dmabuf_fd: int) -> hsa_amd_vmem_alloc_handle_t:
+    """
+    Import an HSA VMem handle from a DMA-BUF file descriptor (Path 3).
+
+    The returned handle can be used with hsa_vmem_map to map the peer's
+    physical memory into the local virtual address space. The imported handle
+    must be released with hsa_vmem_handle_release when done.
+
+    Note: The DMA-BUF fd is consumed (closed) by this call.
+
+    Args:
+        dmabuf_fd: File descriptor from hsa_vmem_export_shareable_handle
+                   (received via SCM_RIGHTS from the peer process)
+
+    Returns:
+        hsa_amd_vmem_alloc_handle_t handle for the imported memory
+
+    Raises:
+        RuntimeError: If import fails
+    """
+    rt = _get_hsa_runtime()
+    rt.hsa_amd_vmem_import_shareable_handle.argtypes = [
+        ctypes.c_int,  # int dmabuf_fd
+        ctypes.POINTER(hsa_amd_vmem_alloc_handle_t),  # handle output
+    ]
+    rt.hsa_amd_vmem_import_shareable_handle.restype = ctypes.c_uint32
+
+    handle = hsa_amd_vmem_alloc_handle_t()
+    _hsa_try(
+        rt.hsa_amd_vmem_import_shareable_handle(dmabuf_fd, ctypes.byref(handle)),
+        "hsa_amd_vmem_import_shareable_handle",
+    )
+    return handle
