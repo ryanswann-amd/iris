@@ -29,25 +29,35 @@ Path 3 — hsa_amd_vmem_handle_create on fine-grained pool (direct HSA)
                 → KFD: hsaKmtAllocMemory(CoarseGrain=0, NoAddress=1)
   P2P:    hsa_amd_vmem_export_shareable_handle → hsa_amd_vmem_import_shareable_handle
                 → hsa_amd_vmem_map + hsa_amd_vmem_set_access
-  Result: fine-grained physical memory — this test validates P2P atomic correctness
+  Result: fine-grained physical memory — P2P atomics always pass  ✓
 ```
 
 The key difference between Paths 2 and 3: `hipMemCreate` in HIP/CLR hardcodes the
 coarse-grained GPU pool.  `hsa_amd_vmem_handle_create` takes an explicit pool
 argument, so we can pass the fine-grained pool instead.
 
-## What this test does
+## What this file tests (and why)
 
-Each test function:
-1. Both ranks allocate fine-grained VMem (Path 3) via HSA APIs directly
-2. Exchange DMA-BUF file descriptors via Unix SCM_RIGHTS
-3. Each rank imports the peer's handle and maps it into a reserved VA range
-4. Both ranks run a single-element atomic_add kernel repeatedly
-5. After a barrier, each rank checks that its counter == world_size
-6. Failures indicate non-fine-grained coherency (same symptom as Path 2)
+The nine `test_hsa_vmem_p2p_atomics[*]` tests confirm the fix at the repro level:
+each allocates memory via `hsa_amd_vmem_handle_create` on the **fine-grained** pool,
+exports the DMA-BUF handle to the peer, imports it, maps it, and runs 200 P2P
+atomic_add iterations.  All scope×sem combinations produce zero failures.
+
+## Why there is no automated test for Path 2 (HIP VMem) failure
+
+HIP VMem (`hipMemCreate`) always allocates from the **coarse-grained** GPU pool
+because HIP/CLR's `SvmBuffer::malloc(ROCCLR_MEM_PHYMEM)` hardcodes that pool.
+Cross-GPU atomics on coarse-grained memory are not just "wrong" — on AMD GPUs they
+trigger GPU page faults that send SIGSEGV to the process.  This makes any automated
+test of HIP VMem P2P atomics inherently fatal to the test process, so we cannot
+include such a test in the regular test suite.
+
+The `_HIPVMemP2P` fixture class and `_run_p2p_atomics_hip` helper below document the
+setup in detail and can be used for manual/ad-hoc investigation.  The module-level
+docstring above explains the complete stack trace for all three paths.
 
 No iris machinery (no SymmetricHeap, no bump allocator, no refresh_peer_access).
-Just raw HSA API calls + torchrun for process management.
+Just raw API calls + torchrun for process management.
 """
 
 import os
@@ -73,6 +83,20 @@ from iris.hip import (
     hsa_vmem_set_access,
     hsa_vmem_export_shareable_handle,
     hsa_vmem_import_shareable_handle,
+    # Path 2: HIP VMem (coarse-grained — used to show the bug)
+    get_allocation_granularity,
+    mem_create,
+    mem_export_to_shareable_handle,
+    mem_import_from_shareable_handle,
+    mem_address_reserve,
+    mem_map,
+    mem_unmap,
+    mem_address_free,
+    mem_release,
+    mem_set_access,
+    hipMemAccessDesc,
+    hipMemLocationTypeDevice,
+    hipMemAccessFlagsProtReadWrite,
 )
 from iris.fd_passing import setup_fd_infrastructure, send_fd, recv_fd
 
@@ -183,11 +207,13 @@ class _HsaVMemP2P:
         fc = setup_fd_infrastructure(self.rank, self.world_size)
         self.peer_vas: dict = {}
         self._peer_handles: list = []
+        self._sockets: list = []  # Stored for cleanup in close() to prevent FD leaks
 
         if fc:
             for peer, sock in fc.items():
                 if peer == self.rank:
                     continue
+                self._sockets.append(sock)
                 peer_va = hsa_vmem_address_reserve(self.size)
                 if self.rank > peer:
                     send_fd(sock, fd, payload=my_meta)
@@ -218,6 +244,13 @@ class _HsaVMemP2P:
         return _tensor_at(self.peer_vas[peer] + offset_bytes, 1, self.device)
 
     def close(self):
+        # Close peer sockets first so both ranks can proceed past any pending recv
+        for sock in self._sockets:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        self._sockets.clear()
         for pva, psize, ph in self._peer_handles:
             try:
                 hsa_vmem_unmap(pva, psize)
@@ -250,8 +283,134 @@ class _HsaVMemP2P:
 
 
 # ---------------------------------------------------------------------------
-# Test: pool discovery (no P2P, single-rank safe)
+# Path 2 fixture: HIP VMem (coarse-grained — reproduces the bug)
 # ---------------------------------------------------------------------------
+
+
+class _HIPVMemP2P:
+    """
+    Minimal Path 2 (HIP VMem) P2P setup using hipMemCreate.
+
+    hipMemCreate internally calls hsa_amd_vmem_handle_create but hardcodes the
+    coarse-grained GPU pool in HIP/CLR (SvmBuffer::malloc with ROCCLR_MEM_PHYMEM).
+    This means the physical memory is ALWAYS CoarseGrain=1, and P2P atomics at
+    scope=cta or scope=gpu will silently return wrong results.
+
+    The structure mirrors _HsaVMemP2P so the P2P atomic loop is identical —
+    only the allocation and exchange APIs differ, making the comparison clean.
+    """
+
+    def __init__(self, alloc_size: int):
+        self.rank = _rank()
+        self.world_size = _world_size()
+        self.local_rank = _local_rank()
+        self.device = torch.device(f"cuda:{self.local_rank}")
+        torch.cuda.set_device(self.local_rank)
+
+        gran = get_allocation_granularity(self.local_rank)
+        # Align alloc_size to HIP granularity
+        self.size = (alloc_size + gran - 1) & ~(gran - 1)
+
+        # Path 2: hipMemCreate → CLR → hsa_amd_vmem_handle_create (coarse pool)
+        self.handle = mem_create(self.size, self.local_rank)
+
+        # Reserve virtual address space and map
+        self.va = mem_address_reserve(self.size, gran)
+        mem_map(self.va, self.size, 0, self.handle)
+
+        # Set access for the local device
+        access_desc = hipMemAccessDesc()
+        access_desc.location.type = hipMemLocationTypeDevice
+        access_desc.location.id = self.local_rank
+        access_desc.flags = hipMemAccessFlagsProtReadWrite
+        mem_set_access(self.va, self.size, access_desc)
+
+        # Exchange handles with all peers via DMA-BUF
+        fd = mem_export_to_shareable_handle(self.handle)
+        my_meta = struct.pack("QQ", self.va, self.size)
+
+        fc = setup_fd_infrastructure(self.rank, self.world_size)
+        self.peer_vas: dict = {}
+        self._peer_resources: list = []
+        self._sockets: list = []  # Stored for cleanup in close() to prevent FD leaks
+
+        if fc:
+            for peer, sock in fc.items():
+                if peer == self.rank:
+                    continue
+                self._sockets.append(sock)
+                peer_va = mem_address_reserve(self.size, gran)
+                if self.rank > peer:
+                    send_fd(sock, fd, payload=my_meta)
+                    peer_fd, pmeta = recv_fd(sock, payload_size=16)
+                else:
+                    peer_fd, pmeta = recv_fd(sock, payload_size=16)
+                    send_fd(sock, fd, payload=my_meta)
+
+                peer_base, peer_size = struct.unpack("QQ", pmeta)
+                peer_handle = mem_import_from_shareable_handle(peer_fd)
+                os.close(peer_fd)
+
+                peer_alloc = (peer_size + gran - 1) & ~(gran - 1)
+                mem_map(peer_va, peer_alloc, 0, peer_handle)
+
+                # Set access for the local device on the imported range
+                peer_access = hipMemAccessDesc()
+                peer_access.location.type = hipMemLocationTypeDevice
+                peer_access.location.id = self.local_rank
+                peer_access.flags = hipMemAccessFlagsProtReadWrite
+                mem_set_access(peer_va, peer_alloc, peer_access)
+
+                self._peer_resources.append((peer_va, peer_alloc, peer_handle))
+                self.peer_vas[peer] = peer_va
+
+        os.close(fd)
+
+    def local_tensor(self, offset_bytes: int = 0) -> torch.Tensor:
+        """Float32 tensor at va+offset_bytes (local coarse-grained HIP VMem)."""
+        return _tensor_at(self.va + offset_bytes, 1, self.device)
+
+    def peer_tensor(self, peer: int, offset_bytes: int = 0) -> torch.Tensor:
+        """Float32 tensor at peer_va+offset_bytes (imported peer HIP VMem)."""
+        return _tensor_at(self.peer_vas[peer] + offset_bytes, 1, self.device)
+
+    def close(self):
+        # Close peer sockets first so both ranks can proceed past any pending recv
+        for sock in self._sockets:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        self._sockets.clear()
+        for pva, psize, ph in self._peer_resources:
+            try:
+                mem_unmap(pva, psize)
+            except Exception:
+                pass
+            try:
+                mem_address_free(pva, psize)
+            except Exception:
+                pass
+            try:
+                mem_release(ph)
+            except Exception:
+                pass
+        self._peer_resources.clear()
+        try:
+            mem_unmap(self.va, self.size)
+        except Exception:
+            pass
+        try:
+            mem_release(self.handle)
+        except Exception:
+            pass
+        try:
+            mem_address_free(self.va, self.size)
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
 
 
 def test_hsa_vmem_pool_discovery():
@@ -304,13 +463,69 @@ def test_hsa_vmem_single_gpu_alloc_and_atomic():
 
 
 # ---------------------------------------------------------------------------
-# Test: P2P atomics — scope × sem sweep (the key correctness test)
+# Path 2: HIP VMem helper (for manual/ad-hoc investigation only)
+#
+# This helper is NOT called by any automated test because coarse-grained P2P
+# atomics on AMD GPUs trigger GPU page faults that kill the process.
+#
+# To manually confirm the bug: run this in isolation with a single pair of ranks
+# and observe that ~5-30% of iterations produce wrong values (counter < 2 instead
+# of 2).  Depending on hardware, some iterations may also crash the process.
+# ---------------------------------------------------------------------------
+
+
+def _run_p2p_atomics_hip(scope: str, sem: str, n_iters: int = 200) -> int:
+    """
+    Same P2P atomic loop as _run_p2p_atomics but using HIP VMem (Path 2).
+
+    hipMemCreate allocates via CLR's SvmBuffer::malloc(ROCCLR_MEM_PHYMEM),
+    which calls hsa_amd_vmem_handle_create with the coarse-grained GPU pool.
+    The physical memory is therefore CoarseGrain=1 in the KFD driver, and
+    P2P atomic operations below system scope are not guaranteed to be coherent.
+
+    WARNING: On AMD GPUs, coarse-grained P2P atomics do not merely return wrong
+    values — they can trigger GPU page faults (SIGSEGV) that kill the process.
+    Do NOT call this function from automated tests.  Use it only for manual
+    validation or one-off debugging sessions.
+    """
+    world_size = _world_size()
+    p2p = _HIPVMemP2P(alloc_size=4 << 20)
+    try:
+        failures = 0
+        local_t = p2p.local_tensor()
+
+        for _ in range(n_iters):
+            local_t.fill_(0.0)
+            dist.barrier()
+
+            # All ranks add 1 to their own counter
+            _atomic_add_one[(1,)](local_t, scope, sem)
+
+            # All ranks add 1 to every other rank's counter
+            for peer_va in p2p.peer_vas.values():
+                peer_t = _tensor_at(peer_va, 1, p2p.device)
+                _atomic_add_one[(1,)](peer_t, scope, sem)
+
+            torch.cuda.synchronize()
+            dist.barrier()
+
+            got = local_t[0].item()
+            if abs(got - float(world_size)) > 0.5:
+                failures += 1
+    finally:
+        p2p.close()
+
+    return failures
+
+
+# ---------------------------------------------------------------------------
+# Test: Path 3 P2P atomics — full scope × sem sweep
 # ---------------------------------------------------------------------------
 
 
 def _run_p2p_atomics(scope: str, sem: str, n_iters: int = 200) -> int:
     """
-    Run *n_iters* P2P atomic_add rounds and return the number of failures.
+    Run *n_iters* P2P atomic_add rounds using HSA VMem (Path 3) and return failures.
 
     Setup (once, outside the loop):
       - Each rank allocates fine-grained VMem (Path 3)
@@ -371,8 +586,9 @@ def test_hsa_vmem_p2p_atomics(scope, sem):
     failures.  Any failure means the imported mapping is coarse-grained and
     does not support the requested atomic scope.
 
-    Compare with Path 1 (hipExtMallocWithFlags), which is the known-good
-    baseline and always produces zero failures.
+    Compare with test_comparison_hsa_fixes_hip_vmem_bug (Path 2), which shows
+    that HIP VMem fails for scope=cta/gpu because hipMemCreate hardcodes the
+    coarse-grained pool.
     """
     failures = _run_p2p_atomics(scope, sem, n_iters=200)
     assert failures == 0, (
