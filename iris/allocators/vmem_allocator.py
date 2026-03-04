@@ -13,7 +13,7 @@ for cross-GPU atomics.
 import math
 import struct
 import torch
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from threading import Lock
 
 from .base import BaseAllocator
@@ -66,7 +66,7 @@ class VMemAllocator(BaseAllocator):
         self._alloc_ptr = malloc_fine_grained(self.aligned_heap_size)
         self.base_va = self._alloc_ptr.value
 
-        self._peer_ext_mem_handles: Dict[int, object] = {}
+        self._peer_ext_mem_handles: Dict[int, Any] = {}
         self.heap_bases_array = None
 
     def get_base_address(self) -> int:
@@ -181,10 +181,12 @@ class VMemAllocator(BaseAllocator):
                         peer_handle, peer_metadata = recv_fd(sock, payload_size=24)
                         send_fd(sock, my_fd, payload=my_metadata)
 
-                    peer_base, peer_size, peer_heap = struct.unpack("QQQ", peer_metadata)
+                    peer_base, peer_size, peer_heap_base = struct.unpack("QQQ", peer_metadata)
 
                     with managed_fd(peer_handle):
-                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(peer_handle, peer_size, peer_heap, peer_base)
+                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(
+                            peer_handle, peer_size, peer_heap_base, peer_base
+                        )
                         heap_bases_array[peer] = mapped_ptr
                         self._peer_ext_mem_handles[peer] = ext_mem_handle
 
