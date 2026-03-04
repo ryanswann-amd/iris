@@ -1,0 +1,3 @@
+# Built binaries (output of `make`)
+p2p_atomics_hsa
+p2p_atomics_hip
