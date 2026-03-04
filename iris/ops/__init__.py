@@ -27,6 +27,7 @@ Available operations:
     - all_gather_matmul: All-Gather + GEMM
     - matmul_all_gather: GEMM + All-Gather
     - matmul_reduce_scatter: GEMM + Reduce-Scatter
+    - matmul_all_scatter: GEMM + All-Scatter
 """
 
 from .config import FusedConfig
@@ -38,6 +39,7 @@ from .matmul_all_reduce import matmul_all_reduce, matmul_all_reduce_preamble
 from .all_gather_matmul import all_gather_matmul, all_gather_matmul_preamble
 from .matmul_all_gather import matmul_all_gather
 from .matmul_reduce_scatter import matmul_reduce_scatter, matmul_reduce_scatter_preamble
+from .matmul_all_scatter import matmul_all_scatter, matmul_all_scatter_preamble
 
 
 class OpsNamespace:
@@ -166,6 +168,36 @@ class OpsNamespace:
         """
         return matmul_reduce_scatter(self._shmem, output_tensor, A, B, bias, async_op, config, workspace)
 
+    def matmul_all_scatter(self, output_tensor, A, B_local, bias=None, async_op=False, config=None, workspace=None):
+        """
+        Fused matrix multiplication and all-scatter.
+
+        Computes: output = all_scatter(A @ B_local) along N dimension
+
+        Each rank has B_local of shape (K, N_local) where N_local = N / world_size.
+        The operation computes C_local = A @ B_local on each rank and scatters the
+        tiles to all ranks so that every rank ends up with the full C (M, N).
+
+        Args:
+            output_tensor: Output tensor (M, N) where N = N_local * world_size
+            A: Input matrix A (M, K) - replicated across ranks
+            B_local: Column-sharded input matrix B (K, N_local)
+            bias: Optional bias vector (M,)
+            async_op: If False, performs barrier at end
+            config: Optional FusedConfig for tuning
+            workspace: Optional pre-allocated workspace
+
+        Returns:
+            workspace: Updated workspace object
+
+        Example:
+            >>> N_local = N // world_size
+            >>> B_local = shmem.randn((K, N_local), dtype=torch.float16)
+            >>> output = shmem.zeros((M, N), dtype=torch.float16)
+            >>> shmem.ops.matmul_all_scatter(output, A, B_local)
+        """
+        return matmul_all_scatter(self._shmem, output_tensor, A, B_local, bias, async_op, config, workspace)
+
 
 # Export public API
 __all__ = [
@@ -183,4 +215,6 @@ __all__ = [
     "matmul_all_gather",
     "matmul_reduce_scatter",
     "matmul_reduce_scatter_preamble",
+    "matmul_all_scatter",
+    "matmul_all_scatter_preamble",
 ]
