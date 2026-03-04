@@ -130,7 +130,11 @@ def test_dmabuf_import_no_offset():
 
 
 def test_as_symmetric_basic():
-    """Basic as_symmetric(): native VMem tensor and imported external tensor in same VA space."""
+    """Basic as_symmetric(): native VMem tensor and imported external tensor in same VA space.
+
+    VMemAllocator uses copy semantics: modifications to imported tensor do NOT
+    affect the original external tensor (same as TorchAllocator).
+    """
     ctx = iris.iris(64 << 20, allocator_type="vmem")
 
     native_tensor = ctx.zeros(1000, dtype=torch.float32)
@@ -154,10 +158,12 @@ def test_as_symmetric_basic():
     assert torch.all(native_tensor == 42.0)
     assert torch.all(imported_tensor == 99.0)
 
+    # VMemAllocator uses copy semantics: modifying imported tensor does NOT affect external
     imported_tensor.fill_(123.0)
     torch.cuda.synchronize()
     assert torch.all(imported_tensor == 123.0)
-    assert torch.all(external_tensor == 123.0)
+    # Note: external_tensor retains its original value (copy semantics, not shared memory)
+    assert torch.all(external_tensor == 99.0)
 
 
 def test_as_symmetric_with_offset():

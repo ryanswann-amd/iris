@@ -183,43 +183,42 @@ def test_vmem_import_external_tensor():
     """
     Test importing external PyTorch tensors via as_symmetric().
 
-    This validates the critical lifetime contract:
+    This validates the import contract for VMemAllocator (copy semantics):
     1. External tensors can be imported into the symmetric heap
-    2. The imported tensor shares memory with the original (while ctx is alive)
-    3. When ctx is destroyed, imported_tensor becomes invalid
-    4. BUT the original tensor REMAINS VALID and fully usable
+    2. The imported tensor has the same data as the original
+    3. The imported tensor is on the symmetric heap (owns_tensor = True)
+    4. The original tensor REMAINS VALID after ctx is destroyed
 
-    This is THE KEY CONTRACT: imported tensors die with ctx, originals survive.
+    Note: VMemAllocator uses copy semantics (like TorchAllocator). Modifications
+    to the imported tensor are NOT visible in the original tensor, and vice versa.
     """
     import gc
 
-    # Create Iris context with large enough heap for PyTorch's 2MB allocations
+    # Create Iris context with vmem allocator
     ctx = iris.iris(4 << 20, allocator_type="vmem")
 
     # Create original PyTorch tensor on the correct device for this rank
     original_tensor = torch.randn(100, dtype=torch.float32, device=ctx.device)
     original_data = original_tensor.clone()
 
-    # Import the external tensor
+    # Import the external tensor (copy semantics)
     imported_tensor = ctx.as_symmetric(original_tensor)
 
-    # Verify imported tensor has same data
-    assert torch.allclose(imported_tensor, original_data), "Imported tensor should match original"
+    # Verify imported tensor has same data as original
+    assert torch.allclose(imported_tensor, original_data), "Imported tensor should match original data"
 
-    # Modify via imported tensor
+    # Verify imported tensor is on the symmetric heap
+    assert ctx.heap.allocator.owns_tensor(imported_tensor), "Imported tensor should be on symmetric heap"
+
+    # Modify via imported tensor - should NOT affect original (copy semantics)
     imported_tensor.fill_(42.0)
     assert torch.all(imported_tensor == 42.0), "Imported tensor modifications should work"
 
-    # Original tensor should see the change (shared memory)
-    assert torch.all(original_tensor == 42.0), "Original tensor should see changes via shared memory"
-
-    # Modify via original tensor
+    # Modify via original tensor - should NOT affect imported tensor (copy semantics)
     original_tensor.fill_(99.0)
     assert torch.all(original_tensor == 99.0), "Original tensor modifications should work"
-    assert torch.all(imported_tensor == 99.0), "Imported tensor should see changes via shared memory"
 
-    # NOW THE CRITICAL PART: Destroy ctx
-    # This invalidates imported_tensor, but original_tensor should survive!
+    # Destroy ctx (imported_tensor becomes invalid, but original_tensor survives)
     del ctx, imported_tensor
     gc.collect()
     torch.cuda.synchronize()
@@ -239,7 +238,8 @@ def test_vmem_import_external_tensor():
         f"Rank {torch.distributed.get_rank() if torch.distributed.is_initialized() else 0}: "
         f"VMem import external tensor test passed!"
     )
-    print("  ✓ Imported tensor shared memory with original (while ctx alive)")
+    print("  ✓ Imported tensor has same data as original")
+    print("  ✓ Imported tensor is on the symmetric heap")
     print("  ✓ Original tensor survived ctx destruction")
     print("  ✓ Original tensor still fully functional after ctx destroyed")
 

@@ -2,52 +2,48 @@
 # Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 
 """
-VMem-based allocator using HIP's virtual memory management APIs.
+VMem-based allocator using HIP's fine-grained memory APIs.
 
-This allocator provides fine-grained control over virtual and physical memory,
-enabling features like memory oversubscription and on-demand paging.
+This allocator uses hipExtMallocWithFlags (fine-grained) for physical memory,
+which is required for correct P2P atomic operations (scope=cta/gpu) across GPUs.
+hipMemCreate creates coarse-grained memory that causes intermittent failures
+for cross-GPU atomics.
 """
 
+import math
+import struct
 import torch
-import os
-from typing import Dict
+from typing import Dict, Optional
 from threading import Lock
 
 from .base import BaseAllocator
 from ..hip import (
     get_allocation_granularity,
-    get_address_range,
+    malloc_fine_grained,
+    hip_free,
     export_dmabuf_handle,
-    mem_import_from_shareable_handle,
-    mem_create,
-    mem_address_reserve,
-    mem_map,
-    mem_unmap,
-    mem_address_free,
-    mem_release,
-    mem_set_access,
-    hipMemAccessDesc,
-    hipMemLocationTypeDevice,
-    hipMemAccessFlagsProtReadWrite,
+    import_dmabuf_handle,
+    destroy_external_memory,
 )
+from ..fd_passing import send_fd, recv_fd, managed_fd
 
 
 class VMemAllocator(BaseAllocator):
     """
-    Virtual Memory allocator using HIP's VMem APIs.
+    Fine-grained memory allocator for Iris symmetric heap.
 
-    Features:
-    - Reserve large virtual address (VA) space upfront
-    - Map physical memory on demand
-    - Support memory oversubscription
-    - Fine-grained control over allocations
+    Uses hipExtMallocWithFlags with hipDeviceMallocFinegrained for all physical
+    memory, which ensures correct P2P atomic operations (scope=cta/gpu) across GPUs.
+
+    hipMemCreate (used in the previous VMem approach) creates coarse-grained memory
+    that causes intermittent failures for cross-GPU atomics. This allocator fixes
+    that by using fine-grained memory throughout.
 
     Args:
         heap_size: Total size of the heap in bytes
-        device: PyTorch device (e.g., "cuda:0")
+        device_id: GPU device ID
         rank: Current rank ID
         world_size: Total number of ranks
-        va_multiplier: VA space multiplier (reserve more VA than physical)
     """
 
     def __init__(
@@ -56,74 +52,34 @@ class VMemAllocator(BaseAllocator):
         device_id: int,
         rank: int,
         world_size: int,
-        va_multiplier: float = 1.0,
     ):
         super().__init__(heap_size, device_id, rank, world_size)
-        self.va_multiplier = va_multiplier
         self.device = torch.device(f"cuda:{device_id}")
         self.lock = Lock()
+        # Keep granularity for alignment and compatibility with existing tests
         self.granularity = get_allocation_granularity(self.device_id)
         self.aligned_heap_size = (heap_size + self.granularity - 1) & ~(self.granularity - 1)
-        self.va_size = self.aligned_heap_size
-        self.base_va = mem_address_reserve(self.va_size, self.granularity, 0)
 
-        self.minimal_size = min(2 << 20, self.aligned_heap_size // 2)
-        if self.minimal_size < self.granularity:
-            self.minimal_size = self.granularity
+        # Allocate the entire heap upfront as a single fine-grained block.
+        # Fine-grained (hipExtMallocWithFlags / hipDeviceMallocFinegrained) memory
+        # is required for correct cross-GPU atomic operations.
+        self._alloc_ptr = malloc_fine_grained(self.aligned_heap_size)
+        self.base_va = self._alloc_ptr.value
 
-        self.minimal_handle = mem_create(self.minimal_size, self.device_id)
-        mem_map(self.base_va, self.minimal_size, 0, self.minimal_handle)
-
-        # ROCm: mem_set_access must be called cumulatively from base_va (see rocm-systems#2667)
-        self.access_descs = []
-        for peer_device_id in range(world_size):
-            desc = hipMemAccessDesc()
-            desc.location.type = hipMemLocationTypeDevice
-            desc.location.id = peer_device_id
-            desc.flags = hipMemAccessFlagsProtReadWrite
-            self.access_descs.append(desc)
-
-        self.cumulative_mapped_size = self.minimal_size
-        mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
-
-        self.allocations: Dict[int, tuple] = {}
-        self.allocation_order = []
-        self._track_allocation(0, self.minimal_size, False, self.minimal_handle, self.base_va)
-        self.current_offset = self.minimal_size
-
-        self.world_size = world_size
+        self._peer_ext_mem_handles: Dict[int, object] = {}
+        self.heap_bases_array = None
 
     def get_base_address(self) -> int:
         """Get the base address of the heap."""
         return self.base_va
 
-    def _track_allocation(self, offset: int, size: int, is_imported: bool, handle, va: int):
-        """Track a new allocation for cleanup and segmented export."""
-        self.allocations[offset] = (size, is_imported, handle, va)
-        self.allocation_order.append((offset, size))
-
-    def get_allocation_segments(self):
-        """
-        Get list of allocation segments for segmented DMA-BUF export.
-
-        Returns:
-            List of (offset, size, va) tuples for each allocation in order.
-            Each tuple describes one physically-backed segment that needs
-            to be exported/imported separately.
-        """
-        segments = []
-        for offset, size in self.allocation_order:
-            va = self.base_va + offset
-            segments.append((offset, size, va))
-        return segments
-
     def get_minimum_allocation_size(self) -> int:
-        """Minimum allocation size in bytes (one granule; hipMemCreate(0) is invalid)."""
+        """Minimum allocation size in bytes (one granule for alignment compatibility)."""
         return self.granularity
 
     def allocate(self, num_elements: int, dtype: torch.dtype, alignment: int = 1024) -> torch.Tensor:
         """
-        Allocate memory from the VMem heap.
+        Allocate a tensor from the fine-grained heap using bump allocation.
 
         Args:
             num_elements: Number of elements to allocate
@@ -138,33 +94,21 @@ class VMemAllocator(BaseAllocator):
         """
         with self.lock:
             element_size = torch.tensor([], dtype=dtype).element_size()
-            size_bytes = num_elements * element_size
-            actual_size_bytes = max(size_bytes, self.get_minimum_allocation_size())
-            aligned_size = (actual_size_bytes + self.granularity - 1) & ~(self.granularity - 1)
-            aligned_offset = (self.current_offset + alignment - 1) & ~(alignment - 1)
+            size_in_bytes = num_elements * element_size
+            aligned_size = math.ceil(size_in_bytes / alignment) * alignment
 
-            if aligned_offset + aligned_size > self.aligned_heap_size:
+            if self.heap_offset + aligned_size > self.aligned_heap_size:
                 raise RuntimeError(
-                    f"Out of VMem address space for allocation: "
-                    f"need {aligned_size} bytes at offset {aligned_offset}, "
+                    f"Out of VMem heap space for allocation: "
+                    f"need {aligned_size} bytes at offset {self.heap_offset}, "
                     f"but heap size is {self.aligned_heap_size}. "
-                    f"Current offset: {self.current_offset}, "
-                    f"available: {self.aligned_heap_size - aligned_offset} bytes"
+                    f"available: {self.aligned_heap_size - self.heap_offset} bytes"
                 )
 
-            target_va = self.base_va + aligned_offset
-            handle = mem_create(aligned_size, self.device_id)
-            mem_map(target_va, aligned_size, 0, handle)
+            start = self.heap_offset
+            self.heap_offset += aligned_size
 
-            new_cumulative_size = aligned_offset + aligned_size
-            if new_cumulative_size > self.cumulative_mapped_size:
-                self.cumulative_mapped_size = new_cumulative_size
-                mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
-
-            self._track_allocation(aligned_offset, aligned_size, False, handle, target_va)
-            self.current_offset = aligned_offset + aligned_size
-
-            interface_size = (aligned_size // element_size) * element_size
+            target_va = self.base_va + start
 
             class CUDAArrayInterface:
                 def __init__(self, ptr, size_bytes, device):
@@ -181,14 +125,74 @@ class VMemAllocator(BaseAllocator):
                         "version": 3,
                     }
 
-            cuda_array = CUDAArrayInterface(target_va, interface_size, self.device)
+            cuda_array = CUDAArrayInterface(target_va, size_in_bytes, self.device)
             tensor_bytes = torch.as_tensor(cuda_array, device=self.device)
             full = tensor_bytes.view(dtype)
             if num_elements == 0:
-                tensor = full.narrow(0, 1, 0)
-            else:
-                tensor = full.narrow(0, 0, num_elements)
-            return tensor
+                return full.narrow(0, 1, 0)
+            return full.narrow(0, 0, num_elements)
+
+    def get_shareable_handle(self) -> tuple:
+        """
+        Get a shareable DMA-BUF handle for the heap.
+
+        Returns:
+            tuple: (fd, base_ptr, base_size) from export_dmabuf_handle
+        """
+        return export_dmabuf_handle(self.base_va, self.aligned_heap_size)
+
+    def establish_peer_access(self, all_bases: Dict[int, int], connections: Optional[Dict] = None):
+        """
+        Establish fine-grained access to peer memory for symmetric addressing.
+
+        Uses hipImportExternalMemory (import_dmabuf_handle) which preserves the
+        fine-grained memory type, ensuring correct cross-GPU atomic operations.
+
+        Args:
+            all_bases: Dictionary mapping rank -> base address
+            connections: Optional peer connections for handle exchange
+        """
+        import numpy as np
+
+        heap_bases_array = np.zeros(self.num_ranks, dtype=np.uint64)
+
+        if connections is not None:
+            for handle in self._peer_ext_mem_handles.values():
+                try:
+                    destroy_external_memory(handle)
+                except Exception:
+                    pass
+            self._peer_ext_mem_handles.clear()
+
+            my_fd, my_base, my_size = self.get_shareable_handle()
+            heap_base = self.get_base_address()
+            my_metadata = struct.pack("QQQ", my_base, my_size, heap_base)
+
+            with managed_fd(my_fd):
+                for peer, sock in connections.items():
+                    if peer == self.cur_rank:
+                        continue
+
+                    # Higher rank sends first to avoid deadlock
+                    if self.cur_rank > peer:
+                        send_fd(sock, my_fd, payload=my_metadata)
+                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)
+                    else:
+                        peer_handle, peer_metadata = recv_fd(sock, payload_size=24)
+                        send_fd(sock, my_fd, payload=my_metadata)
+
+                    peer_base, peer_size, peer_heap = struct.unpack("QQQ", peer_metadata)
+
+                    with managed_fd(peer_handle):
+                        mapped_ptr, ext_mem_handle = import_dmabuf_handle(peer_handle, peer_size, peer_heap, peer_base)
+                        heap_bases_array[peer] = mapped_ptr
+                        self._peer_ext_mem_handles[peer] = ext_mem_handle
+
+            heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
+        else:
+            heap_bases_array[self.cur_rank] = all_bases[self.cur_rank]
+
+        self.heap_bases_array = heap_bases_array
 
     def get_device(self) -> torch.device:
         """
@@ -221,103 +225,53 @@ class VMemAllocator(BaseAllocator):
         """
         Import an external PyTorch tensor into the symmetric heap (as_symmetric).
 
-        This creates a view into the symmetric heap that shares physical memory
-        with the external tensor, handling PyTorch caching allocator offsets.
+        Allocates space on the fine-grained symmetric heap and copies the data
+        from the external tensor. The returned tensor resides on the symmetric heap
+        and can be used in RMA operations across ranks.
+
+        Note: Unlike the previous VMem implementation, the returned tensor does not
+        share physical memory with the original. Modifications to one are not visible
+        in the other. This is the same semantics as TorchAllocator.
 
         Args:
-            external_tensor: External PyTorch tensor to import
+            external_tensor: External PyTorch tensor to import (must be CUDA, contiguous)
 
         Returns:
-            New tensor view in symmetric heap that shares memory with external tensor
+            New tensor on the symmetric heap with a copy of the external tensor's data
 
         Raises:
-            RuntimeError: If import fails or tensor is not contiguous
+            RuntimeError: If tensor is not a CUDA tensor or not contiguous
         """
-
-        with self.lock:
-            if not external_tensor.is_cuda:
-                raise RuntimeError("Can only import CUDA tensors")
-            if not external_tensor.is_contiguous():
-                raise RuntimeError("Only contiguous tensors can be imported; call .contiguous() before as_symmetric()")
-
-            external_ptr = external_tensor.data_ptr()
-            alloc_base, alloc_size = get_address_range(external_ptr)
-            offset_in_alloc = external_ptr - alloc_base
-            aligned_size = (alloc_size + self.granularity - 1) & ~(self.granularity - 1)
-            aligned_offset = (self.current_offset + self.granularity - 1) & ~(self.granularity - 1)
-
-            if aligned_offset + aligned_size > self.aligned_heap_size:
-                raise RuntimeError(
-                    f"Out of VMem address space for import: "
-                    f"need {aligned_size} bytes at offset {aligned_offset}, "
-                    f"but heap size is {self.aligned_heap_size}. "
-                    f"Current offset: {self.current_offset}, "
-                    f"available: {self.aligned_heap_size - aligned_offset} bytes"
-                )
-
-            dmabuf_fd, export_base, export_size = export_dmabuf_handle(alloc_base, alloc_size)
-            aligned_export_size = (export_size + self.granularity - 1) & ~(self.granularity - 1)
-            target_va = self.base_va + aligned_offset
-            imported_handle = mem_import_from_shareable_handle(dmabuf_fd)
-            os.close(dmabuf_fd)
-
-            mem_map(target_va, aligned_export_size, 0, imported_handle)
-
-            new_cumulative_size = aligned_offset + aligned_export_size
-            if new_cumulative_size > self.cumulative_mapped_size:
-                self.cumulative_mapped_size = new_cumulative_size
-                mem_set_access(self.base_va, self.cumulative_mapped_size, self.access_descs)
-
-            tensor_va = target_va + offset_in_alloc
-            self._track_allocation(aligned_offset, aligned_export_size, True, imported_handle, target_va)
-            self.current_offset = aligned_offset + aligned_export_size
-
-            tensor_size = external_tensor.numel() * external_tensor.element_size()
-
-            class CUDAArrayInterface:
-                def __init__(self, ptr, size_bytes, device):
-                    self.ptr = ptr
-                    self.size_bytes = size_bytes
-                    self.device = device
-
-                @property
-                def __cuda_array_interface__(self):
-                    return {
-                        "shape": (self.size_bytes,),
-                        "typestr": "|u1",
-                        "data": (self.ptr, False),
-                        "version": 3,
-                    }
-
-            cuda_array = CUDAArrayInterface(tensor_va, tensor_size, self.device)
-            tensor_bytes = torch.as_tensor(cuda_array, device=self.device)
-            imported_tensor = tensor_bytes.view(external_tensor.dtype).reshape(external_tensor.shape)
-
-            return imported_tensor
+        if not external_tensor.is_cuda:
+            raise RuntimeError("Can only import CUDA tensors")
+        if not external_tensor.is_contiguous():
+            raise RuntimeError("Only contiguous tensors can be imported; call .contiguous() before as_symmetric()")
+        num_elements = external_tensor.numel()
+        dtype = external_tensor.dtype
+        shape = external_tensor.shape
+        heap_tensor = self.allocate(num_elements, dtype)
+        heap_tensor = heap_tensor.reshape(shape).copy_(external_tensor)
+        return heap_tensor
 
     def close(self):
-        """Explicitly release VMem resources."""
+        """Explicitly release fine-grained memory resources."""
         if hasattr(self, "_closed") and self._closed:
             return
 
-        with self.lock:
-            for offset, alloc_info in self.allocations.items():
-                if len(alloc_info) == 4:
-                    size, is_imported, handle, va = alloc_info
+        for handle in self._peer_ext_mem_handles.values():
+            try:
+                destroy_external_memory(handle)
+            except Exception:
+                pass
+        self._peer_ext_mem_handles.clear()
 
-                    if handle is not None:
-                        aligned_size = (size + self.granularity - 1) & ~(self.granularity - 1)
-                        mem_unmap(va, aligned_size)
-                        mem_release(handle)
+        if hasattr(self, "_alloc_ptr") and self._alloc_ptr is not None:
+            hip_free(self._alloc_ptr)
+            self._alloc_ptr = None
+            self.base_va = 0
 
-            self.allocations.clear()
-
-            if hasattr(self, "base_va") and self.base_va:
-                mem_address_free(self.base_va, self.va_size)
-                self.base_va = 0
-
-            self._closed = True
+        self._closed = True
 
     def __del__(self):
-        """Cleanup VMem resources on deletion."""
+        """Cleanup fine-grained memory resources on deletion."""
         self.close()

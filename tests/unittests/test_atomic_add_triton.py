@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
+import gc
+
 import torch
 import triton
 import triton.language as tl
@@ -108,6 +110,59 @@ def test_atomic_add_api(dtype, sem, scope, BLOCK_SIZE):
         # Explicitly delete the shmem instance to trigger cleanup
         del shmem
         # Force garbage collection to ensure IPC handles are cleaned up
-        import gc
+        gc.collect()
 
+
+@pytest.mark.parametrize(
+    "sem",
+    [
+        "acquire",
+        "release",
+        "acq_rel",
+    ],
+)
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "cta",
+        "gpu",
+        "sys",
+    ],
+)
+def test_atomic_add_vmem(sem, scope):
+    """
+    Test P2P atomic operations with VMemAllocator.
+
+    VMemAllocator previously used hipMemCreate (coarse-grained memory) which
+    caused intermittent failures for cross-GPU atomics with scope=cta/gpu.
+    This test verifies that the fix (using hipExtMallocWithFlags fine-grained
+    memory) eliminates these failures.
+    """
+    shmem = iris.iris(1 << 20, allocator_type="vmem")
+    num_ranks = shmem.get_num_ranks()
+    heap_bases = shmem.get_heap_bases()
+    cur_rank = shmem.get_rank()
+
+    results = shmem.zeros(1, dtype=torch.float32)
+
+    shmem.barrier()
+
+    grid = lambda meta: (1,)
+    atomic_add_kernel[grid](results, sem, scope, cur_rank, num_ranks, 1, heap_bases)
+    shmem.barrier()
+
+    # Every rank atomically adds 1 to every other rank's results[0].
+    # Expected: num_ranks additions per element.
+    expected = torch.ones(1, dtype=torch.float32, device="cuda") * num_ranks
+
+    try:
+        torch.testing.assert_close(results, expected, rtol=0, atol=0)
+    except AssertionError as e:
+        print(e)
+        print("Expected:", expected)
+        print("Actual:", results)
+        raise
+    finally:
+        shmem.barrier()
+        del shmem
         gc.collect()

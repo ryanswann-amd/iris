@@ -256,9 +256,8 @@ class SymmetricHeap:
         """
         Place an external PyTorch tensor on the symmetric heap.
 
-        With the torch allocator: allocates on the heap and copies the data;
-        the returned tensor is independent of the input. With the vmem
-        allocator: imports the memory so both tensors share the same storage.
+        With both the torch and vmem allocators: allocates on the heap and
+        copies the data; the returned tensor is independent of the input.
 
         Args:
             external_tensor: External PyTorch tensor (must be CUDA, contiguous)
