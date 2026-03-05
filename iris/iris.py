@@ -1906,14 +1906,13 @@ def put(
     to_rank,
     heap_bases,
     copy_engine_ctx: tl.tensor,
-    stride_tm,
-    stride_tn,
-    stride_fm,
-    stride_fn,
-    BLOCK_SIZE_M: tl.constexpr, #TODO Needed??
-    BLOCK_SIZE_N: tl.constexpr,
+    stride_tm: tl.constexpr = 0,
+    stride_tn: tl.constexpr = 0,
+    stride_fm: tl.constexpr = 0,
+    stride_fn: tl.constexpr = 0,
     mask=None,
     USE_COPY_ENGINE: tl.constexpr = False,
+    IS_2D_COPY: tl.constexpr = False,
     from_base_ptr=None,
     to_base_ptr=None,
 ):
@@ -1922,37 +1921,49 @@ def put(
     This function performs a memory write operation by loading data from the current
     rank's `from_ptr`, translating the `to_ptr` from the current rank's address
     space to the `to_rank`'s address space, and storing the data to the `to_rank` memory location.
-    If the `to_rank` is the same as the current rank, this function performs a local copy operation.
+
+    Supports both 1D (flat/linear) and 2D (tiled) copies:
+    - 1D copies: Used when stride_tm == 0 and stride_fm == 0 (default), uses linear SDMA packets
+    - 2D copies: Used when strides are non-zero, uses sub-window SDMA packets for better performance
 
     Args:
         from_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's local memory from which to read data.
-        to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that will be translated to the `to_rank`'s address space. Must be the current rank where the pointer is local.
+        to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that will be translated to the `to_rank`'s address space.
         from_rank (int): The current rank ID from which to read the data.
-        to_rank (int): The `to_rank` ID to which the data will be written.
+        to_rank (int): The rank ID to which the data will be written.
         heap_bases (triton.PointerType): Array containing the heap base addresses for all ranks.
         copy_engine_ctx (tl.tensor): Copy engine context for SDMA operations.
-        stride_tm (int): Stride in M dimension for destination buffer.
-        stride_tn (int): Stride in N dimension for destination buffer.
-        stride_fm (int): Stride in M dimension for source buffer.
-        stride_fn (int): Stride in N dimension for source buffer.
-        BLOCK_SIZE_M (tl.constexpr): Block size in M dimension.
-        BLOCK_SIZE_N (tl.constexpr): Block size in N dimension.
-        mask (Block of triton.int1, optional): If mask[idx] is false, do not load the data at address from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
-        USE_COPY_ENGINE (tl.constexpr, optional): Whether to use SDMA copy engine. Defaults to False.
-        from_base_ptr (triton.PointerType, optional): Base pointer of the source buffer. Required when USE_COPY_ENGINE is True.
-        to_base_ptr (triton.PointerType, optional): Base pointer of the destination buffer. Required when USE_COPY_ENGINE is True.
+        stride_tm (int, optional): Stride in M dimension for destination buffer (in elements). Default: 0 (flat copy).
+        stride_tn (int, optional): Stride in N dimension for destination buffer (in elements). Default: 0.
+        stride_fm (int, optional): Stride in M dimension for source buffer (in elements). Default: 0 (flat copy).
+        stride_fn (int, optional): Stride in N dimension for source buffer (in elements). Default: 0.
+        mask (Block of triton.int1, optional): If mask[idx] is false, do not load/copy data at that index. Defaults to None.
+        USE_COPY_ENGINE (tl.constexpr, optional): Whether to use SDMA copy engine. Defaults to False (uses regular load/store).
+        from_base_ptr (triton.PointerType, optional): Base pointer of the source buffer. Required for 2D copies when USE_COPY_ENGINE is True.
+        to_base_ptr (triton.PointerType, optional): Base pointer of the destination buffer. Required for 2D copies when USE_COPY_ENGINE is True.
 
     Returns:
         None
 
-    Example:
+    Examples:
+        1D (flat) copy:
         >>> @triton.jit
         >>> def kernel(local_ptr, remote_ptr, heap_bases, copy_engine_ctx):
         >>>     from_rank = 0
         >>>     to_rank = 1
-        >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases,
-        >>>              copy_engine_ctx, stride_m, stride_n, stride_m, stride_n,
-        >>>              BLOCK_M, BLOCK_N, mask=None, USE_COPY_ENGINE=True,
+        >>>     offsets = tl.arange(0, 256)
+        >>>     iris.put(local_ptr + offsets, remote_ptr + offsets,
+        >>>              from_rank, to_rank, heap_bases, copy_engine_ctx,
+        >>>              mask=offsets < 256, USE_COPY_ENGINE=True)
+
+        2D (tiled) copy:
+        >>> @triton.jit
+        >>> def kernel(local_ptr, remote_ptr, heap_bases, copy_engine_ctx, base_ptr):
+        >>>     from_rank = 0
+        >>>     to_rank = 1
+        >>>     iris.put(local_ptr, remote_ptr, from_rank, to_rank, heap_bases, copy_engine_ctx,
+        >>>              stride_tm=1024, stride_fm=1024,
+        >>>              mask=mask, USE_COPY_ENGINE=True,
         >>>              from_base_ptr=base_ptr, to_base_ptr=base_ptr)
     """
     translated_to_ptr = __translate(to_ptr, from_rank, to_rank, heap_bases)
@@ -2000,86 +2011,76 @@ def put(
             # Default to 4 bytes for unknown types
             element_size_bytes = 4
 
-        # Calculate total size in bytes
-        # Count number of valid elements based on mask
-        # src stride: 9216
-        # dst strice: 9216
+        # Determine packet size based on copy type
+        # Linear copy packet: 32 bytes for 1D, Sub-window copy packet: 80 bytes for 2D
+        # IS_2D_COPY is a compile-time constant for proper branch elimination
         mask_int = mask.to(tl.int32)
-        num_elements_per_stride = tl.max(tl.sum(mask_int, axis=-1))
-        num_strides = tl.max(tl.sum(mask_int, axis=0))
-        size_bytes = (num_elements_per_stride * element_size_bytes).to(tl.uint32)
-        src_stride = (stride_fm * element_size_bytes).to(tl.uint32)
-        dst_stride = (stride_tm * element_size_bytes).to(tl.uint32)
-
-        # if tl.program_id(axis=0) == 230 and from_rank == 1 and to_rank == 0:
-        # if from_rank == 1 and to_rank == 0:
-        # if to_rank == 1:
-        # if tl.max(size_bytes) == 0:
-        # tl.device_print("from_ptr ", from_ptr.block_shape)
-        # tl.device_print("stride_tm ", stride_tm)
-        # tl.device_print("stride_tn ", stride_tn)
-        # tl.device_print("stride_fm ", stride_fm)
-        # tl.device_print("stride_fn ", stride_fn)
-        # tl.device_print("src_stride ", src_stride)
-        # tl.device_print("dst_stride ", dst_stride)
-
-        # tl.device_print("queue_ptr_u32 ", queue_ptr_u32)
-        # tl.device_print("dst_ptr_val (all) ", translated_to_ptr.to(tl.uint64))
-        # tl.device_print("dst_ptr_val ", dst_ptr_val)
-        # tl.device_print("dst_ptr_val (single) ", dst_ptr_val0)
-        # tl.device_print("src_ptr_u64", src_ptr_u64)
-        # tl.device_print("src_ptr_val ", src_ptr_val)
-        # tl.device_print("src_ptr_val (single) ", src_ptr_val0)
-        # tl.device_print("mask(axis=0): ", tl.sum(mask_int, axis=0))
-        # tl.device_print("mask: ", tl.sum(mask_int))
-        # tl.device_print("num strides: ", num_strides)
-        # tl.device_print("size_bytes per stride", size_bytes)
-
-        # Use sub-window copy packet (single packet for entire tile)
-        command_in_bytes_u32 = 80
+        command_in_bytes_u32 = 80 if IS_2D_COPY else 32
         command_in_bytes = command_in_bytes_u32.to(tl.uint64)
-        required_bytes = command_in_bytes
 
-        # Calculate base addresses and offsets for sub-window copy
-        src_base = from_base_ptr.to(tl.uint64)
-        dst_base = __translate(to_base_ptr, from_rank, to_rank, heap_bases).to(tl.uint64)
-
-        # Calculate tile offset from base
-        tile_offset_bytes = src_ptr_val0 - src_base
-        src_y_val = (tile_offset_bytes // src_stride).to(tl.uint32)
-        src_x_val = (tile_offset_bytes % src_stride).to(tl.uint32)
-
-        tile_offset_bytes_dst = dst_ptr_val0 - dst_base
-        dst_y_val = (tile_offset_bytes_dst // dst_stride).to(tl.uint32)
-        dst_x_val = (tile_offset_bytes_dst % dst_stride).to(tl.uint32)
-
-        # Acquire space
+        # Acquire space in the queue
         base, offset = anvil.acquire(
-            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
+            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
         )
 
         # Write padding NOPs if we wrapped around
         anvil.place_nop_packet(queue_ptr_u32, base, offset)
 
-        # Place single sub-window copy packet
+        # Place the appropriate packet type
         packet_offset_bytes = base + offset
-        anvil.place_sub_window_copy_packet(
-            queue_ptr_u32,
-            packet_offset_bytes,
-            src_base,
-            dst_base,
-            tile_width=size_bytes,
-            tile_height=num_strides,
-            src_buffer_pitch=src_stride,
-            dst_buffer_pitch=dst_stride,
-            src_x=src_x_val,
-            src_y=src_y_val,
-            dst_x=dst_x_val,
-            dst_y=dst_y_val,
-        )
 
-        # Submit
-        pending_wptr = base + offset + required_bytes
+        if not IS_2D_COPY:
+            # For 1D copies, mask is 1D, so just sum all elements
+            num_elements = tl.sum(mask_int, axis=0)
+            size_bytes = (num_elements * element_size_bytes).to(tl.uint32)
+
+            # Place linear copy packet for 1D/flat copies
+            anvil.place_copy_packet(
+                queue_ptr_u32,
+                packet_offset_bytes,
+                size_bytes,
+                src_ptr_val0,
+                dst_ptr_val0,
+            )
+        else:
+            # For 2D copies, mask is 2D [M, N], use axis operations
+            num_elements_per_stride = tl.max(tl.sum(mask_int, axis=-1))
+            num_strides = tl.max(tl.sum(mask_int, axis=0))
+            size_bytes = (num_elements_per_stride * element_size_bytes).to(tl.uint32)
+            src_stride = (stride_fm * element_size_bytes).to(tl.uint32)
+            dst_stride = (stride_tm * element_size_bytes).to(tl.uint32)
+
+            # Place sub-window copy packet for 2D tiled copies
+            # Calculate base addresses and offsets for sub-window copy
+            src_base = from_base_ptr.to(tl.uint64)
+            dst_base = __translate(to_base_ptr, from_rank, to_rank, heap_bases).to(tl.uint64)
+
+            # Calculate tile offset from base
+            tile_offset_bytes = src_ptr_val0 - src_base
+            src_y_val = (tile_offset_bytes // src_stride).to(tl.uint32)
+            src_x_val = (tile_offset_bytes % src_stride).to(tl.uint32)
+
+            tile_offset_bytes_dst = dst_ptr_val0 - dst_base
+            dst_y_val = (tile_offset_bytes_dst // dst_stride).to(tl.uint32)
+            dst_x_val = (tile_offset_bytes_dst % dst_stride).to(tl.uint32)
+
+            anvil.place_sub_window_copy_packet(
+                queue_ptr_u32,
+                packet_offset_bytes,
+                src_base,
+                dst_base,
+                tile_width=size_bytes,
+                tile_height=num_strides,
+                src_buffer_pitch=src_stride,
+                dst_buffer_pitch=dst_stride,
+                src_x=src_x_val,
+                src_y=src_y_val,
+                dst_x=dst_x_val,
+                dst_y=dst_y_val,
+            )
+
+        # Submit the command to the queue
+        pending_wptr = base + offset + command_in_bytes
         anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, pending_wptr)
 
 

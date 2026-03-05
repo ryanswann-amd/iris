@@ -5,11 +5,10 @@ import argparse
 
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import triton
 import triton.language as tl
 import random
-
-from mpi4py import MPI
 
 import iris
 
@@ -137,6 +136,7 @@ def parse_args():
     parser.add_argument("-s", "--buffer_size", type=int, default=4096, help="Buffer Size")
     parser.add_argument("-b", "--block_size", type=int, default=512, help="Block Size")
     parser.add_argument("-p", "--heap_size", type=int, default=1 << 33, help="Iris heap size")
+    parser.add_argument("-r", "--num_ranks", type=int, default=2, help="Number of ranks/processes")
     parser.add_argument(
         "-c", "--use_copy_engine", action="store_true", help="Use copy engine for device-to-device copies"
     )
@@ -236,23 +236,18 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
     dist.barrier()
     dist.destroy_process_group()
 
-
 def main():
     args = parse_args()
 
-    comm = MPI.COMM_WORLD  # Communicator for all processes
-    rank = comm.Get_rank()  # Get the rank of the current process
-    num_ranks = comm.Get_size()  # Total number of processes
-    # TODO local_rank
-    torch.cuda.set_device(rank)
-
-    # Synchronize all processes
-    comm.barrier()
+    num_ranks = args["num_ranks"]
 
     init_url = "tcp://127.0.0.1:29500"
-
-    _worker(rank, num_ranks, init_url, args)
-
+    mp.spawn(
+        fn=_worker,
+        args=(num_ranks, init_url, args),
+        nprocs=num_ranks,
+        join=True,
+    )
 
 if __name__ == "__main__":
     main()
