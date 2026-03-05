@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
 
 FROM rocm/pytorch:rocm7.1_ubuntu24.04_py3.13_pytorch_release_2.9.1
 
@@ -10,7 +10,8 @@ SHELL ["/bin/bash", "-c"]
 ENV TRITON_PATH=/opt/triton \
     ROCM_PATH=/opt/rocm \
     OMPI_MCA_mtl="^ofi" \
-    OMPI_MCA_pml="ob1"
+    OMPI_MCA_pml="ob1" \
+    HSA_NO_SCRATCH_RECLAIM=1
 
 ENV LD_LIBRARY_PATH=$ROCM_PATH/lib:$LD_LIBRARY_PATH \
     PATH="$ROCM_PATH/bin:$PATH"
@@ -24,6 +25,9 @@ RUN apt-get update && \
     git wget ninja-build cmake python3-pip python3-dev build-essential && \
     rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -r video 2>/dev/null || true && \
+    groupadd -r render 2>/dev/null || true
+
 # Install Python packages with pip
 RUN pip3 install --upgrade pip && \
     pip3 install wheel jupyter
@@ -31,11 +35,11 @@ RUN pip3 install --upgrade pip && \
 # Clone and install Triton
 WORKDIR $TRITON_PATH
 RUN git clone https://github.com/triton-lang/triton.git $TRITON_PATH
-RUN git checkout 32d63ac67c7cc44715ab2428ffa182f606efa012
+RUN git checkout bcbcabdd0cff6539c7168299075992b2a23ff38e
 RUN pip3 install -e .
 ENV PYTHONPATH=$TRITON_PATH
 
-# Install rocprofiler-systems
+# Set up workspace
 WORKDIR /workspace
 
 # Create entrypoint script

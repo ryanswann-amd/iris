@@ -51,24 +51,35 @@ if [ "$CONTAINER_RUNTIME" = "apptainer" ]; then
     # Find image
     if [ -n "$CUSTOM_IMAGE" ]; then
         IMAGE="$CUSTOM_IMAGE"
-    elif [ -f ~/apptainer/iris-dev.sif ]; then
-        IMAGE=~/apptainer/iris-dev.sif
-    elif [ -f apptainer/images/iris.sif ]; then
-        IMAGE="apptainer/images/iris.sif"
     else
-        echo "[ERROR] Apptainer image not found" >&2
-        exit 1
+        # Calculate checksum of def file to find the correct subdirectory
+        DEF_FILE=apptainer/iris.def
+        if [ ! -f "$DEF_FILE" ]; then
+            echo "[ERROR] Definition file $DEF_FILE not found" >&2
+            exit 1
+        fi
+        DEF_CHECKSUM=$(sha256sum "$DEF_FILE" | awk '{print $1}')
+        
+        if [ -f "${HOME}/iris-apptainer-images/${DEF_CHECKSUM}/iris-dev.sif" ]; then
+            IMAGE="${HOME}/iris-apptainer-images/${DEF_CHECKSUM}/iris-dev.sif"
+        else
+            echo "[ERROR] Apptainer image not found" >&2
+            exit 1
+        fi
     fi
     
     # Create temporary overlay in workspace with unique name based on PID and timestamp
     OVERLAY="./iris_overlay_$$_$(date +%s%N).img"
-    if ! apptainer overlay create --size 1024 --create-dir /var/cache/iris "${OVERLAY}" > /dev/null 2>&1; then
+    if ! apptainer overlay create --size 16384 --create-dir /var/cache/iris "${OVERLAY}" > /dev/null 2>&1; then
         echo "[ERROR] Failed to create Apptainer overlay"
         exit 1
     fi
     
     # Build exec command
     EXEC_CMD="apptainer exec --overlay ${OVERLAY} --no-home --cleanenv"
+    
+    # Set required RCCL environment variable for ROCm
+    EXEC_CMD="$EXEC_CMD --env HSA_NO_SCRATCH_RECLAIM=1"
     
     # Add GPU selection if specified
     if [ -n "$GPU_DEVICES" ]; then
@@ -116,6 +127,9 @@ elif [ "$CONTAINER_RUNTIME" = "docker" ]; then
     
     RUN_CMD="$RUN_CMD -e HOME=/iris_workspace"
     RUN_CMD="$RUN_CMD --entrypoint bash"
+    
+    # Set required RCCL environment variable for ROCm
+    RUN_CMD="$RUN_CMD -e HSA_NO_SCRATCH_RECLAIM=1"
     
     # Add GPU selection if specified
     if [ -n "$GPU_DEVICES" ]; then
