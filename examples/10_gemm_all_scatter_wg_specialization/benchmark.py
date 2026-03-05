@@ -129,24 +129,18 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         json_writer.add_field(key, value)
 
     global_C = shmem.zeros((args["M"], args["N"]), device="cuda", dtype=A.dtype)
-    # why on heap? so it is uncached??
-    # TODO unused
     local_C = shmem.zeros((args["m"], args["n"]), device="cuda", dtype=A.dtype)
 
     total_blocks_M = triton.cdiv(args["m"], args["BLK_M"])
     total_blocks_N = triton.cdiv(args["n"], args["BLK_N"])
     total_tiles = total_blocks_M * total_blocks_N
 
-    # TODO why is this on the heap?
-    locks = shmem.zeros((total_tiles,), device="cuda", dtype=torch.int8)  # why int8??
+    locks = shmem.zeros((total_tiles,), device="cuda", dtype=torch.int8)
     comm_sms = args["num_sms"] - args["gemm_sms"]
     flags = shmem.zeros((comm_sms, world_size), device="cuda", dtype=torch.uint32)
 
     # Get copy engine context
-    copy_engine_ctx = shmem.get_copy_engine_ctx()  # if args["use_copy_engine"] else None
-    # (
-    #     shmem.get_copy_engine_handle() if args["use_copy_engine"] and cur_rank == producer_rank else None
-    # )
+    copy_engine_ctx = shmem.get_copy_engine_ctx()
 
     bias = None
 
@@ -241,11 +235,8 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
         # Wait for all to finish validation
         shmem.barrier()
-        # shmem.info("Validating local C...")
 
         json_writer.add_field("success", success)
-
-        # shmem.info(flags)
 
         if not is_triton_interpret_set():
             gemm_registers = matmul.get_matmul_registers()
@@ -256,26 +247,26 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
         shmem.info("Validation completed")
 
-    # if args["benchmark"]:
-    #     matmul.set_debug(False)
-    #     shmem.info("Benchmarking...")
-    #     perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
-    #     triton_ms = iris.do_bench(run_experiment, shmem.barrier)
-    #     triton_tflops = perf(triton_ms)
-    #     algo_string = "all_scatter"
-    #     shmem.info(
-    #         f"tile matmul + {algo_string} (total_tiles={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
-    #     )
+    if args["benchmark"]:
+        matmul.set_debug(False)
+        shmem.info("Benchmarking...")
+        perf = lambda ms: 2 * args["M"] * args["N"] * args["K"] * 1e-12 / (ms * 1e-3)
+        triton_ms = iris.do_bench(run_experiment, shmem.barrier)
+        triton_tflops = perf(triton_ms)
+        algo_string = "all_scatter"
+        shmem.info(
+            f"tile matmul + {algo_string} (total_tiles={total_tiles}): {triton_ms:.3f} ms  {triton_tflops:.3f} tflops"
+        )
 
-    #     json_writer.add_field("tflops", triton_tflops)
-    #     json_writer.add_field("total_ms", triton_ms)
+        json_writer.add_field("tflops", triton_tflops)
+        json_writer.add_field("total_ms", triton_ms)
 
-    #     for k in ["gemm"]:
-    #         json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
-    #         json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
+        for k in ["gemm"]:
+            json_writer.add_field(k + "_ms", kernel_timing[k]["ms"] / kernel_timing[k]["experiments"])
+            json_writer.add_field(k + "_experiments", kernel_timing[k]["experiments"])
 
-    #     # Wait for all to finish benchmarking
-    #     shmem.barrier()
+        # Wait for all to finish benchmarking
+        shmem.barrier()
 
     if rank == 0:
         json_writer.flush()

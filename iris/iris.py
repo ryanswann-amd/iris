@@ -55,7 +55,6 @@ from iris.hip import (
 )
 
 import anvil
-
 from iris.symmetric_heap import SymmetricHeap
 import numpy as np
 import torch
@@ -2009,6 +2008,7 @@ def put(
     stride_fm: tl.constexpr = 0,
     stride_fn: tl.constexpr = 0,
     mask=None,
+    hint: tl.constexpr = None,
     USE_COPY_ENGINE: tl.constexpr = False,
     IS_2D_COPY: tl.constexpr = False,
     from_base_ptr=None,

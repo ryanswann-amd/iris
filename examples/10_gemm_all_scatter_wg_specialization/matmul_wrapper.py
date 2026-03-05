@@ -85,9 +85,6 @@ class matmul(torch.autograd.Function):
         even_k = K % BLK_K == 0
         use_bias = False
 
-        print("C: ", c.stride(0), " ", c.stride(1), " global ", c_global.stride(0), " ", c_global.stride(1))
-        print("BLK_M ", BLK_M, " BLK_N ", BLK_N, " BLK_K ", BLK_K, " even k ", even_k, " total_tiles ", total_tiles)
-
         # compute grid (work to do per SM on the first wave)
         stride_bias = bias.stride(0) if use_bias else 0
         kk = gemm_kernel[(num_sms,)](
