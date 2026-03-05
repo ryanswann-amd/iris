@@ -2059,12 +2059,7 @@ def put(
         )
 
         # Write padding NOPs if we wrapped around
-        if offset > 0:
-            num_offset_dwords = (offset // 4).to(tl.int32)
-            base_ring_pos = anvil.wrap_into_ring(base)
-            base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
-            for i in range(num_offset_dwords):
-                tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+        anvil.place_nop_packet(queue_ptr_u32, base, offset)
 
         # Place single sub-window copy packet
         packet_offset_bytes = base + offset
@@ -2259,12 +2254,7 @@ def atomic_add(
         # tl.device_print("offset ", offset)
 
         # Write padding NOPs if we wrapped around
-        if offset > 0:
-            num_offset_dwords = (offset // 4).to(tl.int32)
-            base_ring_pos = anvil.wrap_into_ring(base)
-            base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
-            for i in range(num_offset_dwords):
-                tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+        anvil.place_nop_packet(queue_ptr_u32, base, offset)
 
         # Calculate packet position (base + offset for wraparound)
         packet_offset_bytes = base + offset
