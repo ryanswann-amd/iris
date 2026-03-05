@@ -2,11 +2,11 @@
 # Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 
 """
-Fused GEMM + All-Scatter operation using scatter pattern.
+Fused GEMM + All-Scatter operation.
 
 Each rank has a column-sharded input B_local (K x N_local) and full input A (M x K).
-Each rank computes C_local = A @ B_local, then scatters C_local tiles to all ranks
-so that each rank ends up with the full C (M x N) where N = world_size * N_local.
+Each rank computes C_local = A @ B_local, then scatters its column-stripe of C to all
+other ranks so that every rank ends up with the full C (M x N) where N = world_size * N_local.
 
 This is useful for tensor-parallel workloads where weights are column-sharded and
 outputs need to be gathered along the column dimension.
@@ -17,7 +17,6 @@ import torch
 import triton
 import triton.language as tl
 import iris
-import iris.x
 
 from tritonblas.kernels.stages import GemmContext, ScheduleContext, make_tensor_view
 
@@ -29,7 +28,7 @@ from .workspace import FusedWorkspace
 def _fused_matmul_all_scatter_kernel(
     A,  # (M, K) - replicated across ranks
     B_local,  # (K, N_local) - each rank's column shard
-    C_gathered,  # (M, N) - gathered output (N = N_local * world_size)
+    C_gathered,  # (M, N) - output where N = N_local * world_size
     bias_ptr,
     M,
     N,
@@ -42,7 +41,7 @@ def _fused_matmul_all_scatter_kernel(
     stride_cm_gathered,
     stride_cn_gathered,
     stride_bias,
-    context_tensor: tl.tensor,
+    heap_bases: tl.tensor,
     cur_rank: tl.constexpr,
     world_size: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
@@ -56,10 +55,10 @@ def _fused_matmul_all_scatter_kernel(
     ALLOW_TF32: tl.constexpr,
 ):
     """
-    Fused GEMM + all-scatter kernel using scatter pattern.
+    Fused GEMM + all-scatter kernel.
 
-    Computes local GEMM tile and immediately scatters to all ranks along the N dimension.
-    No intermediate buffer needed - direct from registers to remote memory.
+    Computes local GEMM tile and immediately scatters this rank's column stripe
+    to all ranks via iris.store. No intermediate buffer needed.
     """
     # ═══════════════════════════════════════════════════════════════════════
     # Create tritonblas views, context, and scheduler for GEMM
@@ -96,15 +95,28 @@ def _fused_matmul_all_scatter_kernel(
         # Convert to output dtype
         c = acc.to(C_gathered.type.element_ty)
 
-        # Create DeviceContext and destination TensorView for all-scatter
-        ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size)
-        dst_view = iris.x.make_tensor_view(C_gathered, M, N, stride_cm_gathered, stride_cn_gathered)
-        tile_obj = iris.x.Tile(out_tile.pid_m, out_tile.pid_n, BLOCK_SIZE_M, BLOCK_SIZE_N, c)
+        # Compute tile row/col indices with vectorization hints and bounds mask.
+        # Use local dimensions (M, N_local) since the GEMM covers the local tile space;
+        # the global offset below maps these local indices to the correct global position.
+        rm, rn, sub_mask = out_tile.layout(M, N_local)
 
-        # Broadcast this rank's tile to all ranks using iris.x.all_gather with dim=1.
-        # dim=1 places the tile at the current rank's column offset in the global output,
-        # so every rank receives each rank's column-shard (all-scatter along N dimension).
-        iris.x.all_gather(tile_obj, dst_view, dim=1, ctx=ctx)
+        # Global write offset: this rank owns column stripe [cur_rank*N_local, (cur_rank+1)*N_local)
+        global_offset = rm[:, None] * stride_cm_gathered + (rn[None, :] + cur_rank * N_local) * stride_cn_gathered
+
+        # Write local result to this rank's own output buffer
+        tl.store(C_gathered + global_offset, c, mask=sub_mask)
+
+        # Scatter this rank's column stripe to all remote ranks
+        for remote_rank in range(world_size):
+            if remote_rank != cur_rank:
+                iris.store(
+                    C_gathered + global_offset,
+                    c,
+                    cur_rank,
+                    remote_rank,
+                    heap_bases,
+                    mask=sub_mask,
+                )
 
 
 def matmul_all_scatter_preamble(
@@ -145,18 +157,16 @@ def matmul_all_scatter(
     workspace: Optional[FusedWorkspace] = None,
 ) -> FusedWorkspace:
     """
-    Fused matrix multiplication and all-scatter using scatter pattern.
+    Fused matrix multiplication and all-scatter.
 
     Computes: output = all_scatter(A @ B_local) along N dimension
 
     Each rank has B_local of shape (K, N_local) where N_local = N / world_size.
     The operation computes C_local = A @ B_local on each rank and immediately
-    broadcasts each rank's column-shard tiles to all ranks via iris.x.all_gather
-    (dim=1), so that every rank ends up with the full C (M, N).
+    scatters its column stripe to all other ranks via iris.store, so that every
+    rank ends up with the full C (M, N).
 
     This is a single-kernel implementation - no intermediate buffer needed.
-    Internally this uses iris.x.all_gather(dim=1) to broadcast each rank's
-    computed column tiles to all other ranks at the correct N offset.
 
     Args:
         shmem: Iris shmem context
@@ -246,7 +256,7 @@ def matmul_all_scatter(
         stride_cm_gathered,
         stride_cn_gathered,
         stride_bias,
-        shmem.get_device_context(),
+        shmem.get_heap_bases(),
         rank,
         world_size,
         config.block_size_m,
