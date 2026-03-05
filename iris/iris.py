@@ -2249,8 +2249,14 @@ def atomic_add(
         command_in_bytes = 32
         # Acquire space (returns base index and wraparound offset)
         base, offset = anvil.acquire(
-        # base = anvil.acquire(
-            queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
+            # base = anvil.acquire(
+            queue_ptr_u32,
+            read_ptr,
+            write_ptr,
+            doorbell_ptr,
+            cached_write_ptr,
+            committed_write_ptr,
+            command_in_bytes,
         )
         # tl.device_print("offset ", offset)
 
