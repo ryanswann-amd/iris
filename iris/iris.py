@@ -1793,12 +1793,17 @@ def __translate(ptr, from_rank, to_rank, heap_bases):
     # Cast to_base back to pointer type
     translated_ptr = tl.cast(translated_ptr_byte, ptr.dtype)
 
-    # Vectorization hints: must be <= minimum block size used by any caller.
-    # (32, 32) is safe since all supported block sizes are multiples of 32.
-    # Largest vectorized load instruction is dwordx4 (128-bits = 8 x fp16).
-    # translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
-    # translated_ptr = tl.max_contiguous(translated_ptr, (32, 32))
+    # Optimization to vectorize the load/store
+    # We can't do this in general because we don't know the shape of the tensor or block sizes
+    # ptr = tl.max_contiguous(tl.multiple_of(ptr, (16, 16)), (16, 32))
 
+    # 0 You can use this if your block sizes are multiples of 32.
+    # Largest vectorized load instruction is dwordx4 (128-bits)
+    translated_ptr = tl.multiple_of(translated_ptr, (32, 32))
+    translated_ptr = tl.max_contiguous(translated_ptr, (1, 32))
+
+    # ptr = tl.max_contiguous(tl.multiple_of(ptr, 512), 512)
+    # translated_ptr = tl.max_contiguous(tl.multiple_of(translated_ptr, 512), 512)
     return translated_ptr
 
 

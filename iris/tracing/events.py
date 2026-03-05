@@ -26,6 +26,9 @@ EVENT_NAMES = {
     11: "atomic_or",
     12: "atomic_min",
     13: "atomic_max",
+    14: "wg_fetch",
+    15: "wg_gemm",
+    16: "wg_gemm_wait",
 }
 
 
@@ -75,6 +78,11 @@ class TraceEvent:
     atomic_min: tl.constexpr
     atomic_max: tl.constexpr
 
+    # Workgroup-level profiling events
+    wg_fetch: tl.constexpr
+    wg_gemm: tl.constexpr
+    wg_gemm_wait: tl.constexpr
+
     @triton.constexpr_function
     def __init__(self):
         # Data movement
@@ -94,3 +102,8 @@ class TraceEvent:
         self.atomic_or = tl.constexpr(11)
         self.atomic_min = tl.constexpr(12)
         self.atomic_max = tl.constexpr(13)
+
+        # Workgroup-level profiling
+        self.wg_fetch = tl.constexpr(14)
+        self.wg_gemm = tl.constexpr(15)
+        self.wg_gemm_wait = tl.constexpr(16)

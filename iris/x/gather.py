@@ -52,7 +52,7 @@ def gather(
 
     if source_rank == ctx.rank:
         # Local load
-        tile_data = tl.load(src_tile_ptr, mask=mask)
+        tile_data = tl.load(src_tile_ptr, mask=mask, other=0.0)
     else:
         # Remote load using RMA
         tile_data = iris.load(

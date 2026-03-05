@@ -7,8 +7,17 @@ Benchmark for iris.ops all_gather_matmul fused operation.
 
 This benchmark showcases the fused All-Gather + GEMM operation where each rank
 has a sharded A matrix that gets gathered, then multiplied with B.
+
+This version is compatible with torchrun for use with profiling tools like rocprofv3/att.
+
+Usage with torchrun:
+    torchrun --nproc_per_node=8 benchmark_torchrun.py -m 16384 -n 2048 -k 131072 --benchmark
+
+Usage with rocprofv3:
+    torchrun --nproc_per_node=8 rocprofv3 --att benchmark_torchrun.py -m 16384 -n 2048 -k 131072 --benchmark
 """
 
+import os
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -73,6 +82,11 @@ def parse_args():
         "--init_url", type=str, default="tcp://127.0.0.1:29530", help="Initialization URL for distributed setup"
     )
     parser.add_argument(
+        "--single-run",
+        action="store_true",
+        help="Run only one iteration (no warmup, 1 repeat) - useful for profiling",
+    )
+    parser.add_argument(
         "--b_col_major",
         action="store_true",
         help="Store B matrix in column-major order (K-contiguous) to reduce LDS transpose overhead",
@@ -86,16 +100,39 @@ def parse_args():
     return vars(parser.parse_args())
 
 
-def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
+def _worker(local_rank: int = None, world_size: int = None, init_url: str = None, args: dict = None):
     """Worker function for PyTorch distributed execution."""
+    # Support torchrun: read from environment variables if available
+    if local_rank is None:
+        local_rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", 0)))
+    if world_size is None:
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if init_url is None:
+        # torchrun sets MASTER_ADDR and MASTER_PORT
+        master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        master_port = os.environ.get("MASTER_PORT", "29500")
+        init_url = f"tcp://{master_addr}:{master_port}"
+
+    # Use nccl backend - gloo doesn't support uint64 tensors used by Iris
     backend = "nccl" if torch.cuda.is_available() else "gloo"
-    dist.init_process_group(
-        backend=backend,
-        init_method=init_url,
-        world_size=world_size,
-        rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
-    )
+    print(f"Rank {local_rank}: Using backend: {backend}")
+
+    # Use environment-based initialization if torchrun is detected
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # For torchrun, use env:// initialization with device_id for nccl
+        dist.init_process_group(
+            backend=backend,
+            init_method="env://",
+            device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
+        )
+    else:
+        dist.init_process_group(
+            backend=backend,
+            init_method=init_url,
+            world_size=world_size,
+            rank=local_rank,
+            device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
+        )
 
     shmem = iris.iris(args["heap_size"])
     rank = shmem.get_rank()
@@ -291,12 +328,22 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         shmem.barrier()
 
     if args["benchmark"]:
-        # Warmup for benchmarking
-        for k in ["all_gather_matmul"]:
-            kernel_timing[k]["ms"] = 0
-            kernel_timing[k]["experiments"] = 0
+        # Determine warmup and repeat counts
+        if args.get("single_run", False):
+            n_warmup = 0
+            n_repeat = 1
+            shmem.info("Single-run mode: no warmup, 1 repeat")
+        else:
+            n_warmup = 25
+            n_repeat = 100  # default from iris.do_bench
 
-        iris.do_bench(run_experiment, shmem.barrier, n_warmup=25, n_repeat=1)
+        # Warmup for benchmarking (skip if single-run)
+        if not args.get("single_run", False):
+            for k in ["all_gather_matmul"]:
+                kernel_timing[k]["ms"] = 0
+                kernel_timing[k]["experiments"] = 0
+
+            iris.do_bench(run_experiment, shmem.barrier, n_warmup=n_warmup, n_repeat=1)
 
         for k in ["all_gather_matmul"]:
             kernel_timing[k]["ms"] = 0
@@ -312,7 +359,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         total_flops = 2 * M * N * K
         total_tflops_unit = total_flops * 1e-12
 
-        triton_ms = iris.do_bench(run_experiment, shmem.barrier)
+        triton_ms = iris.do_bench(run_experiment, shmem.barrier, n_warmup=n_warmup, n_repeat=n_repeat)
         tflops = total_tflops_unit / (
             (kernel_timing["all_gather_matmul"]["ms"] / kernel_timing["all_gather_matmul"]["experiments"]) * 1e-3
         )
@@ -368,6 +415,16 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         # Benchmark
         dist.barrier()
 
+        # Calculate TFLOPS: 2*M*N*K flops
+        total_flops = 2 * M * N * K
+        total_tflops_unit = total_flops * 1e-12
+
+        # Calculate bandwidth for all-gather part
+        element_size = torch.tensor([], dtype=datatype).element_size()
+        input_bytes = M * K_local * element_size
+        total_bytes = input_bytes * (world_size - 1)
+        total_bytes_gb = total_bytes / (1024**3)
+
         def run_pytorch_experiment():
             dist.all_gather_into_tensor(pytorch_A_gathered, pytorch_A_sharded)
             pytorch_C = torch.matmul(pytorch_A_gathered, pytorch_B)
@@ -406,16 +463,24 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
 
 
 def main():
+    print("Starting all_gather_matmul benchmark...")
     args = parse_args()
-    num_ranks = args["num_ranks"]
-    init_url = args["init_url"]
 
-    mp.spawn(
-        fn=_worker,
-        args=(num_ranks, init_url, args),
-        nprocs=num_ranks,
-        join=True,
-    )
+    # Check if running with torchrun (detected by environment variables)
+    if "RANK" in os.environ or "LOCAL_RANK" in os.environ:
+        # torchrun handles process spawning, so call _worker directly
+        print("Detected torchrun execution mode")
+        _worker(args=args)
+    else:
+        # Use multiprocessing spawn for backward compatibility
+        num_ranks = args["num_ranks"]
+        init_url = args["init_url"]
+        mp.spawn(
+            fn=_worker,
+            args=(num_ranks, init_url, args),
+            nprocs=num_ranks,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
