@@ -182,26 +182,24 @@ def persistent_gemm_all_scatter_wg_specialization(
 
             for remote_rank in range(world_size):
                 if remote_rank != cur_rank:
-                    if tile_id < 250:
-                        # tl.device_print("tile_id", tile_id)
-                        iris.put(
-                            c_global + global_offset,
-                            c_global + global_offset,
-                            cur_rank,
-                            remote_rank,
-                            heap_bases,
-                            copy_engine_ctx,
-                            stride_cm_global,
-                            stride_cn_global,
-                            stride_cm_global,
-                            stride_cn_global,
-                            BLOCK_SIZE_M,
-                            BLOCK_SIZE_N,
-                            mask=sub_mask,
-                            USE_COPY_ENGINE=USE_COPY_ENGINE,
-                            from_base_ptr=c_global,
-                            to_base_ptr=c_global,
-                        )
+                    iris.put(
+                        c_global + global_offset,
+                        c_global + global_offset,
+                        cur_rank,
+                        remote_rank,
+                        heap_bases,
+                        copy_engine_ctx,
+                        stride_cm_global,
+                        stride_cn_global,
+                        stride_cm_global,
+                        stride_cn_global,
+                        BLOCK_SIZE_M,
+                        BLOCK_SIZE_N,
+                        mask=sub_mask,
+                        USE_COPY_ENGINE=USE_COPY_ENGINE,
+                        from_base_ptr=c_global,
+                        to_base_ptr=c_global,
+                    )
         tl.debug_barrier()
         # Signal other ranks
         for remote_rank in range(world_size):

@@ -2035,9 +2035,7 @@ def put(
         # tl.device_print("num strides: ", num_strides)
         # tl.device_print("size_bytes per stride", size_bytes)
 
-        # Use sub-window copy packet to copy entire tile with a single packet
-        # Sub-window copy packet is 80 bytes (20 DWORDs)
-        # Requires from_base_ptr and to_base_ptr to be provided
+        # Use sub-window copy packet (single packet for entire tile)
         command_in_bytes_u32 = 80
         command_in_bytes = command_in_bytes_u32.to(tl.uint64)
         required_bytes = command_in_bytes
@@ -2047,9 +2045,6 @@ def put(
         dst_base = __translate(to_base_ptr, from_rank, to_rank, heap_bases).to(tl.uint64)
 
         # Calculate tile offset from base
-        # offset_bytes = src_ptr_val0 - src_base
-        # For 2D: offset_bytes = (y * stride_bytes) + (x * element_size_bytes)
-        # Decompose into x and y offsets
         tile_offset_bytes = src_ptr_val0 - src_base
         src_y_val = (tile_offset_bytes // src_stride).to(tl.uint32)
         src_x_val = (tile_offset_bytes % src_stride).to(tl.uint32)
@@ -2058,24 +2053,21 @@ def put(
         dst_y_val = (tile_offset_bytes_dst // dst_stride).to(tl.uint32)
         dst_x_val = (tile_offset_bytes_dst % dst_stride).to(tl.uint32)
 
-        # Acquire space (returns base index and wraparound offset)
-        base = anvil.acquire(
+        # Acquire space
+        base, offset = anvil.acquire(
             queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, required_bytes
         )
 
         # Write padding NOPs if we wrapped around
-        # TODO move
-        # if offset > 0:
-        #     num_offset_dwords = (offset // 4).to(tl.int32)
-        #     base_ring_pos = anvil.wrap_into_ring(base)
-        #     base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
-        #     for i in range(num_offset_dwords):
-        #         tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+        if offset > 0:
+            num_offset_dwords = (offset // 4).to(tl.int32)
+            base_ring_pos = anvil.wrap_into_ring(base)
+            base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
+            for i in range(num_offset_dwords):
+                tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
 
-        # Calculate packet position (base + offset for wraparound)
-        packet_offset_bytes = base #+ offset
-
-        # Place single sub-window copy command for entire tile
+        # Place single sub-window copy packet
+        packet_offset_bytes = base + offset
         anvil.place_sub_window_copy_packet(
             queue_ptr_u32,
             packet_offset_bytes,
@@ -2091,8 +2083,9 @@ def put(
             dst_y=dst_y_val,
         )
 
-        # Submit command
-        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, required_bytes)
+        # Submit
+        pending_wptr = base + offset + required_bytes
+        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, pending_wptr)
 
 
 @triton.jit
@@ -2259,28 +2252,29 @@ def atomic_add(
 
         command_in_bytes = 32
         # Acquire space (returns base index and wraparound offset)
-        # base, offset = anvil.acquire(
-        base = anvil.acquire(
+        base, offset = anvil.acquire(
+        # base = anvil.acquire(
             queue_ptr_u32, read_ptr, write_ptr, doorbell_ptr, cached_write_ptr, committed_write_ptr, command_in_bytes
         )
         # tl.device_print("offset ", offset)
 
         # Write padding NOPs if we wrapped around
-        # if offset > 0:
-        #     num_offset_dwords = (offset // 4).to(tl.int32)
-        #     base_ring_pos = anvil.wrap_into_ring(base)
-        #     base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
-        #     for i in range(num_offset_dwords):
-        #         tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
+        if offset > 0:
+            num_offset_dwords = (offset // 4).to(tl.int32)
+            base_ring_pos = anvil.wrap_into_ring(base)
+            base_index_in_dwords = (base_ring_pos // 4).to(tl.int32)
+            for i in range(num_offset_dwords):
+                tl.store(queue_ptr_u32 + base_index_in_dwords + i, 0)
 
         # Calculate packet position (base + offset for wraparound)
-        packet_offset_bytes = base # + offset
+        packet_offset_bytes = base + offset
 
         # Place command packet
         anvil.place_atomic_packet(queue_ptr_u32, packet_offset_bytes, dst_ptr_val)
 
         # Submit command
-        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, command_in_bytes)
+        pending_wptr = base + offset + command_in_bytes
+        anvil.submit(write_ptr, doorbell_ptr, committed_write_ptr, base, pending_wptr)
 
 
 @triton.jit
