@@ -168,20 +168,20 @@ class OpsNamespace:
         """
         return matmul_reduce_scatter(self._shmem, output_tensor, A, B, bias, async_op, config, workspace)
 
-    def matmul_all_scatter(self, output_tensor, A, B_local, bias=None, async_op=False, config=None, workspace=None):
+    def matmul_all_scatter(self, output, A, B_shard, bias=None, async_op=False, config=None, workspace=None):
         """
         Fused matrix multiplication and all-scatter.
 
-        Computes: output = all_scatter(A @ B_local) along N dimension
+        Computes: output = all_scatter(A @ B_shard) along N dimension
 
-        Each rank has B_local of shape (K, N_local) where N_local = N / world_size.
-        The operation computes C_local = A @ B_local on each rank and scatters the
-        tiles to all ranks so that every rank ends up with the full C (M, N).
+        Each rank has B_shard of shape (K, N_shard) where N_shard = N / world_size.
+        The operation computes C_shard = A @ B_shard on each rank and scatters the
+        column stripe to all ranks so that every rank ends up with the full C (M, N).
 
         Args:
-            output_tensor: Output tensor (M, N) where N = N_local * world_size
-            A: Input matrix A (M, K) - replicated across ranks
-            B_local: Column-sharded input matrix B (K, N_local)
+            output: Output tensor (M, N) where N = N_shard * world_size
+            A: Input matrix A (M, K) — replicated across ranks
+            B_shard: Column-sharded weight matrix (K, N_shard)
             bias: Optional bias vector (M,)
             async_op: If False, performs barrier at end
             config: Optional FusedConfig for tuning
@@ -191,12 +191,12 @@ class OpsNamespace:
             workspace: Updated workspace object
 
         Example:
-            >>> N_local = N // world_size
-            >>> B_local = shmem.randn((K, N_local), dtype=torch.float16)
+            >>> N_shard = N // world_size
+            >>> B_shard = shmem.randn((K, N_shard), dtype=torch.float16)
             >>> output = shmem.zeros((M, N), dtype=torch.float16)
-            >>> shmem.ops.matmul_all_scatter(output, A, B_local)
+            >>> shmem.ops.matmul_all_scatter(output, A, B_shard)
         """
-        return matmul_all_scatter(self._shmem, output_tensor, A, B_local, bias, async_op, config, workspace)
+        return matmul_all_scatter(self._shmem, output, A, B_shard, bias, async_op, config, workspace)
 
 
 # Export public API

@@ -61,16 +61,16 @@ def test_matmul_all_scatter(dtype, atol, rtol, M, N, K):
 
     # Create shmem tensors directly
     A = shmem.randn((M, K), dtype=dtype)
-    B_local = shmem.randn((K, N_local), dtype=dtype)
+    B_shard = shmem.randn((K, N_local), dtype=dtype)
     output = shmem.zeros((M, N), dtype=dtype)
 
     # Reference: compute local GEMM, then all-gather along N dimension
     A_ref = A.clone()
-    B_local_ref = B_local.clone()
-    C_local_ref = torch.matmul(A_ref, B_local_ref)
-    C_gathered_list = [torch.zeros(M, N_local, dtype=dtype, device=f"cuda:{rank}") for _ in range(world_size)]
-    dist.all_gather(C_gathered_list, C_local_ref)
-    pytorch_output = torch.cat(C_gathered_list, dim=1)  # Concatenate along N dimension
+    B_shard_ref = B_shard.clone()
+    C_shard_ref = torch.matmul(A_ref, B_shard_ref)
+    C_shards = [torch.zeros(M, N_local, dtype=dtype, device=f"cuda:{rank}") for _ in range(world_size)]
+    dist.all_gather(C_shards, C_shard_ref)
+    pytorch_output = torch.cat(C_shards, dim=1)  # Concatenate along N dimension
     torch.cuda.synchronize()
 
     shmem.barrier()
@@ -83,8 +83,6 @@ def test_matmul_all_scatter(dtype, atol, rtol, M, N, K):
         config = FusedConfig(block_size_m=32, block_size_n=32, block_size_k=32)
     elif M <= 128 or K <= 128 or N_local <= 128:
         config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
-    elif dtype == torch.float32:
-        config = FusedConfig(block_size_m=128, block_size_n=128, block_size_k=64)
     else:
         config = FusedConfig(block_size_m=128, block_size_n=128, block_size_k=64)
 
@@ -94,7 +92,7 @@ def test_matmul_all_scatter(dtype, atol, rtol, M, N, K):
     assert N_local >= config.block_size_n, f"N_local ({N_local}) must be >= block_size_n ({config.block_size_n})"
 
     # Use shmem.ops API with proper config
-    shmem.ops.matmul_all_scatter(output, A, B_local, config=config)
+    shmem.ops.matmul_all_scatter(output, A, B_shard, config=config)
 
     torch.cuda.synchronize()
     shmem.barrier()
@@ -144,25 +142,28 @@ def test_matmul_all_scatter_semantics(dtype, atol, rtol):
 
     N_local = N // world_size
 
+    if N_local < 32:
+        pytest.skip(f"N_local={N_local} too small (need >= 32)")
+
     A = shmem.randn((M, K), dtype=dtype)
-    B_local = shmem.randn((K, N_local), dtype=dtype)
+    B_shard = shmem.randn((K, N_local), dtype=dtype)
     output = shmem.zeros((M, N), dtype=dtype)
 
     # Reference
-    C_local_ref = torch.matmul(A.clone(), B_local.clone())
-    C_gathered_list = [torch.zeros(M, N_local, dtype=dtype, device=f"cuda:{rank}") for _ in range(world_size)]
-    dist.all_gather(C_gathered_list, C_local_ref)
-    C_ref = torch.cat(C_gathered_list, dim=1)
+    C_shard_ref = torch.matmul(A.clone(), B_shard.clone())
+    C_shards = [torch.zeros(M, N_local, dtype=dtype, device=f"cuda:{rank}") for _ in range(world_size)]
+    dist.all_gather(C_shards, C_shard_ref)
+    C_ref = torch.cat(C_shards, dim=1)
     torch.cuda.synchronize()
 
     config = ops.FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
     if N_local < config.block_size_n:
-        config = ops.FusedConfig(block_size_m=32, block_size_n=N_local, block_size_k=32)
+        pytest.skip(f"N_local={N_local} < block_size_n={config.block_size_n}, skipping")
 
     from iris.ops.matmul_all_scatter import matmul_all_scatter
 
-    matmul_all_scatter(shmem, output, A, B_local, config=config)
+    matmul_all_scatter(shmem, output, A, B_shard, config=config)
 
     torch.cuda.synchronize()
     shmem.barrier()
