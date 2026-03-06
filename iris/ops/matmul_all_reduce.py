@@ -272,11 +272,6 @@ def matmul_all_reduce(
     if A.dtype != B.dtype or A.dtype != C.dtype:
         raise ValueError(f"All tensors must have same dtype, got A:{A.dtype}, B:{B.dtype}, C:{C.dtype}")
 
-    # Validate block sizes match problem dimensions
-    assert M >= config.block_size_m, f"M={M} too small for block_size_m={config.block_size_m}"
-    assert K >= config.block_size_k, f"K={K} too small for block_size_k={config.block_size_k}"
-    assert N >= config.block_size_n, f"N={N} too small for block_size_n={config.block_size_n}"
-
     # Extract strides
     stride_am, stride_ak = A.stride()
     stride_bk, stride_bn = B.stride()

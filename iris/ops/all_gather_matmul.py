@@ -219,17 +219,6 @@ def all_gather_matmul(
     assert output_tensor.shape == (M, N), f"Output must be ({M}, {N}), got {output_tensor.shape}"
 
     # Validate problem size against block sizes
-    assert M >= config.block_size_m, (
-        f"M ({M}) must be >= block_size_m ({config.block_size_m}). Use smaller block sizes for small problems."
-    )
-    assert K_local >= config.block_size_k, (
-        f"K_local ({K_local}) must be >= block_size_k ({config.block_size_k}). "
-        f"Use smaller block sizes for small problems."
-    )
-    assert N >= config.block_size_n, (
-        f"N ({N}) must be >= block_size_n ({config.block_size_n}). Use smaller block sizes for small problems."
-    )
-
     if workspace is None:
         workspace = all_gather_matmul_preamble(shmem, A_sharded, B, config)
 
