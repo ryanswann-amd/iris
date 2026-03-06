@@ -112,7 +112,7 @@ def test_matmul_all_reduce_via_shmem_ops():
     shmem = iris.iris(heap_size)
     rank = shmem.get_rank()
 
-    M, N, K = 256, 128, 64
+    M, N, K = 256, 256, 64
     dtype = torch.float16
 
     A = shmem.randn((M, K), dtype=dtype)

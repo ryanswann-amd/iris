@@ -75,11 +75,11 @@ fi
         if [ ! -d \"\$TRITONBLAS_DIR\" ]; then
             git clone https://github.com/ROCm/tritonBLAS.git \"\$TRITONBLAS_DIR\"
             cd \"\$TRITONBLAS_DIR\"
-            git checkout 47768c93acb7f89511d797964b84544c30ab81ad
+            git checkout cd119279f3df543a558aa6d2cd4a3daed0b1ec7a
         else
             cd \"\$TRITONBLAS_DIR\"
             git fetch
-            git checkout 47768c93acb7f89511d797964b84544c30ab81ad
+            git checkout cd119279f3df543a558aa6d2cd4a3daed0b1ec7a
         fi
         # Install with dependencies
         pip install -e .

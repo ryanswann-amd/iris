@@ -173,7 +173,6 @@ __all__ = [
     # Namespace
     "OpsNamespace",
     # Operations
-    "matmul",  # Simple single-GPU GEMM
     "matmul_all_reduce",
     "matmul_all_reduce_preamble",
     "all_gather_matmul",

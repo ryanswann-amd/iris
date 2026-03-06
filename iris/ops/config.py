@@ -35,8 +35,7 @@ class FusedConfig:
                            "one_shot", "two_shot", "spinlock". Default: "two_shot".
         all_reduce_num_rings: Number of concurrent rings (for ring variant). Default: 1.
         all_gather_matmul_variant: All-gather + matmul algorithm variant. Options:
-                                   "pull" (on-demand pull from remote ranks),
-                                   "chunked" (pre-gather into buffer then GEMM).
+                                   "pull" (on-demand pull from remote ranks).
                                    Default: "pull".
 
     Example:

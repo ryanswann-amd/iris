@@ -32,7 +32,6 @@ import iris
     "variant",
     [
         "pull",
-        "chunked",
     ],
 )
 def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N, variant):

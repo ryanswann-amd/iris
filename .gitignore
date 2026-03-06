@@ -28,6 +28,8 @@ omni*.pdf
 slurm*.out
 
 *.egg-info
+*.backup
+*.with_chunked
 
 examples/gemm/results/*
 asm/
