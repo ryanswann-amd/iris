@@ -41,8 +41,6 @@ Quick Start (Gluon API - Experimental):
     >>>     ctx.load(buffer, 1)
 """
 
-# __init__.py
-
 from .iris import (
     Iris,
     iris,
@@ -67,15 +65,15 @@ from .util import (
     do_bench,
 )
 
+from .tensor_utils import (
+    CUDAArrayInterface,
+    tensor_from_ptr,
+)
+
 from . import hip
-
-# Import experimental features (optional, for users who want experimental APIs)
 from . import experimental
-
-# Import ops module (fused GEMM+CCL operations)
 from . import ops
-
-# Import logging functionality
+from . import tensor_creation
 from .logging import (
     set_logger_level,
     logger,
@@ -84,8 +82,6 @@ from .logging import (
     WARNING,
     ERROR,
 )
-
-# Launcher functionality is now user code - see examples and documentation
 
 __all__ = [
     "Iris",
@@ -106,9 +102,12 @@ __all__ = [
     "atomic_min",
     "atomic_max",
     "do_bench",
+    "CUDAArrayInterface",
+    "tensor_from_ptr",
     "hip",
-    "experimental",  # Experimental features including iris_gluon
-    "ops",  # Fused GEMM+CCL operations
+    "experimental",
+    "ops",
+    "tensor_creation",
     "set_logger_level",
     "logger",
     "DEBUG",
