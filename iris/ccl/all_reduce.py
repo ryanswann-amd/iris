@@ -693,7 +693,15 @@ def persistent_all_reduce_two_shot(
                 remote_rank_idx = (start_rank_idx + i) % world_size
                 remote_rank = rank_start + remote_rank_idx * rank_stride
                 if remote_rank_idx != group_rank:
-                    iris.store(out_ptr, reduced, iris_rank, remote_rank, heap_bases, mask=mask, hint=(BLOCK_SIZE_M, BLOCK_SIZE_N))
+                    iris.store(
+                        out_ptr,
+                        reduced,
+                        iris_rank,
+                        remote_rank,
+                        heap_bases,
+                        mask=mask,
+                        hint=(BLOCK_SIZE_M, BLOCK_SIZE_N),
+                    )
 
 
 def all_reduce(
