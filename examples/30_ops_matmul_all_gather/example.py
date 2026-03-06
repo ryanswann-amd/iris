@@ -27,7 +27,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("-m", type=int, default=4096, help="Total rows (must be divisible by world_size)")
-    parser.add_argument("-n", type=int, default=256, help="Columns of B")
+    parser.add_argument("-n", type=int, default=128, help="Columns of B")
     parser.add_argument("-k", type=int, default=256, help="Inner dimension")
     parser.add_argument("--heap_size", type=int, default=1 << 31, help="Iris heap size")
     parser.add_argument("--datatype", type=str, default="fp16", choices=["fp16", "fp32", "bf16"], help="Data type")
