@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import os
 
-from iris.allocators import TorchAllocator, VMemAllocator
+from iris.allocators import TorchAllocator, VMemAllocator, VMemPow2Allocator
 from iris.fd_passing import setup_fd_infrastructure
 from iris._distributed_helpers import distributed_allgather
 
@@ -24,7 +24,7 @@ class SymmetricHeap:
     Manages distributed memory with symmetric addressing across ranks,
     handling all allocator coordination and memory sharing internally.
 
-    Supports multiple allocator backends: 'torch' (default) and 'vmem'.
+    Supports multiple allocator backends: 'torch' (default), 'vmem', and 'vmem_pow2'.
     """
 
     def __init__(
@@ -43,7 +43,7 @@ class SymmetricHeap:
             device_id: GPU device ID
             cur_rank: Current process rank
             num_ranks: Total number of ranks
-            allocator_type: Type of allocator ("torch" or "vmem"); default "torch"
+            allocator_type: Type of allocator ("torch", "vmem", or "vmem_pow2"); default "torch"
 
         Raises:
             ValueError: If allocator_type is not supported
@@ -58,8 +58,10 @@ class SymmetricHeap:
             self.allocator = TorchAllocator(heap_size, device_id, cur_rank, num_ranks)
         elif allocator_type == "vmem":
             self.allocator = VMemAllocator(heap_size, device_id, cur_rank, num_ranks)
+        elif allocator_type == "vmem_pow2":
+            self.allocator = VMemPow2Allocator(heap_size, device_id, cur_rank, num_ranks)
         else:
-            raise ValueError(f"Unknown allocator type: {allocator_type}. Supported: 'torch', 'vmem'")
+            raise ValueError(f"Unknown allocator type: {allocator_type}. Supported: 'torch', 'vmem', 'vmem_pow2'")
 
         self.fd_conns = setup_fd_infrastructure(cur_rank, num_ranks)
         device = self.allocator.get_device()
