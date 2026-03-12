@@ -126,6 +126,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                     k_block_start = k_flag_group * K_PER_FLAG
 
                     rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+                    rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
 
                     for k_off in range(K_PER_FLAG):
                         k_block_global = k_block_start + k_off
@@ -138,11 +139,12 @@ def _hbm_buffer_all_gather_matmul_kernel(
                         k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
 
                         rk = k_block_global * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+                        rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
                         staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
                         for compile_rank in range(world_size):
                             if src_rank_idx == compile_rank:
-                                a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx)
+                                a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx, hint=(1, BLOCK_SIZE_K))
                                 tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
                     flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
