@@ -53,6 +53,9 @@ class RingAttention(nn.Module):
         self.head_dim = head_dim
         self.causal = causal
         self.scale = scale if scale is not None else head_dim**-0.5
+        # Ping-pong buffer cache: keyed by (shape, dtype) to avoid re-allocating
+        # the symmetric heap buffers on every forward pass.
+        self._buf_cache: dict = {}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """
@@ -70,4 +73,15 @@ class RingAttention(nn.Module):
         assert q.shape[1] == self.num_heads, f"Expected {self.num_heads} heads, got {q.shape[1]}"
         assert q.shape[2] == self.head_dim, f"Expected head_dim {self.head_dim}, got {q.shape[2]}"
 
-        return ring_attn_fwd(q, k, v, self.shmem, causal=self.causal, scale=self.scale)
+        # Lazily allocate (or reuse) ping-pong symmetric heap buffers for this shape.
+        buf_key = (k.shape, k.dtype)
+        if buf_key not in self._buf_cache:
+            self._buf_cache[buf_key] = (
+                self.shmem.empty(k.shape, dtype=k.dtype),
+                self.shmem.empty(k.shape, dtype=k.dtype),
+                self.shmem.empty(v.shape, dtype=v.dtype),
+                self.shmem.empty(v.shape, dtype=v.dtype),
+            )
+        ping_pong = self._buf_cache[buf_key]
+
+        return ring_attn_fwd(q, k, v, self.shmem, causal=self.causal, scale=self.scale, _ping_pong_bufs=ping_pong)

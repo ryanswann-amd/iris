@@ -180,13 +180,13 @@ def _ring_attn_fwd_kernel(
     tl.store(o_ptrs, o, mask=q_mask[:, None])
 
 
-def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
+def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None, _ping_pong_bufs=None):
     """
     Ring Attention forward pass.
 
     Each device holds a contiguous chunk of the sequence (Q, K, V). K and V
     are rotated around the ring of devices using Iris ``put`` operations (via
-    ``_put_tensor_kernel``), while Q remains local. At each step the local
+    ``_put_kv_kernel``), while Q remains local. At each step the local
     flash-attention kernel accumulates partial results into O, M, L using
     online softmax.
 
@@ -207,6 +207,10 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
             that position ``i`` only attends to positions ``j <= i``.
         scale (float | None): Softmax scale factor. Defaults to
             ``head_dim ** -0.5``.
+        _ping_pong_bufs (tuple | None): Optional pre-allocated ping-pong buffers
+            ``(k_ping, k_pong, v_ping, v_pong)`` from the symmetric heap.  When
+            provided, no new heap allocation is performed (avoids heap churn on
+            repeated calls with the same tensor shape).
 
     Returns:
         torch.Tensor: Attention output, shape ``[seq_q, num_heads, head_dim]``,
@@ -242,10 +246,15 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
     # Allocate two symmetric ping-pong buffers per tensor on the Iris heap.
     # The destination buffer of each iris.put must be on the symmetric heap so
     # that the pointer can be translated to the remote rank's address space.
-    k_ping = shmem.empty(k.shape, dtype=k.dtype)
-    k_pong = shmem.empty(k.shape, dtype=k.dtype)
-    v_ping = shmem.empty(v.shape, dtype=v.dtype)
-    v_pong = shmem.empty(v.shape, dtype=v.dtype)
+    # If the caller supplies pre-allocated buffers (e.g. from RingAttention),
+    # reuse them to avoid heap churn on repeated forward passes.
+    if _ping_pong_bufs is not None:
+        k_ping, k_pong, v_ping, v_pong = _ping_pong_bufs
+    else:
+        k_ping = shmem.empty(k.shape, dtype=k.dtype)
+        k_pong = shmem.empty(k.shape, dtype=k.dtype)
+        v_ping = shmem.empty(v.shape, dtype=v.dtype)
+        v_pong = shmem.empty(v.shape, dtype=v.dtype)
 
     # Copy initial K/V into the ping buffers, then sync so every rank has its
     # own initial chunk ready before the first rotation.
