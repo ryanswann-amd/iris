@@ -17,9 +17,11 @@ import iris
 
 
 @triton.jit
-def _put_tensor_kernel(
-    src,
-    dst,
+def _put_kv_kernel(
+    k_src,
+    k_dst,
+    v_src,
+    v_dst,
     n_elem,
     cur_rank: tl.constexpr,
     next_rank: tl.constexpr,
@@ -27,16 +29,22 @@ def _put_tensor_kernel(
     BLOCK: tl.constexpr,
 ):
     """
-    Copy a flat tensor from the current rank to the next rank using ``iris.put``.
+    Fused K+V put: copy K and V to the next rank in a single kernel launch.
 
-    Every rank runs this kernel simultaneously.  ``dst`` must reside on the Iris
-    symmetric heap so that the address can be translated to ``next_rank``'s
-    address space.
+    Both K and V tensors must be flat (same number of elements) and reside on
+    the Iris symmetric heap so that their addresses can be translated to
+    ``next_rank``'s address space.
+
+    Each program instance copies ``BLOCK`` elements of K **and** ``BLOCK``
+    elements of V, halving kernel-launch overhead compared to two separate
+    ``_put_tensor_kernel`` calls.
 
     Args:
-        src: Source pointer (local CUDA memory, does not need to be symmetric).
-        dst: Destination pointer (must be on the symmetric heap).
-        n_elem: Total number of elements to copy.
+        k_src: Source K pointer (must be on the symmetric heap).
+        k_dst: Destination K pointer (must be on the symmetric heap).
+        v_src: Source V pointer (must be on the symmetric heap).
+        v_dst: Destination V pointer (must be on the symmetric heap).
+        n_elem: Total number of elements in K (same as V).
         cur_rank: This rank's ID.
         next_rank: Destination rank ID.
         heap_bases: Iris heap base address table.
@@ -45,7 +53,8 @@ def _put_tensor_kernel(
     pid = tl.program_id(0)
     offs = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offs < n_elem
-    iris.put(src + offs, dst + offs, cur_rank, next_rank, heap_bases, mask=mask)
+    iris.put(k_src + offs, k_dst + offs, cur_rank, next_rank, heap_bases, mask=mask)
+    iris.put(v_src + offs, v_dst + offs, cur_rank, next_rank, heap_bases, mask=mask)
 
 
 @triton.jit
@@ -254,7 +263,6 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
     # range of tensor sizes and GPU architectures.
     PUT_BLOCK = 1024
     n_k = k_cur.numel()
-    n_v = v_cur.numel()
     heap_bases = shmem.get_heap_bases()
 
     for step in range(world_size):
@@ -309,24 +317,19 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
                 num_stages=2,
             )
 
-        # Rotate K and V to the next rank using Iris put operations.
-        # All ranks MUST participate in this step so the barrier is well-defined.
-        # The ping-pong buffers guarantee that the source being read and the
-        # destination being written are always different allocations.
+        # Rotate K and V to the next rank using a single fused Iris put kernel.
+        # Fusing K and V into one kernel launch halves launch overhead and lets
+        # the GPU overlap their transfers.  All ranks MUST participate in this
+        # step so the barrier is well-defined.  The ping-pong buffers guarantee
+        # that the source being read and the destination being written are always
+        # different allocations.
         if step < world_size - 1:
-            _put_tensor_kernel[(triton.cdiv(n_k, PUT_BLOCK),)](
+            _put_kv_kernel[(triton.cdiv(n_k, PUT_BLOCK),)](
                 k_cur.view(-1),
                 k_recv.view(-1),
-                n_k,
-                cur_rank=rank,
-                next_rank=next_rank,
-                heap_bases=heap_bases,
-                BLOCK=PUT_BLOCK,
-            )
-            _put_tensor_kernel[(triton.cdiv(n_v, PUT_BLOCK),)](
                 v_cur.view(-1),
                 v_recv.view(-1),
-                n_v,
+                n_k,
                 cur_rank=rank,
                 next_rank=next_rank,
                 heap_bases=heap_bases,
