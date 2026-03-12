@@ -104,12 +104,19 @@ output = layer(q, k, v)   # [seq_local, num_heads, head_dim]
 
 ## Design Notes
 
-* **Communication**: KV rotation uses `torch.distributed.isend` / `irecv`
-  (point-to-point), launching overlapping sends and receives to maximise
-  throughput.
+* **Communication**: KV rotation uses `iris.put` Triton kernels — each rank
+  pushes its K/V chunk directly to the next rank's symmetric heap buffer.
+  A `shmem.barrier()` after each push ensures all ranks have received the
+  data before the next attention step proceeds. No `torch.distributed` APIs
+  are used.
+* **Ping-pong buffers**: Two symmetric buffer pairs (`k_ping`/`k_pong` and
+  `v_ping`/`v_pong`) alternate as source and destination on each step.  This
+  guarantees the source being read and the destination being written are
+  always different allocations, avoiding any read-after-write hazard.
 * **Online softmax**: The kernel maintains running max (`M`) and sum (`L`)
   accumulators in float32 for numerical stability.  The final output is
   `O / L` after all ring steps.
 * **Causal masking**: Handled entirely at the granularity of KV *chunks* –
   full attention, diagonal block attention, or skip – so the per-element mask
-  is applied only in the same-block diagonal case.
+  is applied only in the same-block diagonal case.  All ranks still
+  participate in the rotation (required for the barrier to be well-defined).

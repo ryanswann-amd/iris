@@ -10,10 +10,42 @@
 ################################################################################
 
 import torch
-import torch.distributed as dist
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
+import iris
+
+
+@triton.jit
+def _put_tensor_kernel(
+    src,
+    dst,
+    n_elem,
+    cur_rank: tl.constexpr,
+    next_rank: tl.constexpr,
+    heap_bases,
+    BLOCK: tl.constexpr,
+):
+    """
+    Copy a flat tensor from the current rank to the next rank using ``iris.put``.
+
+    Every rank runs this kernel simultaneously.  ``dst`` must reside on the Iris
+    symmetric heap so that the address can be translated to ``next_rank``'s
+    address space.
+
+    Args:
+        src: Source pointer (local CUDA memory, does not need to be symmetric).
+        dst: Destination pointer (must be on the symmetric heap).
+        n_elem: Total number of elements to copy.
+        cur_rank: This rank's ID.
+        next_rank: Destination rank ID.
+        heap_bases: Iris heap base address table.
+        BLOCK: Number of elements each program instance handles.
+    """
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n_elem
+    iris.put(src + offs, dst + offs, cur_rank, next_rank, heap_bases, mask=mask)
 
 
 @triton.jit
@@ -144,19 +176,24 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
     Ring Attention forward pass.
 
     Each device holds a contiguous chunk of the sequence (Q, K, V). K and V
-    are rotated around the ring of devices using torch.distributed send/recv,
-    while Q remains local. At each step the local flash-attention kernel
-    accumulates partial results into O, M, L using online softmax.
+    are rotated around the ring of devices using Iris ``put`` operations (via
+    ``_put_tensor_kernel``), while Q remains local. At each step the local
+    flash-attention kernel accumulates partial results into O, M, L using
+    online softmax.
 
     After all ``world_size`` steps, O is normalised by L to produce the output.
+
+    Communication uses two ping-pong symmetric buffers per tensor (K and V),
+    allocated on the Iris heap.  After each push, ``shmem.barrier()`` ensures
+    all ranks have received the new data before proceeding to the next step.
 
     Args:
         q (torch.Tensor): Query tensor, shape ``[seq_q, num_heads, head_dim]``.
             Lives on the local device's CUDA memory.
         k (torch.Tensor): Key tensor, same shape as ``q``.
         v (torch.Tensor): Value tensor, same shape as ``q``.
-        shmem: Iris shmem context (provides ``get_rank()`` / ``get_num_ranks()``
-            and ``barrier()``).
+        shmem: Iris shmem context (provides ``get_rank()`` / ``get_num_ranks()``,
+            ``get_heap_bases()`` and ``barrier()``).
         causal (bool): If ``True``, apply a causal (lower-triangular) mask so
             that position ``i`` only attends to positions ``j <= i``.
         scale (float | None): Softmax scale factor. Defaults to
@@ -193,76 +230,116 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
     BLOCK_KV = 64
     HEAD_DIM = head_dim  # already validated as power of 2
 
-    # We work with a rotating KV pair; start from the local K, V
-    k_cur = k.contiguous()
-    v_cur = v.contiguous()
+    # Allocate two symmetric ping-pong buffers per tensor on the Iris heap.
+    # The destination buffer of each iris.put must be on the symmetric heap so
+    # that the pointer can be translated to the remote rank's address space.
+    k_ping = shmem.empty(k.shape, dtype=k.dtype)
+    k_pong = shmem.empty(k.shape, dtype=k.dtype)
+    v_ping = shmem.empty(v.shape, dtype=v.dtype)
+    v_pong = shmem.empty(v.shape, dtype=v.dtype)
+
+    # Copy initial K/V into the ping buffers, then sync so every rank has its
+    # own initial chunk ready before the first rotation.
+    k_ping.copy_(k.contiguous())
+    v_ping.copy_(v.contiguous())
+    shmem.barrier()
+
+    k_cur, k_recv = k_ping, k_pong
+    v_cur, v_recv = v_ping, v_pong
 
     next_rank = (rank + 1) % world_size
-    prev_rank = (rank - 1 + world_size) % world_size
+
+    # Block size for the put kernel (elements per workgroup). 1024 is a good
+    # default that balances kernel launch overhead vs. occupancy across a wide
+    # range of tensor sizes and GPU architectures.
+    PUT_BLOCK = 1024
+    n_k = k_cur.numel()
+    n_v = v_cur.numel()
+    heap_bases = shmem.get_heap_bases()
 
     for step in range(world_size):
         # The KV chunk we currently hold comes from rank kv_rank
         kv_rank = (rank - step) % world_size
 
-        # Determine masking strategy for this step
+        # Determine whether attention is needed and what kind of causal mask to use
         if causal:
-            if kv_rank > rank:
-                # All KV positions are strictly AFTER our Q positions → skip
-                if step < world_size - 1:
-                    k_cur, v_cur = _rotate_kv(k_cur, v_cur, next_rank, prev_rank)
-                continue
-            elif kv_rank == rank:
-                # Same block → apply diagonal causal mask
-                apply_causal = True
-            else:
-                # KV positions are all BEFORE our Q positions → full attention
-                apply_causal = False
+            skip_compute = kv_rank > rank  # KV is entirely in the future; skip step
+            apply_causal = kv_rank == rank  # diagonal block → per-element causal mask
         else:
+            skip_compute = False
             apply_causal = False
 
-        q_rank_start = rank * seq_q
-        kv_rank_start = kv_rank * seq_kv
+        if not skip_compute:
+            q_rank_start = rank * seq_q
+            kv_rank_start = kv_rank * seq_kv
+            grid = (num_heads, triton.cdiv(seq_q, BLOCK_Q))
+            _ring_attn_fwd_kernel[grid](
+                q,
+                k_cur,
+                v_cur,
+                O,
+                M,
+                L,
+                q.stride(0),
+                q.stride(1),
+                q.stride(2),
+                k_cur.stride(0),
+                k_cur.stride(1),
+                k_cur.stride(2),
+                v_cur.stride(0),
+                v_cur.stride(1),
+                v_cur.stride(2),
+                O.stride(0),
+                O.stride(1),
+                O.stride(2),
+                M.stride(0),
+                M.stride(1),
+                L.stride(0),
+                L.stride(1),
+                seq_q,
+                seq_kv,
+                q_rank_start,
+                kv_rank_start,
+                scale,
+                CAUSAL=apply_causal,
+                BLOCK_Q=BLOCK_Q,
+                BLOCK_KV=BLOCK_KV,
+                HEAD_DIM=HEAD_DIM,
+                num_warps=4,
+                num_stages=2,
+            )
 
-        grid = (num_heads, triton.cdiv(seq_q, BLOCK_Q))
-        _ring_attn_fwd_kernel[grid](
-            q,
-            k_cur,
-            v_cur,
-            O,
-            M,
-            L,
-            q.stride(0),
-            q.stride(1),
-            q.stride(2),
-            k_cur.stride(0),
-            k_cur.stride(1),
-            k_cur.stride(2),
-            v_cur.stride(0),
-            v_cur.stride(1),
-            v_cur.stride(2),
-            O.stride(0),
-            O.stride(1),
-            O.stride(2),
-            M.stride(0),
-            M.stride(1),
-            L.stride(0),
-            L.stride(1),
-            seq_q,
-            seq_kv,
-            q_rank_start,
-            kv_rank_start,
-            scale,
-            CAUSAL=apply_causal,
-            BLOCK_Q=BLOCK_Q,
-            BLOCK_KV=BLOCK_KV,
-            HEAD_DIM=HEAD_DIM,
-            num_warps=4,
-            num_stages=2,
-        )
-
-        # Rotate K, V to the next step (not needed after the last step)
+        # Rotate K and V to the next rank using Iris put operations.
+        # All ranks MUST participate in this step so the barrier is well-defined.
+        # The ping-pong buffers guarantee that the source being read and the
+        # destination being written are always different allocations.
         if step < world_size - 1:
-            k_cur, v_cur = _rotate_kv(k_cur, v_cur, next_rank, prev_rank)
+            _put_tensor_kernel[(triton.cdiv(n_k, PUT_BLOCK),)](
+                k_cur.view(-1),
+                k_recv.view(-1),
+                n_k,
+                cur_rank=rank,
+                next_rank=next_rank,
+                heap_bases=heap_bases,
+                BLOCK=PUT_BLOCK,
+            )
+            _put_tensor_kernel[(triton.cdiv(n_v, PUT_BLOCK),)](
+                v_cur.view(-1),
+                v_recv.view(-1),
+                n_v,
+                cur_rank=rank,
+                next_rank=next_rank,
+                heap_bases=heap_bases,
+                BLOCK=PUT_BLOCK,
+            )
+            # Wait until all ranks have completed their puts before any rank
+            # proceeds to the next step (where k_recv becomes k_cur).
+            shmem.barrier()
+
+            # Swap: the buffer we just received into becomes the source for the
+            # next step; the old source becomes the receive buffer.
+            k_cur, k_recv = k_recv, k_cur
+            v_cur, v_recv = v_recv, v_cur
 
     # Normalize: output = O / L, where L is the softmax denominator
     # L: [num_heads, seq_q] → [seq_q, num_heads, 1] for broadcasting
@@ -270,27 +347,3 @@ def ring_attn_fwd(q, k, v, shmem, causal=True, scale=None):
     output = O / L_expanded
 
     return output.to(input_dtype)
-
-
-def _rotate_kv(k, v, next_rank, prev_rank):
-    """
-    Perform one step of ring KV rotation using point-to-point communication.
-
-    Sends the current ``k`` and ``v`` tensors to ``next_rank`` and receives
-    new ``k`` and ``v`` from ``prev_rank``.
-
-    The send and receive are posted concurrently to avoid deadlocks.
-    """
-    k_recv = torch.empty_like(k)
-    v_recv = torch.empty_like(v)
-
-    reqs = []
-    reqs.append(dist.isend(k.contiguous(), dst=next_rank))
-    reqs.append(dist.irecv(k_recv, src=prev_rank))
-    reqs.append(dist.isend(v.contiguous(), dst=next_rank))
-    reqs.append(dist.irecv(v_recv, src=prev_rank))
-
-    for r in reqs:
-        r.wait()
-
-    return k_recv, v_recv
