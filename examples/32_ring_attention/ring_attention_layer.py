@@ -55,7 +55,9 @@ class RingAttention(nn.Module):
         self.scale = scale if scale is not None else head_dim**-0.5
         # Ping-pong buffer cache: keyed by (shape, dtype) to avoid re-allocating
         # the symmetric heap buffers on every forward pass.
-        self._buf_cache: dict = {}
+        self._buf_cache: dict[
+            tuple[torch.Size, torch.dtype], tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = {}
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """

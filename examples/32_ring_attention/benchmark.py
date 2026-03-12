@@ -55,9 +55,16 @@ from ring_attention_layer import RingAttention  # noqa: E402
 _MI300X_FP16_TFLOPS = 1307.4
 _MI300X_MEMBW_GBS = 5300.0
 
+# MI300X has exactly 304 compute units (used as a fingerprint when the device name
+# does not contain an explicit architecture string).
+_MI300X_CU_COUNT = 304
+
 # Fallback conservative estimates for unknown hardware
 _FALLBACK_FP16_TFLOPS = 100.0
 _FALLBACK_MEMBW_GBS = 500.0
+
+# Unit conversion: 1 TB/s = 1000 GB/s
+_GB_TO_TB = 1e3
 
 
 def _get_hw_specs(device: torch.device) -> tuple[float, float]:
@@ -70,8 +77,8 @@ def _get_hw_specs(device: torch.device) -> tuple[float, float]:
     try:
         props = torch.cuda.get_device_properties(device)
         name = props.name.lower()
-        # gfx942 = MI300X / MI300A family
-        if "gfx942" in name or "mi300" in name or (props.multi_processor_count == 304):
+        # gfx942 = MI300X / MI300A family; 304 CUs is the MI300X fingerprint
+        if "gfx942" in name or "mi300" in name or (props.multi_processor_count == _MI300X_CU_COUNT):
             return _MI300X_FP16_TFLOPS, _MI300X_MEMBW_GBS
     except Exception:
         pass
@@ -331,17 +338,16 @@ def _make_plots(results: list[dict[str, Any]], save_fig: str | None):
     ai_max = max(ai_vals) * 2.0
     ai_range = [ai_min, ai_max]
 
-    # Roofline ceiling
-    ridge = peak_tflops / peak_bw * 1e3  # ridge point (FLOPs/byte), BW in GB/s → TB/s
+    # Roofline ceiling: ridge point converts BW from GB/s to TB/s for TFLOPS units
+    ridge = peak_tflops / peak_bw * _GB_TO_TB  # ridge point (FLOPs/byte)
     ai_plot = [ai_min, ridge, ai_max]
-    roof = [min(peak_tflops, a * peak_bw / 1e3) for a in ai_plot]
+    roof = [min(peak_tflops, a * peak_bw / _GB_TO_TB) for a in ai_plot]
     ax.loglog(ai_plot, roof, "k--", linewidth=2, label="Roofline (MI300X)")
     ax.axhline(peak_tflops, color="gray", linestyle=":", alpha=0.6, label=f"Peak FP16 ({peak_tflops:.0f} TFLOPS)")
     ax.axvline(ridge, color="gray", linestyle=":", alpha=0.6, label=f"Ridge ({ridge:.1f} FLOP/B)")
 
     # Ring attention points
     for r in results:
-        label = f"Ring (seq={r['total_seq']})"
         ax.scatter(r["ring_ai"], r["ring_tflops"], marker="o", s=80, zorder=5)
         ax.annotate(
             f"S={r['total_seq']}",
@@ -423,8 +429,9 @@ def parse_args():
         default=[512, 1024, 2048, 4096, 8192],
         help="Total sequence lengths to sweep",
     )
-    p.add_argument("--causal", action="store_true", default=True, help="Causal attention (default: True)")
-    p.add_argument("--no_causal", dest="causal", action="store_false", help="Non-causal (bidirectional) attention")
+    p.add_argument(
+        "--no_causal", dest="causal", action="store_false", default=True, help="Non-causal (bidirectional) attention"
+    )
     p.add_argument("--dtype", choices=["float16", "bfloat16"], default="float16")
     p.add_argument("--warmup", type=int, default=5, help="Warm-up iterations")
     p.add_argument("--iters", type=int, default=20, help="Timed iterations")
