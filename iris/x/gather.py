@@ -24,6 +24,7 @@ def gather(
     src_view: TensorView,
     source_rank: tl.constexpr,
     ctx: DeviceContext,
+    hint: tl.constexpr = None,
 ):
     """
     Tile-level gather from a specific rank.
@@ -37,6 +38,9 @@ def gather(
         src_view: TensorView for source tensor on source_rank.
         source_rank: Specific rank to load from (constexpr).
         ctx: DeviceContext with rank, world_size, and heap_bases.
+        hint: Vectorization hint passed to tl.multiple_of / tl.max_contiguous on
+            the translated pointer. Use a scalar (e.g. 16) or a tuple
+            (e.g. (1, 16)) to indicate alignment. Defaults to None (no hint).
 
     Returns:
         Loaded tile data as a tensor.
@@ -61,6 +65,7 @@ def gather(
             source_rank,  # from_rank (source rank)
             ctx.heap_bases,
             mask=mask,
+            hint=hint,
         )
 
     return tile_data
