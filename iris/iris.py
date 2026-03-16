@@ -66,6 +66,7 @@ from .tracing import Tracing, TraceEvent, DeviceTracing  # noqa: F401  re-export
 
 # Import shared tensor-creation helpers
 from . import tensor_creation
+from .util import is_simulation_env
 
 
 class Iris:
@@ -89,6 +90,9 @@ class Iris:
     """
 
     def __init__(self, heap_size=1 << 30, allocator_type="torch"):
+        if is_simulation_env():
+            allocator_type = "torch"
+
         # Initialize distributed environment
         comm, cur_rank, num_ranks = init_distributed()
         num_gpus = count_devices()
@@ -107,8 +111,21 @@ class Iris:
         self.device = f"cuda:{gpu_id}"
         self.heap_bases = self.heap.get_heap_bases()
 
-        for i in range(num_ranks):
-            self.debug(f"GPU {i}: Heap base {hex(int(self.heap_bases[i].item()))}")
+        if is_simulation_env():
+            import json
+
+            heap_bases_list = [int(self.heap_bases[r].item()) for r in range(self.num_ranks)]
+            out_path = f"iris_rank_{self.cur_rank}_heap_bases.json"
+            with open(out_path, "w") as f:
+                json.dump(
+                    {
+                        "rank": self.cur_rank,
+                        "num_ranks": self.num_ranks,
+                        "heap_bases": [hex(b) for b in heap_bases_list],
+                    },
+                    f,
+                    indent=2,
+                )
 
         distributed_barrier()
 
@@ -929,11 +946,14 @@ class Iris:
                 self.tracing.trace_buffers["timestamp"].data_ptr(),
                 self.tracing.trace_buffers["address"].data_ptr(),
                 self.tracing.trace_buffers["duration_cycles"].data_ptr(),
+                self.tracing.trace_buffers["op_index"].data_ptr(),
+                self.tracing.trace_buffers["payload_size"].data_ptr(),
             ]
             context_data += [
                 1,  # trace_enabled = 1 (true)
                 self.tracing.max_events,
                 self.tracing.trace_counter.data_ptr(),
+                self.tracing.op_index_counter.data_ptr(),
             ] + trace_buffer_ptrs
         else:
             context_data += [0]  # trace_enabled = 0 (false)
@@ -996,6 +1016,24 @@ class Iris:
             >>> print(f"GPU has {cu_count} CUs")  # GPU has 304 CUs
         """
         return get_cu_count(self.gpu_id)
+
+    def get_device_id(self):
+        """
+        Get the device ID used by this Iris instance.
+
+        In simulation mode, this may differ from the local rank if multiple
+        ranks share a single GPU. This is the device ID that was set during
+        Iris initialization.
+
+        Returns:
+            int: The GPU device ID used by this Iris instance.
+
+        Example:
+            >>> ctx = iris.iris(1 << 20)
+            >>> device_id = ctx.get_device_id()
+            >>> print(f"Using GPU {device_id}")  # Using GPU 0
+        """
+        return self.gpu_id
 
     def get_rank(self):
         """
@@ -1349,7 +1387,8 @@ class DeviceContext:
             >>>
             >>>     # With tracing
             >>>     ctx = DeviceContext.initialize(context_tensor, rank, world_size, tracing=True)
-            >>>     ctx.tracing.record_event_start(event_id=TraceEvent().put, target_rank=1, address=ptr)
+            >>>     mask = tl.full([64], True, dtype=tl.int1)  # Example mask
+            >>>     ctx.tracing.record_event_start(event_id=TraceEvent().put, target_rank=1, address=ptr, pid_m=0, pid_n=0, mask=mask)
         """
         # Extract heap bases (from index 2 onwards)
         heap_bases = context_tensor + 2  # Offset pointer to start at heap bases
@@ -1359,12 +1398,14 @@ class DeviceContext:
             trace_info_idx = 2 + world_size + 1  # Skip: cur_rank, num_ranks, heap_bases, trace_enabled flag
             max_events = tl.load(context_tensor + trace_info_idx + 0)
             trace_counter_ptr = tl.load(context_tensor + trace_info_idx + 1)
+            op_index_counter_ptr = tl.load(context_tensor + trace_info_idx + 2)
 
-            # Cast trace_counter_ptr to pointer type
+            # Cast counter pointers to pointer type
             trace_counter = tl.cast(trace_counter_ptr, tl.pointer_type(tl.int32))
+            op_index_counter = tl.cast(op_index_counter_ptr, tl.pointer_type(tl.int32))
 
-            # Extract trace buffer pointers (11 buffers)
-            base_idx = trace_info_idx + 2
+            # Extract trace buffer pointers (13 buffers)
+            base_idx = trace_info_idx + 3  # Updated: +3 because we now have op_index_counter
             trace_buf_event_id = tl.cast(tl.load(context_tensor + base_idx + 0), tl.pointer_type(tl.int32))
             trace_buf_pid = tl.cast(tl.load(context_tensor + base_idx + 1), tl.pointer_type(tl.int32))
             trace_buf_pid_m = tl.cast(tl.load(context_tensor + base_idx + 2), tl.pointer_type(tl.int32))
@@ -1376,6 +1417,8 @@ class DeviceContext:
             trace_buf_timestamp = tl.cast(tl.load(context_tensor + base_idx + 8), tl.pointer_type(tl.int64))
             trace_buf_address = tl.cast(tl.load(context_tensor + base_idx + 9), tl.pointer_type(tl.int64))
             trace_buf_duration_cycles = tl.cast(tl.load(context_tensor + base_idx + 10), tl.pointer_type(tl.int64))
+            trace_buf_op_index = tl.cast(tl.load(context_tensor + base_idx + 11), tl.pointer_type(tl.int32))
+            trace_buf_payload_size = tl.cast(tl.load(context_tensor + base_idx + 12), tl.pointer_type(tl.int32))
 
             # Create DeviceTracing instance
             device_tracing = DeviceTracing(
@@ -1383,6 +1426,7 @@ class DeviceContext:
                 rank=rank,
                 max_events=max_events,
                 counter=trace_counter,
+                op_index_counter=op_index_counter,
                 buf_event_id=trace_buf_event_id,
                 buf_pid=trace_buf_pid,
                 buf_pid_m=trace_buf_pid_m,
@@ -1394,6 +1438,8 @@ class DeviceContext:
                 buf_timestamp=trace_buf_timestamp,
                 buf_address=trace_buf_address,
                 buf_duration_cycles=trace_buf_duration_cycles,
+                buf_op_index=trace_buf_op_index,
+                buf_payload_size=trace_buf_payload_size,
             )
 
             return DeviceContext(rank, world_size, heap_bases, device_tracing)
@@ -1407,6 +1453,7 @@ class DeviceContext:
                 rank=rank,
                 max_events=max_events_zero,
                 counter=dummy_ptr_i32,
+                op_index_counter=dummy_ptr_i32,
                 buf_event_id=dummy_ptr_i32,
                 buf_pid=dummy_ptr_i32,
                 buf_pid_m=dummy_ptr_i32,
@@ -1418,6 +1465,8 @@ class DeviceContext:
                 buf_timestamp=dummy_ptr_i64,
                 buf_address=dummy_ptr_i64,
                 buf_duration_cycles=dummy_ptr_i64,
+                buf_op_index=dummy_ptr_i32,
+                buf_payload_size=dummy_ptr_i32,
             )
 
             return DeviceContext(rank, world_size, heap_bases, device_tracing)
