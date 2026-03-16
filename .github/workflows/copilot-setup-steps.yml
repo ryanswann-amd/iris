@@ -25,30 +25,23 @@ jobs:
       - name: Create task venv for Copilot
         run: |
           cd "$GITHUB_WORKSPACE"
-          mkdir -p "${RUNNER_WORKDIR}/.home" "${RUNNER_WORKDIR}/.pip-cache" "${RUNNER_WORKDIR}/.tmp" "${RUNNER_WORKDIR}/.uv-cache" "${RUNNER_WORKDIR}/.cache"
-          echo "UV_CACHE_DIR=${RUNNER_WORKDIR}/.uv-cache" >> "$GITHUB_ENV"
           /opt/venv/bin/python -m venv --system-site-packages .venv
-          OPT_SITE=$(/opt/venv/bin/python -c "import site; print(site.getsitepackages()[0])")
-          VENV_PY_VER=$(/opt/venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-          VENV_SITE=".venv/lib/python${VENV_PY_VER}/site-packages"
-          echo "import site; site.addsitedir('$OPT_SITE')" > "$VENV_SITE/opt-venv.pth"
           source .venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install -e . --cache-dir "${RUNNER_WORKDIR}/.pip-cache"
+          python -m pip install -e . --no-cache-dir
 
       - name: Install IntelliKit Python packages
         run: |
           source "$GITHUB_WORKSPACE/.venv/bin/activate"
-          # accordo and nexus require kerneldb which needs libdwarf-dev; skipped until added to container
-          # pip install --cache-dir "${RUNNER_WORKDIR}/.pip-cache" "git+https://github.com/AMDResearch/intellikit.git#subdirectory=accordo"
-          # pip install --cache-dir "${RUNNER_WORKDIR}/.pip-cache" "git+https://github.com/AMDResearch/intellikit.git#subdirectory=nexus"
-          pip install --cache-dir "${RUNNER_WORKDIR}/.pip-cache" "git+https://github.com/AMDResearch/intellikit.git#subdirectory=linex"
-          pip install --cache-dir "${RUNNER_WORKDIR}/.pip-cache" "git+https://github.com/AMDResearch/intellikit.git#subdirectory=metrix"
+          pip install --no-cache-dir "git+https://github.com/AMDResearch/intellikit.git#subdirectory=accordo"
+          pip install --no-cache-dir "git+https://github.com/AMDResearch/intellikit.git#subdirectory=linex"
+          pip install --no-cache-dir "git+https://github.com/AMDResearch/intellikit.git#subdirectory=metrix"
+          pip install --no-cache-dir "git+https://github.com/AMDResearch/intellikit.git#subdirectory=nexus"
 
       - name: Install uv for MCP servers
         run: |
           source "$GITHUB_WORKSPACE/.venv/bin/activate"
-          pip install --cache-dir "${RUNNER_WORKDIR}/.pip-cache" uv
+          pip install --no-cache-dir uv
 
       - name: Clone IntelliKit for MCP servers
         run: |
@@ -65,6 +58,7 @@ jobs:
       - name: Make venv default for subsequent steps
         run: |
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          echo "PYTHONPATH=$GITHUB_WORKSPACE/.venv/lib/python3.13/site-packages:$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}" >> "$GITHUB_ENV"
 
       - name: Verify ROCm and GPU visibility
         run: |
