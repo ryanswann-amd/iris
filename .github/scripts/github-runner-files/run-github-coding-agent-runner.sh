@@ -101,7 +101,7 @@ if [ -z "$RUNNER_NAME" ]; then
     RUNNER_NAME="${REPO_NAME}-runner-${CLUSTER_NAME}-$(date +%Y%m%d)-$(date +%H%M%S)"
 fi
 RUNNER_LABELS="${RUNNER_LABELS:-copilot}"
-mkdir -p "${RUNNER_WORKDIR}"
+mkdir -p "${RUNNER_WORKDIR}" "${RUNNER_WORKDIR}/.home" "${RUNNER_WORKDIR}/.pip-cache" "${RUNNER_WORKDIR}/.tmp" "${RUNNER_WORKDIR}/.cache"
 [ -n "${USE_OVERLAY}" ] && [ "${USE_OVERLAY}" != "0" ] && mkdir -p "${OVERLAY_DIR}"
 
 echo "=========================================="

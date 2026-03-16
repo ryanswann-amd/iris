@@ -49,6 +49,11 @@ fi
 export RUNNER_ALLOW_RUNASROOT="${RUNNER_ALLOW_RUNASROOT:-1}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${RUNNER_WORKDIR}/.triton_cache}"
 
+# Writable HOME/TMPDIR for job steps (run-github-coding-agent-runner.sh may already create dirs on host)
+mkdir -p "${RUNNER_WORKDIR}/.home" "${RUNNER_WORKDIR}/.tmp"
+export HOME="${RUNNER_WORKDIR}/.home"
+export TMPDIR="${RUNNER_WORKDIR}/.tmp"
+
 mkdir -p "${RUNNER_HOME}"
 
 echo "=========================================="
@@ -125,6 +130,11 @@ echo "Configuring runner..."
 
 # Cleanup function
 cleanup() {
+    # Kill any stale MCP processes left over from cancelled jobs
+    pkill -f "mcp/dist/index.js" 2>/dev/null || true
+    pkill -f "mcp-server-playwright" 2>/dev/null || true
+    pkill -f "playwright-mcp" 2>/dev/null || true
+
     # Only run removal once; skip if config already removed
     if [ ! -f "${RUNNER_HOME}/.runner" ]; then
         echo "Runner config already removed or not configured. Skipping cleanup."
