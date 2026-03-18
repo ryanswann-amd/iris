@@ -33,7 +33,6 @@ def parse_args():
     parser.add_argument("--block_size_m", type=int, default=32, help="Block size for M dimension tiling")
     parser.add_argument("--block_size_n", type=int, default=64, help="Block size for N dimension tiling")
     parser.add_argument("--comm_sms", type=int, default=64, help="Number of SMs for reduce-scatter kernel")
-    parser.add_argument("--cache_modifier", type=str, default="", help="Cache modifier for store operations")
     parser.add_argument("--num_stages", type=int, default=1, help="Number of stages")
     parser.add_argument("--num_warps", type=int, default=4, help="Number of warps")
     parser.add_argument("--waves_per_eu", type=int, default=0, help="Number of waves per EU")
@@ -66,7 +65,6 @@ def main():
         "block_size_m": args["block_size_m"],
         "block_size_n": args["block_size_n"],
         "comm_sms": args["comm_sms"],
-        "cache_modifier": args["cache_modifier"],
         "num_stages": args["num_stages"],
         "num_warps": args["num_warps"],
         "waves_per_eu": args["waves_per_eu"],

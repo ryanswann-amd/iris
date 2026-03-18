@@ -36,15 +36,12 @@ def persistent_reduce_scatter_two_shot(
     NUM_XCDS: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,
     DISTRIBUTION: tl.constexpr,
-    CACHE_MODIFIER: tl.constexpr,
 ):
     """
     Reduce-scatter using two-shot approach.
 
     Each rank reduces its assigned tiles from all ranks and stores the result
     only to its own output (no broadcast to other ranks).
-
-    CACHE_MODIFIER: Cache modifier for store operations (e.g. "", ".wt", ".cs").
     """
     pid = tl.program_id(0)
 
@@ -118,7 +115,7 @@ def persistent_reduce_scatter_two_shot(
             reduced = acc.to(output_ptr.type.element_ty)
 
             # Store only to own rank (no broadcast)
-            tl.store(out_ptr, reduced, cache_modifier=CACHE_MODIFIER)
+            tl.store(out_ptr, reduced, cache_modifier=".wt")
 
         # Slow path: MASKED (only boundary tiles land here)
         # This path handles tiles at tensor boundaries where not all elements are valid.
@@ -140,7 +137,7 @@ def persistent_reduce_scatter_two_shot(
             reduced = acc.to(output_ptr.type.element_ty)
 
             # Store only to own rank (no broadcast)
-            tl.store(out_ptr, reduced, mask=mask, cache_modifier=CACHE_MODIFIER)
+            tl.store(out_ptr, reduced, mask=mask, cache_modifier=".wt")
 
 
 def reduce_scatter(
@@ -254,7 +251,6 @@ def reduce_scatter(
         config.num_xcds,
         config.chunk_size,
         distribution,
-        config.cache_modifier,
         num_stages=config.num_stages,
         num_warps=config.num_warps,
         waves_per_eu=config.waves_per_eu,
