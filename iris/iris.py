@@ -38,6 +38,7 @@ Example (Object-Oriented DeviceContext API):
     >>>     data = device_ctx.load(buffer, from_rank=remote_rank)
 """
 
+import os
 import triton
 import triton.language as tl
 from triton.language.core import _aggregate as aggregate
@@ -117,7 +118,8 @@ class Iris:
             import json
 
             heap_bases_list = [int(self.heap_bases[r].item()) for r in range(self.num_ranks)]
-            out_path = f"iris_rank_{self.cur_rank}_heap_bases.json"
+            prefix = os.environ.get("IRIS_HEAP_BASES_PREFIX", "iris")
+            out_path = f"{prefix}_rank_{self.cur_rank}_heap_bases.json"
             with open(out_path, "w") as f:
                 json.dump(
                     {
@@ -1538,7 +1540,7 @@ class DeviceContext:
         return result
 
     @triton.jit
-    def store(self, pointer, value, to_rank, mask=None, hint: tl.constexpr = None):
+    def store(self, pointer, value, to_rank, mask=None, hint: tl.constexpr = None, cache_modifier: tl.constexpr = ""):
         """
         Writes data to the specified rank's memory location.
 
@@ -1560,7 +1562,7 @@ class DeviceContext:
             >>> ctx.store(buffer + offsets, values, to_rank=1, mask=mask)
         """
         translated_ptr = self._translate(pointer, self.rank, to_rank, hint)
-        tl.store(translated_ptr, value, mask=mask)
+        tl.store(translated_ptr, value, mask=mask, cache_modifier=cache_modifier)
 
     @triton.jit
     def get(self, from_ptr, to_ptr, from_rank, mask=None, hint: tl.constexpr = None):
@@ -1919,7 +1921,16 @@ def load(pointer, to_rank, from_rank, heap_bases, mask=None, hint: tl.constexpr 
 
 
 @triton.jit
-def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, hint: tl.constexpr = None):
+def store(
+    pointer,
+    value,
+    from_rank,
+    to_rank,
+    heap_bases,
+    mask=None,
+    hint: tl.constexpr = None,
+    cache_modifier: tl.constexpr = "",
+):
     """
     Writes data to the specified rank's memory location.
 
@@ -1950,7 +1961,7 @@ def store(pointer, value, from_rank, to_rank, heap_bases, mask=None, hint: tl.co
         >>>     iris.store(ptr, value, cur_rank, remote_rank, heap_bases)
     """
     translated_ptr = __translate(pointer, from_rank, to_rank, heap_bases, hint)
-    tl.store(translated_ptr, value, mask=mask)
+    tl.store(translated_ptr, value, mask=mask, cache_modifier=cache_modifier)
 
 
 @triton.jit
