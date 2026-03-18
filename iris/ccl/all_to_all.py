@@ -68,7 +68,6 @@ def persistent_all_to_all(
         COMM_SMS: Number of SMs for communication
         NUM_XCDS: Number of XCDs
         CHUNK_SIZE: Chunk size for chiplet transform
-        CACHE_MODIFIER: Cache modifier for store operations (e.g. "", ".wt", ".cs")
     """
     pid = tl.program_id(0)
 
