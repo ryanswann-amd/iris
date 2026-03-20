@@ -482,6 +482,7 @@ def _worker(args):
             fetch_pipe_depth=fetch_pipe_depth,
             split_kernels=split_kernels,
             gemm_sms=gemm_sms,
+            gemm_wgs=gemm_wgs,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()

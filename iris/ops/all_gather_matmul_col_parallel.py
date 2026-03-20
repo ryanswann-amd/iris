@@ -158,7 +158,7 @@ def _col_parallel_gemm_kernel(
 
 
 # =========================================================================
-# Fused kernel — interleaved fetch + GEMM in single launch
+# Fused kernel — dual-role WGs: fetch then GEMM
 # =========================================================================
 
 @triton.jit
@@ -185,16 +185,16 @@ def _col_parallel_all_gather_matmul_kernel(
     TRACE: tl.constexpr,
 ):
     """
-    Fused col-parallel AG+GEMM kernel following hbm_buffer pattern.
+    Dual-role col-parallel AG+GEMM kernel.
 
-    Grid: [fetch (P)] [gemm (G)]
-    Single-stage: P fetcher WGs gather remote M-tiles, G GEMM WGs
-    compute all output tiles. Local tiles are pre-copied and flags
-    pre-set so GEMM can start on them immediately while fetchers
-    gather remote data.
+    ALL WGs do fetch first (all CUs saturate XGMI), then ALL WGs
+    transition to persistent GEMM (all CUs saturate MFMA).
+    Local tiles are pre-copied with flags pre-set, so GEMM can
+    process them without waiting.
 
-    Fetcher determines source rank from m_tile position:
-      src_rank = m_tile // NUM_M_TILES_LOCAL
+    Grid: GEMM_WGS (all WGs, dual-role)
+    Phase 1: fetch remote tiles (stride = GEMM_WGS)
+    Phase 2: persistent GEMM over all output tiles (stride = GEMM_WGS)
     """
     pid = tl.program_id(0)
     acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
@@ -202,154 +202,127 @@ def _col_parallel_all_gather_matmul_kernel(
 
     ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=TRACE)
 
-    FIRST_STAGE_SIZE: tl.constexpr = FIRST_STAGE_FETCH_SMS + GEMM_TILES_PER_STAGE
-    REST_STAGE_SIZE: tl.constexpr = NUM_FETCH_SMS + GEMM_TILES_PER_STAGE
-    M_PER_STAGE: tl.constexpr = (NUM_M_TILES + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
+    # ================================================================
+    # PHASE 1: FETCH — all WGs gather ALL M-tiles (including local)
+    # ================================================================
+    # Local rank is included to avoid a separate 12ms host-side pre-copy.
+    if TRACE:
+        _trace_handle = ctx.tracing.record_event_start(
+            event_id=TraceEvent().wg_fetch, target_rank=cur_rank,
+            address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=0,
+        )
 
-    if pid < FIRST_STAGE_SIZE:
-        my_stage = zero
-        local_pid = pid
-        fetch_threshold = zero + FIRST_STAGE_FETCH_SMS
-    else:
-        adjusted = pid - FIRST_STAGE_SIZE
-        my_stage = 1 + adjusted // REST_STAGE_SIZE
-        local_pid = adjusted % REST_STAGE_SIZE
-        fetch_threshold = zero + NUM_FETCH_SMS
+    src_view = iris.x.make_tensor_view(A_sharded, M_local, K, stride_am, stride_ak)
 
-    if local_pid < fetch_threshold:
-        # ================================================================
-        # FETCHER — gathers remote M-tiles into staged_a
-        # ================================================================
-        stage_pid = local_pid
+    TOTAL_FG: tl.constexpr = world_size * NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
 
-        if TRACE:
-            _trace_handle = ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_fetch, target_rank=cur_rank,
-                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=my_stage,
-            )
+    for fg_idx in range(pid, TOTAL_FG, GEMM_WGS):
+        FG_PER_RANK: tl.constexpr = NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
+        rank_idx = fg_idx % world_size
+        tile_in_rank_fg = fg_idx // world_size
 
-        src_view = iris.x.make_tensor_view(A_sharded, M_local, K, stride_am, stride_ak)
+        m_tile_in_rank = tile_in_rank_fg // NUM_FLAG_GROUPS_K
+        k_flag_group = tile_in_rank_fg % NUM_FLAG_GROUPS_K
 
-        # Iterate over remote flag groups only (skip local rank).
-        # Total remote FGs = (ws-1) * NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
-        NUM_REMOTE_FG: tl.constexpr = (world_size - 1) * NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
+        m_tile = rank_idx * NUM_M_TILES_LOCAL + m_tile_in_rank
+        m_tile = min(m_tile, NUM_M_TILES - 1)
+        m_tile_local = m_tile_in_rank
+        src_rank_idx = m_tile // NUM_M_TILES_LOCAL
+        k_block_start = k_flag_group * K_PER_FLAG
 
-        for remote_fg_idx in range(stage_pid, NUM_REMOTE_FG, FIRST_STAGE_FETCH_SMS):
-            # Interleave across ranks for XGMI bandwidth balance:
-            # index = rank_offset * tiles_per_rank + tile_in_rank
-            # where rank_offset cycles through remote ranks
-            FG_PER_RANK: tl.constexpr = NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
-            rank_offset = remote_fg_idx % (world_size - 1)
-            tile_in_rank_fg = remote_fg_idx // (world_size - 1)
+        rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
 
-            m_tile_in_rank = tile_in_rank_fg // NUM_FLAG_GROUPS_K
-            k_flag_group = tile_in_rank_fg % NUM_FLAG_GROUPS_K
+        for k_off in range(K_PER_FLAG):
+            k_block = k_block_start + k_off
+            pid_m_t = zero + m_tile_local
+            tile_k_t = zero + k_block
+            k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
 
-            # Map rank_offset (0..6) -> actual rank, skipping cur_rank.
-            # Use arithmetic: if rank_offset >= cur_rank, add 1.
-            actual_rank = rank_offset + (1 if rank_offset >= cur_rank else 0)
-            m_tile = actual_rank * NUM_M_TILES_LOCAL + m_tile_in_rank
-            m_tile = min(m_tile, NUM_M_TILES - 1)
-            m_tile_local = m_tile_in_rank
-            src_rank_idx = m_tile // NUM_M_TILES_LOCAL
-            k_block_start = k_flag_group * K_PER_FLAG
+            rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+            rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+            staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-            rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+            for compile_rank in range(world_size):
+                if src_rank_idx == compile_rank:
+                    a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx, hint=(1, BLOCK_SIZE_K))
+                    tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
+        flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
+        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+
+    if TRACE:
+        ctx.tracing.record_event_end(_trace_handle)
+
+    # ================================================================
+    # PHASE 2: GEMM — persistent loop over output tiles, polls flags
+    # ================================================================
+    if TRACE:
+        _trace_handle = ctx.tracing.record_event_start(
+            event_id=TraceEvent().wg_gemm, target_rank=cur_rank,
+            address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=0,
+        )
+        _wt = zero.to(tl.int64)
+
+    for tile_id in range(pid, TOTAL_GEMM_TILES, GEMM_WGS):
+        num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
+        group_id = tile_id // num_pid_in_group
+        first_pid_m = group_id * GROUP_SIZE_M
+        first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
+        group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
+        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_sz)
+        pid_n = (tile_id % num_pid_in_group) // group_sz
+        pid_m = min(pid_m, NUM_M_TILES - 1)
+
+        rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+        rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        rn = tl.max_contiguous(tl.multiple_of(rn % N_LOCAL, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
+        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+
+        for k_fg in range(NUM_FLAG_GROUPS_K):
+            if TRACE:
+                _ws = read_realtime()
+
+            flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
+            while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
+                pass
+
+            if TRACE:
+                _wt = _wt + (read_realtime() - _ws)
+
+            k_block_base = k_fg * K_PER_FLAG
             for k_off in range(K_PER_FLAG):
-                k_block = k_block_start + k_off
-                pid_m_t = zero + m_tile_local
-                tile_k_t = zero + k_block
-                k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
-
+                k_block = k_block_base + k_off
                 rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
-                staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-                for compile_rank in range(world_size):
-                    if src_rank_idx == compile_rank:
-                        a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx, hint=(1, BLOCK_SIZE_K))
-                        tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
+                a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                a = tl.load(a_ptrs)
+                B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+                b = tl.load(B_ptrs)
 
-            flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
-            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                if ALLOW_TF32:
+                    acc = tl.dot(a, b, acc, allow_tf32=True)
+                else:
+                    acc += tl.dot(a, b, allow_tf32=False)
 
-        if TRACE:
-            ctx.tracing.record_event_end(_trace_handle)
+        if BIAS:
+            bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
+            acc = acc + bias_val[:, None]
 
-    else:
-        # ================================================================
-        # GEMM — persistent loop over output tiles, polls flags
-        # ================================================================
-        gemm_local_id = local_pid - fetch_threshold
+        c = acc.to(C.type.element_ty)
+        C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
+        c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
+        tl.store(C_ptrs, c, mask=c_mask, cache_modifier=".wt")
 
-        if TRACE:
-            _trace_handle = ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_gemm, target_rank=cur_rank,
-                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=my_stage,
-            )
-            _wt = zero.to(tl.int64)
-
-        for tile_id in range(gemm_local_id, TOTAL_GEMM_TILES, GEMM_WGS):
-            num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
-            group_id = tile_id // num_pid_in_group
-            first_pid_m = group_id * GROUP_SIZE_M
-            first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
-            group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
-            pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_sz)
-            pid_n = (tile_id % num_pid_in_group) // group_sz
-            pid_m = min(pid_m, NUM_M_TILES - 1)
-
-            rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
-            rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-            rn = tl.max_contiguous(tl.multiple_of(rn % N_LOCAL, BLOCK_SIZE_N), BLOCK_SIZE_N)
-
-            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
-
-            for k_fg in range(NUM_FLAG_GROUPS_K):
-                if TRACE:
-                    _ws = read_realtime()
-
-                flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
-                while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
-                    pass
-
-                if TRACE:
-                    _wt = _wt + (read_realtime() - _ws)
-
-                k_block_base = k_fg * K_PER_FLAG
-                for k_off in range(K_PER_FLAG):
-                    k_block = k_block_base + k_off
-                    rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-                    rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
-
-                    a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                    a = tl.load(a_ptrs)
-                    B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                    b = tl.load(B_ptrs)
-
-                    if ALLOW_TF32:
-                        acc = tl.dot(a, b, acc, allow_tf32=True)
-                    else:
-                        acc += tl.dot(a, b, allow_tf32=False)
-
-            if BIAS:
-                bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
-                acc = acc + bias_val[:, None]
-
-            c = acc.to(C.type.element_ty)
-            C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
-            c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
-            tl.store(C_ptrs, c, mask=c_mask, cache_modifier=".wt")
-
-        if TRACE:
-            ctx.tracing.record_event_end(_trace_handle)
-            ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_gemm_wait, target_rank=cur_rank,
-                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=_wt.to(tl.int32),
-            )
+    if TRACE:
+        ctx.tracing.record_event_end(_trace_handle)
+        ctx.tracing.record_event_start(
+            event_id=TraceEvent().wg_gemm_wait, target_rank=cur_rank,
+            address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=_wt.to(tl.int32),
+        )
 
 
 # ==========================================================================
@@ -560,43 +533,35 @@ def all_gather_matmul_col_parallel(
 
     else:
         # ============================================================
-        # FUSED KERNEL PATH — hbm_buffer pattern
+        # FUSED KERNEL PATH — dual-role WGs
         # ============================================================
-        # Single-stage: fetcher WGs + GEMM WGs.
-        # Local tiles pre-copied, flags pre-set.
+        # All WGs do fetch first, then transition to persistent GEMM.
+        # Grid = total_sms (304 CUs on MI300X) = 1 dispatch wave.
+        # All CUs saturate XGMI during fetch, then all CUs do GEMM.
+        # Local tiles pre-copied with flags pre-set for immediate GEMM.
         num_fetch_stages = 1
 
         if num_fetch_sms is None:
-            num_fetch_sms = 290
-        assert 0 < num_fetch_sms
-        assert num_fetch_stages >= 1
+            num_fetch_sms = total_sms  # all WGs fetch
 
         if first_stage_fetch_sms is None:
             first_stage_fetch_sms = num_fetch_sms
 
         total_gemm_tiles = num_m_tiles * num_tiles_n
         if gemm_wgs is None:
-            gemm_wgs = total_gemm_tiles  # one WG per tile (non-persistent)
+            gemm_wgs = total_sms  # all WGs do GEMM too
 
-        # Grid: [fetch (P)] [gemm (G)]
-        # With persistent GEMM, G can be much smaller than total tiles.
-        m_per_stage = (num_m_tiles + num_fetch_stages - 1) // num_fetch_stages
-        gemm_tiles_per_stage = gemm_wgs  # persistent GEMM WGs
-        first_stage_size = first_stage_fetch_sms + gemm_tiles_per_stage
-        rest_stage_size = num_fetch_sms + gemm_tiles_per_stage
-        total_fetch_wgs = first_stage_fetch_sms + num_fetch_sms * max(0, num_fetch_stages - 1)
-        grid_size = first_stage_size + rest_stage_size * max(0, num_fetch_stages - 1)
+        # Dual-role: grid = gemm_wgs (all WGs do both fetch and GEMM)
+        grid_size = gemm_wgs
+        gemm_tiles_per_stage = gemm_wgs
+        total_fetch_wgs = gemm_wgs
+        first_stage_size = gemm_wgs
+        rest_stage_size = gemm_wgs
 
         total_gather_tiles = num_m_tiles * num_k_blocks
 
-        # Pre-copy local A_sharded into staged_a so GEMM can start immediately
-        local_m_start = rank * num_m_tiles_local * config.block_size_m
-        workspace.aux_buffer[local_m_start:local_m_start + M_local, :].copy_(A_sharded)
-        # Pre-set flags for local tiles
-        local_tile_start = rank * num_m_tiles_local
-        flag_start = local_tile_start * num_flag_groups_k
-        flag_end = (local_tile_start + num_m_tiles_local) * num_flag_groups_k
-        workspace.locks[flag_start:flag_end] = 1
+        # No pre-copy needed: the kernel fetches ALL tiles (including local).
+        # Local HBM-to-HBM copy inside the kernel is negligible.
 
         if trace:
             max_trace_events = grid_size * 4
