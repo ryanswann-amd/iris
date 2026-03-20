@@ -48,7 +48,8 @@ def _col_parallel_fetch_kernel(
     K_PER_FLAG: tl.constexpr, NUM_FLAG_GROUPS_K: tl.constexpr,
     TOTAL_FLAG_GROUPS: tl.constexpr,
 ):
-    """Persistent PUSH fetch kernel: reads local A, writes to all ranks' staged_a."""
+    """Persistent PUSH fetch kernel: reads local A, writes to all ranks' staged_a.
+    Uses rank-rotated push order to spread XGMI traffic across links."""
     pid = tl.program_id(0)
     ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=False)
 
@@ -81,19 +82,19 @@ def _col_parallel_fetch_kernel(
             # Destination pointers in staged_a (using global m_tile)
             staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-            # Push to all ranks
-            for target_rank in tl.static_range(world_size):
-                if target_rank == cur_rank:
-                    tl.store(staged_ptrs, data, cache_modifier=".cg")
-                else:
+            # Push to all ranks — per-WG rank rotation to spread XGMI traffic
+            tl.store(staged_ptrs, data, cache_modifier=".cg")
+            for i in range(world_size):
+                target_rank = (pid + i) % world_size
+                if target_rank != cur_rank:
                     ctx.store(staged_ptrs, data, to_rank=target_rank, hint=(1, BLOCK_SIZE_K))
 
-        # Signal flags on all ranks
+        # Signal flags on all ranks — same per-WG rotation
         flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-        for target_rank in tl.static_range(world_size):
-            if target_rank == cur_rank:
-                tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-            else:
+        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+        for i in range(world_size):
+            target_rank = (pid + i) % world_size
+            if target_rank != cur_rank:
                 ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
 
 
@@ -256,8 +257,11 @@ def _col_parallel_all_gather_matmul_kernel(
                 total_fg_stage = NUM_FLAG_GROUPS_K * stage_local_m_count
 
                 for fg_idx in range(stage_pid, total_fg_stage, stage_fetch_sms):
-                    m_in_stage = fg_idx // NUM_FLAG_GROUPS_K
-                    k_flag_group = fg_idx % NUM_FLAG_GROUPS_K
+                    # K-major ordering: cycle through k-groups first, m-tiles second.
+                    # This spreads concurrent WG pushes across different M-tiles,
+                    # reducing HBM bank conflicts on the remote rank's staged_a writes.
+                    k_flag_group = fg_idx // stage_local_m_count
+                    m_in_stage = fg_idx % stage_local_m_count
 
                     m_tile_local = stage_local_m_start + m_in_stage
                     m_tile_local = min(m_tile_local, NUM_M_TILES_LOCAL - 1)
@@ -286,19 +290,23 @@ def _col_parallel_all_gather_matmul_kernel(
                         # Destination pointers in staged_a (using global m_tile)
                         staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-                        # Push to all ranks
-                        for target_rank in tl.static_range(world_size):
-                            if target_rank == cur_rank:
-                                tl.store(staged_ptrs, data, cache_modifier=".cg")
-                            else:
+                        # Push to all ranks — per-WG rank rotation to spread XGMI traffic.
+                        # Each WG starts at a different rank (stage_pid offset) so that
+                        # concurrent WGs distribute their first pushes across all 7 XGMI links
+                        # instead of all hitting rank 0 first.
+                        # Local store first (fast, no XGMI), then remote with staggered start.
+                        tl.store(staged_ptrs, data, cache_modifier=".cg")
+                        for i in range(world_size):
+                            target_rank = (stage_pid + i) % world_size
+                            if target_rank != cur_rank:
                                 ctx.store(staged_ptrs, data, to_rank=target_rank, hint=(1, BLOCK_SIZE_K))
 
-                    # Signal flags on all ranks
+                    # Signal flags on all ranks — same per-WG rotation
                     flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-                    for target_rank in tl.static_range(world_size):
-                        if target_rank == cur_rank:
-                            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
-                        else:
+                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                    for i in range(world_size):
+                        target_rank = (stage_pid + i) % world_size
+                        if target_rank != cur_rank:
                             ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
 
         if TRACE:
