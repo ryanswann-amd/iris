@@ -344,7 +344,7 @@ def _col_parallel_all_gather_matmul_kernel(
                         staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
                         # Local store (fast, no XGMI)
-                        tl.store(staged_ptrs, data, cache_modifier=".cg")
+                        tl.store(staged_ptrs, data, cache_modifier=".cs")
 
                         # Remote stores with precomputed base_diff — no heap_base
                         # loads in inner loop, no vmcnt(0) between ranks.
@@ -371,7 +371,7 @@ def _col_parallel_all_gather_matmul_kernel(
                                 remote_int = (ptr_int.to(tl.int64) + diff).to(tl.uint64)
                                 remote_ptr = tl.cast(remote_int, staged_ptrs.dtype)
                                 remote_ptr = tl.max_contiguous(tl.multiple_of(remote_ptr, (1, BLOCK_SIZE_K)), (1, BLOCK_SIZE_K))
-                                tl.store(remote_ptr, data)
+                                tl.store(remote_ptr, data, cache_modifier=".cs")
 
                     # Signal flags on all ranks — same per-WG rotation
                     flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
@@ -386,18 +386,32 @@ def _col_parallel_all_gather_matmul_kernel(
 
     else:
         # ==============================================================
-        # GEMM — compute output tiles for this stage's M-tile range
+        # GEMM — compute output tiles matching this stage's fetch range
         # ==============================================================
+        # Stage tile mapping: each fetch stage pushes LOCAL_M_PER_STAGE
+        # local m-tiles from EACH rank. So the global m-tiles available
+        # after stage s are:
+        #   {r * NUM_M_TILES_LOCAL + s * LOCAL_M_PER_STAGE + offset}
+        # for r in [0, world_size) and offset in [0, LOCAL_M_PER_STAGE).
+        # We index linearly within this set (M_PER_STAGE tiles total)
+        # and convert to the correct global pid_m.
         gemm_local_id = local_pid - fetch_threshold
-        stage_m_start = my_stage * M_PER_STAGE
+        LOCAL_M_PER_STAGE: tl.constexpr = (NUM_M_TILES_LOCAL + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
 
         num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
         group_id = gemm_local_id // num_pid_in_group
-        first_pid_m = stage_m_start + group_id * GROUP_SIZE_M
-        first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
-        group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((gemm_local_id % num_pid_in_group) % group_sz)
+        stage_m_count = M_PER_STAGE
+        first_linear_m = group_id * GROUP_SIZE_M
+        first_linear_m = min(first_linear_m, stage_m_count - 1)
+        group_sz = min(stage_m_count - first_linear_m, GROUP_SIZE_M)
+        linear_m = first_linear_m + ((gemm_local_id % num_pid_in_group) % group_sz)
         pid_n = (gemm_local_id % num_pid_in_group) // group_sz
+        linear_m = min(linear_m, stage_m_count - 1)
+
+        # Convert linear stage index to global m-tile index
+        stage_rank = linear_m // LOCAL_M_PER_STAGE
+        stage_offset = linear_m % LOCAL_M_PER_STAGE
+        pid_m = stage_rank * NUM_M_TILES_LOCAL + my_stage * LOCAL_M_PER_STAGE + stage_offset
         pid_m = min(pid_m, NUM_M_TILES - 1)
 
         rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
