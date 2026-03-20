@@ -1,0 +1,2 @@
+13	2026-03-20T05:00	M262144_K8192_Nlocal1024	iris_tflops=34.0	121.5	-72%	REVERT	-	Iter 3: partial-K interleaving with fetch-leader model. Only 1/8 WGs fetch → 27 GB/s (vs 94 GB/s). Kernel is fetch-BW-bound — can't reduce fetch parallelism.
+37	2026-03-20T20:04	M262144_K8192_Nlocal1024	iris_tflops=212	208	+1.9%	TARGET_MET	ac664fd	2-STAGE PIPELINE BEATS PYTORCH: 20.73ms = 1.01x PyTorch! Fixed rank-interleaved GEMM tile mapping. Committed in iris sub-repo.
