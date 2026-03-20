@@ -49,9 +49,27 @@ def _col_parallel_fetch_kernel(
     TOTAL_FLAG_GROUPS: tl.constexpr,
 ):
     """Persistent PUSH fetch kernel: reads local A, writes to all ranks' staged_a.
-    Uses rank-rotated push order to spread XGMI traffic across links."""
+    Uses hoisted heap_bases + raw tl.store to pipeline stores across ranks.
+    All heap_base loads are hoisted to kernel start to eliminate vmcnt(0) serialization."""
     pid = tl.program_id(0)
     ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=False)
+    heap_bases = ctx.heap_bases
+
+    # Hoist ALL heap_base loads to kernel start — load once, reuse forever.
+    # This eliminates the per-rank tl.load(heap_bases + target_rank) that
+    # causes s_waitcnt vmcnt(0) between ranks in the inner loop.
+    from_base = tl.load(heap_bases + cur_rank)
+    # Precompute base difference for each rank (to_base - from_base)
+    # so inner loop only needs: remote_ptr = staged_ptrs + base_diff[rank]
+    # Using tl.static_range to ensure full unrolling at compile time.
+    base_diff_0 = tl.load(heap_bases + 0).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_1 = tl.load(heap_bases + 1).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_2 = tl.load(heap_bases + 2).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_3 = tl.load(heap_bases + 3).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_4 = tl.load(heap_bases + 4).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_5 = tl.load(heap_bases + 5).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_6 = tl.load(heap_bases + 6).to(tl.int64) - from_base.to(tl.int64)
+    base_diff_7 = tl.load(heap_bases + 7).to(tl.int64) - from_base.to(tl.int64)
 
     for fg_idx in range(pid, TOTAL_FLAG_GROUPS, FETCH_SMS):
         m_tile_local = fg_idx // NUM_FLAG_GROUPS_K
@@ -82,12 +100,36 @@ def _col_parallel_fetch_kernel(
             # Destination pointers in staged_a (using global m_tile)
             staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-            # Push to all ranks — per-WG rank rotation to spread XGMI traffic
+            # Local store (fast, no XGMI)
             tl.store(staged_ptrs, data, cache_modifier=".cg")
-            for i in range(world_size):
-                target_rank = (pid + i) % world_size
+
+            # Remote stores: add precomputed base_diff to local pointers.
+            # No heap_base loads in the inner loop = no vmcnt(0) between ranks.
+            ptr_int = tl.cast(staged_ptrs, tl.uint64)
+            for const_r in tl.static_range(world_size):
+                target_rank = (pid + const_r) % world_size
                 if target_rank != cur_rank:
-                    ctx.store(staged_ptrs, data, to_rank=target_rank, hint=(1, BLOCK_SIZE_K))
+                    # Select precomputed base_diff for this rank
+                    if target_rank == 0:
+                        diff = base_diff_0
+                    elif target_rank == 1:
+                        diff = base_diff_1
+                    elif target_rank == 2:
+                        diff = base_diff_2
+                    elif target_rank == 3:
+                        diff = base_diff_3
+                    elif target_rank == 4:
+                        diff = base_diff_4
+                    elif target_rank == 5:
+                        diff = base_diff_5
+                    elif target_rank == 6:
+                        diff = base_diff_6
+                    else:
+                        diff = base_diff_7
+                    remote_int = (ptr_int.to(tl.int64) + diff).to(tl.uint64)
+                    remote_ptr = tl.cast(remote_int, staged_ptrs.dtype)
+                    remote_ptr = tl.max_contiguous(tl.multiple_of(remote_ptr, (1, BLOCK_SIZE_K)), (1, BLOCK_SIZE_K))
+                    tl.store(remote_ptr, data)
 
         # Signal flags on all ranks — same per-WG rotation
         flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
@@ -165,8 +207,7 @@ def _col_parallel_gemm_kernel(
 
         c = acc.to(C.type.element_ty)
         C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
-        c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
-        tl.store(C_ptrs, c, mask=c_mask)
+        tl.store(C_ptrs, c)
 
 
 # =========================================================================
@@ -237,6 +278,20 @@ def _col_parallel_all_gather_matmul_kernel(
         # ==============================================================
         stage_pid = local_pid
 
+        # Hoist ALL heap_base loads — precompute base_diff for each rank.
+        # Eliminates per-rank tl.load(heap_bases) in inner loop, avoiding
+        # s_waitcnt vmcnt(0) serialization between ranks.
+        heap_bases = ctx.heap_bases
+        from_base = tl.load(heap_bases + cur_rank)
+        base_diff_0 = tl.load(heap_bases + 0).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_1 = tl.load(heap_bases + 1).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_2 = tl.load(heap_bases + 2).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_3 = tl.load(heap_bases + 3).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_4 = tl.load(heap_bases + 4).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_5 = tl.load(heap_bases + 5).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_6 = tl.load(heap_bases + 6).to(tl.int64) - from_base.to(tl.int64)
+        base_diff_7 = tl.load(heap_bases + 7).to(tl.int64) - from_base.to(tl.int64)
+
         if TRACE:
             _trace_handle = ctx.tracing.record_event_start(
                 event_id=TraceEvent().wg_fetch, target_rank=cur_rank,
@@ -258,8 +313,6 @@ def _col_parallel_all_gather_matmul_kernel(
 
                 for fg_idx in range(stage_pid, total_fg_stage, stage_fetch_sms):
                     # K-major ordering: cycle through k-groups first, m-tiles second.
-                    # This spreads concurrent WG pushes across different M-tiles,
-                    # reducing HBM bank conflicts on the remote rank's staged_a writes.
                     k_flag_group = fg_idx // stage_local_m_count
                     m_in_stage = fg_idx % stage_local_m_count
 
@@ -290,16 +343,35 @@ def _col_parallel_all_gather_matmul_kernel(
                         # Destination pointers in staged_a (using global m_tile)
                         staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-                        # Push to all ranks — per-WG rank rotation to spread XGMI traffic.
-                        # Each WG starts at a different rank (stage_pid offset) so that
-                        # concurrent WGs distribute their first pushes across all 7 XGMI links
-                        # instead of all hitting rank 0 first.
-                        # Local store first (fast, no XGMI), then remote with staggered start.
+                        # Local store (fast, no XGMI)
                         tl.store(staged_ptrs, data, cache_modifier=".cg")
-                        for i in range(world_size):
-                            target_rank = (stage_pid + i) % world_size
+
+                        # Remote stores with precomputed base_diff — no heap_base
+                        # loads in inner loop, no vmcnt(0) between ranks.
+                        ptr_int = tl.cast(staged_ptrs, tl.uint64)
+                        for const_r in tl.static_range(world_size):
+                            target_rank = (stage_pid + const_r) % world_size
                             if target_rank != cur_rank:
-                                ctx.store(staged_ptrs, data, to_rank=target_rank, hint=(1, BLOCK_SIZE_K))
+                                if target_rank == 0:
+                                    diff = base_diff_0
+                                elif target_rank == 1:
+                                    diff = base_diff_1
+                                elif target_rank == 2:
+                                    diff = base_diff_2
+                                elif target_rank == 3:
+                                    diff = base_diff_3
+                                elif target_rank == 4:
+                                    diff = base_diff_4
+                                elif target_rank == 5:
+                                    diff = base_diff_5
+                                elif target_rank == 6:
+                                    diff = base_diff_6
+                                else:
+                                    diff = base_diff_7
+                                remote_int = (ptr_int.to(tl.int64) + diff).to(tl.uint64)
+                                remote_ptr = tl.cast(remote_int, staged_ptrs.dtype)
+                                remote_ptr = tl.max_contiguous(tl.multiple_of(remote_ptr, (1, BLOCK_SIZE_K)), (1, BLOCK_SIZE_K))
+                                tl.store(remote_ptr, data)
 
                     # Signal flags on all ranks — same per-WG rotation
                     flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
@@ -375,8 +447,7 @@ def _col_parallel_all_gather_matmul_kernel(
 
         c = acc.to(C.type.element_ty)
         C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
-        c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
-        tl.store(C_ptrs, c, mask=c_mask)
+        tl.store(C_ptrs, c)
 
         if TRACE:
             ctx.tracing.record_event_end(_trace_handle)
@@ -506,6 +577,8 @@ def all_gather_matmul_col_parallel(
     assert M % config.block_size_m == 0
     assert K % config.block_size_k == 0
     assert M_local % config.block_size_m == 0
+    assert N_local % config.block_size_n == 0, \
+        f"N_local ({N_local}) must be divisible by block_size_n ({config.block_size_n})"
 
     num_k_blocks = K // config.block_size_k
     assert num_k_blocks % k_per_flag == 0
