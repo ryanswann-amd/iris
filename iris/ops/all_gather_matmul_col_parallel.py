@@ -1,0 +1,650 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025-2026 Advanced Micro Devices, Inc. All rights reserved.
+
+"""
+Fused All-Gather + GEMM for the column-parallel pattern (M-sharded
+activation, N-sharded weight).
+
+Column-parallel layout:
+  - A_local[M/ws, K] per GPU  -> gather along M -> staged_a[M, K]
+  - B_local[K, N/ws] per GPU  (no gather needed)
+  - C_local[M, N/ws] output   (partial, distributed)
+
+Supports two modes:
+  1. split_kernels=True: Two independent kernels on separate CUDA streams
+  2. split_kernels=False (default): Single fused kernel with interleaved PID layout
+
+Producer-consumer synchronization via per-(m_tile, k_flag_group) integer flags
+in HBM, using .cg stores + release/acquire atomics.
+"""
+
+from typing import Optional
+import torch
+import triton
+import triton.language as tl
+import iris
+import iris.x
+
+from iris.device_utils import read_realtime
+from iris.tracing.events import TraceEvent
+from .config import FusedConfig
+from .workspace import FusedWorkspace
+
+
+# =========================================================================
+# Kernel 1: Fetch-only (producer) — for split-kernel mode
+# =========================================================================
+
+@triton.jit
+def _col_parallel_fetch_kernel(
+    A_sharded, staged_a, flags_ptr,
+    M, K, M_local,
+    stride_am, stride_ak, stride_sa_m, stride_sa_k,
+    context_tensor: tl.tensor,
+    cur_rank: tl.constexpr, world_size: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+    FETCH_SMS: tl.constexpr,
+    NUM_M_TILES: tl.constexpr, NUM_K_BLOCKS: tl.constexpr,
+    NUM_M_TILES_LOCAL: tl.constexpr,
+    K_PER_FLAG: tl.constexpr, NUM_FLAG_GROUPS_K: tl.constexpr,
+    TOTAL_FLAG_GROUPS: tl.constexpr,
+):
+    """Persistent fetch kernel: gathers A tiles from all ranks into staged_a."""
+    pid = tl.program_id(0)
+    zero = tl.program_id(0) * 0
+    ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=False)
+    src_view = iris.x.make_tensor_view(A_sharded, M_local, K, stride_am, stride_ak)
+
+    for fg_idx in range(pid, TOTAL_FLAG_GROUPS, FETCH_SMS):
+        m_tile = fg_idx // NUM_FLAG_GROUPS_K
+        k_flag_group = fg_idx % NUM_FLAG_GROUPS_K
+        m_tile = min(m_tile, NUM_M_TILES - 1)
+        k_block_start = k_flag_group * K_PER_FLAG
+
+        rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+
+        src_rank_idx = m_tile // NUM_M_TILES_LOCAL
+        m_tile_local = m_tile % NUM_M_TILES_LOCAL
+
+        for k_off in range(K_PER_FLAG):
+            k_block = k_block_start + k_off
+            pid_m_t = zero + m_tile_local
+            tile_k_t = zero + k_block
+            k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
+
+            rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+            rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+            staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+
+            for compile_rank in range(world_size):
+                if src_rank_idx == compile_rank:
+                    a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx, hint=(1, BLOCK_SIZE_K))
+                    tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
+
+        flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
+        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+
+
+# =========================================================================
+# Kernel 2: GEMM-only (consumer) — for split-kernel mode
+# =========================================================================
+
+@triton.jit
+def _col_parallel_gemm_kernel(
+    staged_a, B, C, bias_ptr, flags_ptr,
+    M, N_LOCAL, K,
+    stride_sa_m, stride_sa_k, stride_bk, stride_bn,
+    stride_cm, stride_cn, stride_bias,
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
+    GEMM_SMS: tl.constexpr,
+    NUM_M_TILES: tl.constexpr, NUM_TILES_N: tl.constexpr,
+    NUM_K_BLOCKS: tl.constexpr,
+    K_PER_FLAG: tl.constexpr, NUM_FLAG_GROUPS_K: tl.constexpr,
+    BIAS: tl.constexpr, ALLOW_TF32: tl.constexpr,
+):
+    """Persistent GEMM kernel: polls flags, loads gathered A, computes C tiles."""
+    pid = tl.program_id(0)
+    acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
+    total_tiles = NUM_M_TILES * NUM_TILES_N
+
+    for tile_id in range(pid, total_tiles, GEMM_SMS):
+        num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
+        group_id = tile_id // num_pid_in_group
+        first_pid_m = group_id * GROUP_SIZE_M
+        first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
+        group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
+        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_sz)
+        pid_n = (tile_id % num_pid_in_group) // group_sz
+        pid_m = min(pid_m, NUM_M_TILES - 1)
+
+        rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+        rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        rn = tl.max_contiguous(tl.multiple_of(rn % N_LOCAL, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
+        acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+
+        for k_fg in range(NUM_FLAG_GROUPS_K):
+            flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
+            while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
+                pass
+
+            k_block_base = k_fg * K_PER_FLAG
+            for k_off in range(K_PER_FLAG):
+                k_block = k_block_base + k_off
+                rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+                rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+                a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                a = tl.load(a_ptrs)
+                B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+                b = tl.load(B_ptrs)
+
+                if ALLOW_TF32:
+                    acc = tl.dot(a, b, acc, allow_tf32=True)
+                else:
+                    acc += tl.dot(a, b, allow_tf32=False)
+
+        if BIAS:
+            bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
+            acc = acc + bias_val[:, None]
+
+        c = acc.to(C.type.element_ty)
+        C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
+        c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
+        tl.store(C_ptrs, c, mask=c_mask)
+
+
+# =========================================================================
+# Fused kernel — interleaved fetch + GEMM in single launch
+# =========================================================================
+
+@triton.jit
+def _col_parallel_all_gather_matmul_kernel(
+    A_sharded, B, C, bias_ptr, staged_a, flags_ptr,
+    M, N_LOCAL, K, M_local,
+    stride_am, stride_ak, stride_bk, stride_bn,
+    stride_cm, stride_cn, stride_sa_m, stride_sa_k, stride_bias,
+    context_tensor: tl.tensor,
+    cur_rank: tl.constexpr, world_size: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
+    NUM_FETCH_SMS: tl.constexpr,
+    NUM_M_TILES: tl.constexpr, NUM_TILES_N: tl.constexpr,
+    NUM_K_BLOCKS: tl.constexpr, NUM_M_TILES_LOCAL: tl.constexpr,
+    K_PER_FLAG: tl.constexpr, NUM_FLAG_GROUPS_K: tl.constexpr,
+    TOTAL_GATHER_TILES: tl.constexpr,
+    BIAS: tl.constexpr, ALLOW_TF32: tl.constexpr,
+    NUM_FETCH_STAGES: tl.constexpr, GEMM_TILES_PER_STAGE: tl.constexpr,
+    FIRST_STAGE_FETCH_SMS: tl.constexpr,
+    FETCH_PIPE_DEPTH: tl.constexpr,
+    GEMM_WGS: tl.constexpr,
+    TOTAL_GEMM_TILES: tl.constexpr,
+    TRACE: tl.constexpr,
+):
+    """
+    Fused col-parallel AG+GEMM kernel following hbm_buffer pattern.
+
+    Grid: [fetch (P)] [gemm (G)]
+    Single-stage: P fetcher WGs gather remote M-tiles, G GEMM WGs
+    compute all output tiles. Local tiles are pre-copied and flags
+    pre-set so GEMM can start on them immediately while fetchers
+    gather remote data.
+
+    Fetcher determines source rank from m_tile position:
+      src_rank = m_tile // NUM_M_TILES_LOCAL
+    """
+    pid = tl.program_id(0)
+    acc_dtype = tl.int32 if C.type.element_ty == tl.int8 else tl.float32
+    zero = tl.program_id(0) * 0
+
+    ctx = iris.DeviceContext.initialize(context_tensor, cur_rank, world_size, tracing=TRACE)
+
+    FIRST_STAGE_SIZE: tl.constexpr = FIRST_STAGE_FETCH_SMS + GEMM_TILES_PER_STAGE
+    REST_STAGE_SIZE: tl.constexpr = NUM_FETCH_SMS + GEMM_TILES_PER_STAGE
+    M_PER_STAGE: tl.constexpr = (NUM_M_TILES + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
+
+    if pid < FIRST_STAGE_SIZE:
+        my_stage = zero
+        local_pid = pid
+        fetch_threshold = zero + FIRST_STAGE_FETCH_SMS
+    else:
+        adjusted = pid - FIRST_STAGE_SIZE
+        my_stage = 1 + adjusted // REST_STAGE_SIZE
+        local_pid = adjusted % REST_STAGE_SIZE
+        fetch_threshold = zero + NUM_FETCH_SMS
+
+    if local_pid < fetch_threshold:
+        # ================================================================
+        # FETCHER — gathers remote M-tiles into staged_a
+        # ================================================================
+        stage_pid = local_pid
+
+        if TRACE:
+            _trace_handle = ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_fetch, target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=my_stage,
+            )
+
+        src_view = iris.x.make_tensor_view(A_sharded, M_local, K, stride_am, stride_ak)
+
+        # Iterate over remote flag groups only (skip local rank).
+        # Total remote FGs = (ws-1) * NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
+        NUM_REMOTE_FG: tl.constexpr = (world_size - 1) * NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
+
+        for remote_fg_idx in range(stage_pid, NUM_REMOTE_FG, FIRST_STAGE_FETCH_SMS):
+            # Interleave across ranks for XGMI bandwidth balance:
+            # index = rank_offset * tiles_per_rank + tile_in_rank
+            # where rank_offset cycles through remote ranks
+            FG_PER_RANK: tl.constexpr = NUM_M_TILES_LOCAL * NUM_FLAG_GROUPS_K
+            rank_offset = remote_fg_idx % (world_size - 1)
+            tile_in_rank_fg = remote_fg_idx // (world_size - 1)
+
+            m_tile_in_rank = tile_in_rank_fg // NUM_FLAG_GROUPS_K
+            k_flag_group = tile_in_rank_fg % NUM_FLAG_GROUPS_K
+
+            # Map rank_offset (0..6) -> actual rank, skipping cur_rank.
+            # Use arithmetic: if rank_offset >= cur_rank, add 1.
+            actual_rank = rank_offset + (1 if rank_offset >= cur_rank else 0)
+            m_tile = actual_rank * NUM_M_TILES_LOCAL + m_tile_in_rank
+            m_tile = min(m_tile, NUM_M_TILES - 1)
+            m_tile_local = m_tile_in_rank
+            src_rank_idx = m_tile // NUM_M_TILES_LOCAL
+            k_block_start = k_flag_group * K_PER_FLAG
+
+            rm = m_tile * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+
+            for k_off in range(K_PER_FLAG):
+                k_block = k_block_start + k_off
+                pid_m_t = zero + m_tile_local
+                tile_k_t = zero + k_block
+                k_tile = iris.x.TileView(pid_m_t, tile_k_t, BLOCK_SIZE_M, BLOCK_SIZE_K)
+
+                rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+                rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+                staged_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+
+                for compile_rank in range(world_size):
+                    if src_rank_idx == compile_rank:
+                        a_tile = iris.x.gather(k_tile, src_view, compile_rank, ctx, hint=(1, BLOCK_SIZE_K))
+                        tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
+
+            flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
+            tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+
+        if TRACE:
+            ctx.tracing.record_event_end(_trace_handle)
+
+    else:
+        # ================================================================
+        # GEMM — persistent loop over output tiles, polls flags
+        # ================================================================
+        gemm_local_id = local_pid - fetch_threshold
+
+        if TRACE:
+            _trace_handle = ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_gemm, target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=my_stage,
+            )
+            _wt = zero.to(tl.int64)
+
+        for tile_id in range(gemm_local_id, TOTAL_GEMM_TILES, GEMM_WGS):
+            num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
+            group_id = tile_id // num_pid_in_group
+            first_pid_m = group_id * GROUP_SIZE_M
+            first_pid_m = min(first_pid_m, NUM_M_TILES - 1)
+            group_sz = min(NUM_M_TILES - first_pid_m, GROUP_SIZE_M)
+            pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_sz)
+            pid_n = (tile_id % num_pid_in_group) // group_sz
+            pid_m = min(pid_m, NUM_M_TILES - 1)
+
+            rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+            rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+            rn = tl.max_contiguous(tl.multiple_of(rn % N_LOCAL, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
+            acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+
+            for k_fg in range(NUM_FLAG_GROUPS_K):
+                if TRACE:
+                    _ws = read_realtime()
+
+                flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
+                while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
+                    pass
+
+                if TRACE:
+                    _wt = _wt + (read_realtime() - _ws)
+
+                k_block_base = k_fg * K_PER_FLAG
+                for k_off in range(K_PER_FLAG):
+                    k_block = k_block_base + k_off
+                    rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+                    rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+                    a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+                    a = tl.load(a_ptrs)
+                    B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+                    b = tl.load(B_ptrs)
+
+                    if ALLOW_TF32:
+                        acc = tl.dot(a, b, acc, allow_tf32=True)
+                    else:
+                        acc += tl.dot(a, b, allow_tf32=False)
+
+            if BIAS:
+                bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
+                acc = acc + bias_val[:, None]
+
+            c = acc.to(C.type.element_ty)
+            C_ptrs = C + rm.to(tl.int64)[:, None] * stride_cm + rn[None, :] * stride_cn
+            c_mask = (rm[:, None] < M) & (rn[None, :] < N_LOCAL)
+            tl.store(C_ptrs, c, mask=c_mask, cache_modifier=".wt")
+
+        if TRACE:
+            ctx.tracing.record_event_end(_trace_handle)
+            ctx.tracing.record_event_start(
+                event_id=TraceEvent().wg_gemm_wait, target_rank=cur_rank,
+                address=flags_ptr + tl.arange(0, 1), pid_m=pid, pid_n=_wt.to(tl.int32),
+            )
+
+
+# ==========================================================================
+# Python API
+# ==========================================================================
+
+
+def all_gather_matmul_col_parallel_preamble(
+    shmem, A_sharded: torch.Tensor, B_local: torch.Tensor,
+    config: Optional[FusedConfig] = None, k_per_flag: int = 1,
+    staged_a_layout: str = "k_contiguous",
+) -> FusedWorkspace:
+    if config is None:
+        config = FusedConfig()
+
+    M_local, K = A_sharded.shape
+    K_b, N_local = B_local.shape
+    world_size = shmem.get_num_ranks()
+    M = M_local * world_size
+
+    assert K_b == K, f"A K dim ({K}) != B K dim ({K_b})"
+    assert K % config.block_size_k == 0
+    assert M % config.block_size_m == 0
+    assert M_local % config.block_size_m == 0
+
+    num_m_tiles = M // config.block_size_m
+    num_k_blocks = K // config.block_size_k
+    assert num_k_blocks % k_per_flag == 0
+    num_flag_groups_k = num_k_blocks // k_per_flag
+
+    ws = FusedWorkspace(
+        operation="all_gather_matmul_col_parallel",
+        shape=(M, N_local, K), dtype=A_sharded.dtype,
+        world_size=world_size, variant=f"col_parallel_{staged_a_layout}",
+        prepared=True,
+    )
+
+    if staged_a_layout == "m_contiguous":
+        storage = shmem.zeros((K, M), dtype=A_sharded.dtype)
+        ws.aux_buffer = storage.T
+    else:
+        ws.aux_buffer = shmem.zeros((M, K), dtype=A_sharded.dtype)
+
+    ws.locks = shmem.zeros((num_m_tiles * num_flag_groups_k,), dtype=torch.int32)
+
+    buffer_mb = M * K * A_sharded.element_size() / (1024**2)
+    sa_stride_m, sa_stride_k = ws.aux_buffer.stride()
+    shmem.info(
+        f"Col-parallel HBM buffer: staged_a=({M},{K}) [{buffer_mb:.1f} MB] "
+        f"layout={staged_a_layout} strides=({sa_stride_m},{sa_stride_k}), "
+        f"flags={num_m_tiles}x{num_flag_groups_k}, k_per_flag={k_per_flag}"
+    )
+
+    shmem.barrier()
+    return ws
+
+
+_WG_FETCH = 14
+_WG_GEMM = 15
+_WG_GEMM_WAIT = 16
+
+
+def _extract_wg_trace(shmem, grid_size, **metadata):
+    import numpy as np
+    bufs = shmem.tracing.trace_buffers
+    n = min(shmem.tracing.trace_counter.item(), shmem.tracing.max_events)
+
+    event_ids = bufs["event_id"][:n].cpu().numpy()
+    pids = bufs["pid"][:n].cpu().numpy()
+    timestamps = bufs["timestamp"][:n].cpu().numpy().astype(np.int64)
+    end_ts = bufs["duration_cycles"][:n].cpu().numpy().astype(np.int64)
+    xcc_ids = bufs["xcc_id"][:n].cpu().numpy().astype(np.int32)
+    pid_ns = bufs["pid_n"][:n].cpu().numpy()
+
+    starts = torch.zeros(grid_size, dtype=torch.int64)
+    ends = torch.zeros(grid_size, dtype=torch.int64)
+    waits = torch.zeros(grid_size, dtype=torch.int64)
+    xcds = torch.zeros(grid_size, dtype=torch.int32)
+
+    for i in range(n):
+        eid = int(event_ids[i])
+        wg = int(pids[i])
+        if wg >= grid_size:
+            continue
+        if eid == _WG_FETCH or eid == _WG_GEMM:
+            starts[wg] = int(timestamps[i])
+            ends[wg] = int(end_ts[i])
+            xcds[wg] = int(xcc_ids[i])
+        elif eid == _WG_GEMM_WAIT:
+            waits[wg] = int(pid_ns[i])
+
+    return {"start": starts, "end": ends, "wait": waits, "xcd": xcds, "grid_size": grid_size, **metadata}
+
+
+def all_gather_matmul_col_parallel(
+    shmem, output_tensor: torch.Tensor, A_sharded: torch.Tensor,
+    B_local: torch.Tensor, bias: Optional[torch.Tensor] = None,
+    async_op: bool = False, config: Optional[FusedConfig] = None,
+    workspace: Optional[FusedWorkspace] = None,
+    num_fetch_sms: Optional[int] = None, k_per_flag: int = 1,
+    staged_a_layout: str = "k_contiguous",
+    num_warps: Optional[int] = None, num_stages: Optional[int] = None,
+    num_fetch_stages: int = 1,
+    first_stage_fetch_sms: Optional[int] = None,
+    fetch_pipe_depth: int = 4, trace: bool = False,
+    split_kernels: bool = False, gemm_sms: Optional[int] = None,
+    gemm_wgs: Optional[int] = None,
+) -> FusedWorkspace:
+    if config is None:
+        config = FusedConfig()
+
+    M_local, K = A_sharded.shape
+    K_b, N_local = B_local.shape
+    world_size = shmem.get_num_ranks()
+    rank = shmem.get_rank()
+    M = M_local * world_size
+
+    assert K_b == K
+    assert output_tensor.shape == (M, N_local)
+    assert M % config.block_size_m == 0
+    assert K % config.block_size_k == 0
+    assert M_local % config.block_size_m == 0
+
+    num_k_blocks = K // config.block_size_k
+    assert num_k_blocks % k_per_flag == 0
+
+    if workspace is None:
+        workspace = all_gather_matmul_col_parallel_preamble(
+            shmem, A_sharded, B_local, config, k_per_flag, staged_a_layout
+        )
+
+    workspace.locks.zero_()
+
+    stride_am, stride_ak = A_sharded.stride()
+    stride_bk, stride_bn = B_local.stride()
+    stride_cm, stride_cn = output_tensor.stride()
+    stride_sa_m, stride_sa_k = workspace.aux_buffer.stride()
+
+    if bias is not None:
+        assert bias.shape[0] == M
+        bias_ptr = bias
+        stride_bias = bias.stride()[0] if bias.dim() > 0 else 1
+        use_bias = True
+    else:
+        bias_ptr = output_tensor
+        stride_bias = 1
+        use_bias = False
+
+    device = A_sharded.device
+    total_sms = config.num_sms
+    if total_sms is None:
+        props = torch.cuda.get_device_properties(device)
+        total_sms = props.multi_processor_count
+
+    num_m_tiles = M // config.block_size_m
+    num_m_tiles_local = M_local // config.block_size_m
+    num_tiles_n = (N_local + config.block_size_n - 1) // config.block_size_n
+    num_flag_groups_k = num_k_blocks // k_per_flag
+    total_flag_groups = num_m_tiles * num_flag_groups_k
+
+    if split_kernels:
+        # ============================================================
+        # SPLIT KERNEL PATH
+        # ============================================================
+        if num_fetch_sms is None:
+            num_fetch_sms = 200
+        if gemm_sms is None:
+            gemm_sms = total_sms - num_fetch_sms
+            if gemm_sms <= 0:
+                gemm_sms = total_sms // 3
+                num_fetch_sms = total_sms - gemm_sms
+
+        fetch_stream = torch.cuda.Stream(device=device)
+        gemm_stream = torch.cuda.Stream(device=device)
+
+        with torch.cuda.stream(fetch_stream):
+            _col_parallel_fetch_kernel[(num_fetch_sms,)](
+                A_sharded, workspace.aux_buffer, workspace.locks,
+                M, K, M_local, stride_am, stride_ak, stride_sa_m, stride_sa_k,
+                shmem.get_device_context(), rank, world_size,
+                config.block_size_m, config.block_size_k,
+                num_fetch_sms, num_m_tiles, num_k_blocks,
+                num_m_tiles_local, k_per_flag, num_flag_groups_k,
+                total_flag_groups, num_warps=4,
+            )
+
+        gemm_launch_kwargs = {"matrix_instr_nonkdim": 16}
+        if num_warps is not None:
+            gemm_launch_kwargs["num_warps"] = num_warps
+        if num_stages is not None:
+            gemm_launch_kwargs["num_stages"] = num_stages
+
+        with torch.cuda.stream(gemm_stream):
+            _col_parallel_gemm_kernel[(gemm_sms,)](
+                workspace.aux_buffer, B_local, output_tensor, bias_ptr,
+                workspace.locks, M, N_local, K,
+                stride_sa_m, stride_sa_k, stride_bk, stride_bn,
+                stride_cm, stride_cn, stride_bias,
+                config.block_size_m, config.block_size_n,
+                config.block_size_k, config.group_size_m,
+                gemm_sms, num_m_tiles, num_tiles_n, num_k_blocks,
+                k_per_flag, num_flag_groups_k, use_bias, config.allow_tf32,
+                **gemm_launch_kwargs,
+            )
+
+        if not async_op:
+            shmem.barrier()
+
+    else:
+        # ============================================================
+        # FUSED KERNEL PATH — hbm_buffer pattern
+        # ============================================================
+        # Single-stage: fetcher WGs + GEMM WGs.
+        # Local tiles pre-copied, flags pre-set.
+        num_fetch_stages = 1
+
+        if num_fetch_sms is None:
+            num_fetch_sms = 290
+        assert 0 < num_fetch_sms
+        assert num_fetch_stages >= 1
+
+        if first_stage_fetch_sms is None:
+            first_stage_fetch_sms = num_fetch_sms
+
+        total_gemm_tiles = num_m_tiles * num_tiles_n
+        if gemm_wgs is None:
+            gemm_wgs = total_gemm_tiles  # one WG per tile (non-persistent)
+
+        # Grid: [fetch (P)] [gemm (G)]
+        # With persistent GEMM, G can be much smaller than total tiles.
+        m_per_stage = (num_m_tiles + num_fetch_stages - 1) // num_fetch_stages
+        gemm_tiles_per_stage = gemm_wgs  # persistent GEMM WGs
+        first_stage_size = first_stage_fetch_sms + gemm_tiles_per_stage
+        rest_stage_size = num_fetch_sms + gemm_tiles_per_stage
+        total_fetch_wgs = first_stage_fetch_sms + num_fetch_sms * max(0, num_fetch_stages - 1)
+        grid_size = first_stage_size + rest_stage_size * max(0, num_fetch_stages - 1)
+
+        total_gather_tiles = num_m_tiles * num_k_blocks
+
+        # Pre-copy local A_sharded into staged_a so GEMM can start immediately
+        local_m_start = rank * num_m_tiles_local * config.block_size_m
+        workspace.aux_buffer[local_m_start:local_m_start + M_local, :].copy_(A_sharded)
+        # Pre-set flags for local tiles
+        local_tile_start = rank * num_m_tiles_local
+        flag_start = local_tile_start * num_flag_groups_k
+        flag_end = (local_tile_start + num_m_tiles_local) * num_flag_groups_k
+        workspace.locks[flag_start:flag_end] = 1
+
+        if trace:
+            max_trace_events = grid_size * 4
+            if not shmem.tracing.enabled:
+                shmem.tracing.enable(max_events=max_trace_events)
+            else:
+                shmem.tracing.reset()
+
+        launch_kwargs = {"matrix_instr_nonkdim": 16}
+        if num_warps is not None:
+            launch_kwargs["num_warps"] = num_warps
+        if num_stages is not None:
+            launch_kwargs["num_stages"] = num_stages
+
+        _col_parallel_all_gather_matmul_kernel[(grid_size,)](
+            A_sharded, B_local, output_tensor, bias_ptr,
+            workspace.aux_buffer, workspace.locks,
+            M, N_local, K, M_local,
+            stride_am, stride_ak, stride_bk, stride_bn,
+            stride_cm, stride_cn, stride_sa_m, stride_sa_k, stride_bias,
+            shmem.get_device_context(), rank, world_size,
+            config.block_size_m, config.block_size_n,
+            config.block_size_k, config.group_size_m,
+            num_fetch_sms, num_m_tiles, num_tiles_n, num_k_blocks,
+            num_m_tiles_local, k_per_flag, num_flag_groups_k,
+            total_gather_tiles, use_bias, config.allow_tf32,
+            num_fetch_stages, gemm_tiles_per_stage,
+            first_stage_fetch_sms, fetch_pipe_depth,
+            gemm_wgs, total_gemm_tiles, trace,
+            **launch_kwargs,
+        )
+
+        if not async_op:
+            shmem.barrier()
+
+        if trace:
+            torch.cuda.synchronize()
+            workspace.trace_data = _extract_wg_trace(
+                shmem, grid_size,
+                num_fetch_sms=num_fetch_sms,
+                num_fetch_stages=num_fetch_stages,
+                total_fetch_wgs=total_fetch_wgs,
+                num_m_tiles=num_m_tiles,
+                num_tiles_n=num_tiles_n,
+                first_stage_fetch_sms=first_stage_fetch_sms,
+                first_stage_size=first_stage_size,
+                rest_stage_size=rest_stage_size,
+                gemm_tiles_per_stage=gemm_tiles_per_stage,
+            )
+
+    return workspace
