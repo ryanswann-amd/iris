@@ -576,6 +576,7 @@ def all_gather_matmul_col_parallel(
     fetch_pipe_depth: int = 4, trace: bool = False,
     split_kernels: bool = False, gemm_sms: Optional[int] = None,
     gemm_wgs: Optional[int] = None,
+    pure_fetch_first_stage: Optional[bool] = None,
 ) -> FusedWorkspace:
     if config is None:
         config = FusedConfig()
@@ -696,12 +697,22 @@ def all_gather_matmul_col_parallel(
             first_stage_fetch_sms = num_fetch_sms
 
         assert num_fetch_stages >= 1
+        num_m_tiles_local = M_local // config.block_size_m
+        if num_m_tiles_local % num_fetch_stages != 0:
+            import warnings
+            warnings.warn(
+                f"num_fetch_stages={num_fetch_stages} does not divide "
+                f"num_m_tiles_local={num_m_tiles_local} (M_local={M_local}, "
+                f"block_m={config.block_size_m}). This will produce incorrect "
+                f"results. Valid nfs values: {[s for s in range(1, num_m_tiles_local+1) if num_m_tiles_local % s == 0]}"
+            )
 
         total_gemm_tiles = num_m_tiles * num_tiles_n
 
         # Interleaved layout: [fetch0 (P)] [gemm0 (G)] [fetch1 (F)] [gemm1 (G)] ...
         m_per_stage = (num_m_tiles + num_fetch_stages - 1) // num_fetch_stages
         gemm_tiles_per_stage = m_per_stage * num_tiles_n
+
         first_stage_size = first_stage_fetch_sms + gemm_tiles_per_stage
         rest_stage_size = num_fetch_sms + gemm_tiles_per_stage
         total_fetch_wgs = first_stage_fetch_sms + num_fetch_sms * max(0, num_fetch_stages - 1)
