@@ -176,6 +176,143 @@ def _plot_trace(trace_data, output_path, rank, M, N_local, K, num_fetch_sms_cfg)
     print(f"  {stats_text}")
 
 
+def _plot_multi_gpu_trace(all_trace_data, output_path, M, N_local, K):
+    """Generate a combined Gantt chart showing all ranks' workgroup activity on one timeline."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    wait_color = "#F44336"
+    compute_color = "#4CAF50"
+    fetch_blues = ["#1565C0", "#42A5F5", "#90CAF9", "#BBDEFB"]
+
+    # Find global time origin across all ranks
+    global_t_min = min(td["start"].numpy().astype(np.int64).min() for td in all_trace_data.values())
+
+    # Build per-rank data: list of (rank, grid_size, starts_us, ends_us, waits_us, roles, n_stages)
+    rank_infos = []
+    for r in sorted(all_trace_data.keys()):
+        td = all_trace_data[r]
+        starts = td["start"].numpy().astype(np.int64)
+        ends = td["end"].numpy().astype(np.int64)
+        waits = td["wait"].numpy().astype(np.int64)
+        grid_size = td["grid_size"]
+        n_fetch_per_stage = td["num_fetch_sms"]
+        n_stages = td.get("num_fetch_stages", 1)
+        total_fetch = td.get("total_fetch_wgs", n_fetch_per_stage)
+        first_stage_fetch = td.get("first_stage_fetch_sms", n_fetch_per_stage)
+        first_stage_size = td.get("first_stage_size", grid_size)
+        rest_stage_size = td.get("rest_stage_size", grid_size)
+
+        starts_us = (starts - global_t_min) / TICKS_PER_US
+        ends_us = (ends - global_t_min) / TICKS_PER_US
+        waits_us = waits / TICKS_PER_US
+
+        roles = np.empty(grid_size, dtype=np.int32)
+        for i in range(grid_size):
+            if i < first_stage_size:
+                stage = 0
+                local = i
+                fetch_thresh = first_stage_fetch
+            else:
+                adjusted = i - first_stage_size
+                stage = 1 + adjusted // rest_stage_size
+                local = adjusted % rest_stage_size
+                fetch_thresh = n_fetch_per_stage
+            if local < fetch_thresh:
+                roles[i] = stage
+            else:
+                roles[i] = n_stages
+
+        order = np.argsort(starts_us)
+        rank_infos.append((r, grid_size, starts_us, ends_us, waits_us, roles, n_stages, total_fetch, order))
+
+    # Layout: ranks stacked vertically with 2-row gap between them
+    gap = 2
+    total_rows = sum(ri[1] for ri in rank_infos) + gap * (len(rank_infos) - 1)
+    row_h = 0.012
+    fig_h = max(14, total_rows * row_h + 3)
+    fig, ax = plt.subplots(figsize=(22, fig_h))
+
+    y_offset = 0
+    rank_label_positions = []  # (y_center, rank)
+
+    for r, grid_size, starts_us, ends_us, waits_us, roles, n_stages, total_fetch, order in rank_infos:
+        rank_label_positions.append((y_offset + grid_size / 2, r))
+
+        for y_idx, wg_idx in enumerate(order):
+            y = y_offset + y_idx
+            s = starts_us[wg_idx]
+            e = ends_us[wg_idx]
+            dur = e - s
+            role = roles[wg_idx]
+
+            if role < n_stages:
+                c = fetch_blues[role % len(fetch_blues)]
+                ax.barh(y, dur, left=s, height=0.8, color=c, edgecolor="none", linewidth=0)
+            else:
+                w = waits_us[wg_idx]
+                comp = max(0, dur - w)
+                ax.barh(y, w, left=s, height=0.8, color=wait_color, edgecolor="none", linewidth=0)
+                ax.barh(y, comp, left=s + w, height=0.8, color=compute_color, edgecolor="none", linewidth=0)
+
+        # Draw horizontal separator line after this rank (except the last)
+        if r != rank_infos[-1][0]:
+            sep_y = y_offset + grid_size + gap / 2
+            ax.axhline(y=sep_y, color="gray", linewidth=0.5, linestyle="--", alpha=0.5)
+
+        y_offset += grid_size + gap
+
+    # Global x_max
+    x_max = max(ri[3].max() for ri in rank_infos) * 1.02
+
+    ax.set_xlabel("Time (us)", fontsize=12)
+    ax.set_ylabel("Workgroups by Rank", fontsize=12)
+    ax.set_title(
+        f"Multi-GPU Col-Parallel AG+GEMM Trace  |  "
+        f"M={M} N_local={N_local} K={K}  |  {len(all_trace_data)} ranks",
+        fontsize=14,
+    )
+    ax.set_ylim(-1, total_rows + 1)
+    ax.set_xlim(0, x_max)
+    ax.invert_yaxis()
+
+    # Rank labels on Y-axis
+    ax.set_yticks([pos for pos, _ in rank_label_positions])
+    ax.set_yticklabels([f"Rank {r}" for _, r in rank_label_positions], fontsize=10, fontweight="bold")
+
+    # Legend
+    max_stages = max(ri[6] for ri in rank_infos)
+    legend_elements = []
+    for s_idx in range(min(max_stages, len(fetch_blues))):
+        legend_elements.append(Line2D([0], [0], color=fetch_blues[s_idx], lw=6, label=f"Fetch stage {s_idx}"))
+    legend_elements.append(Line2D([0], [0], color=wait_color, lw=6, label="GEMM: waiting on data"))
+    legend_elements.append(Line2D([0], [0], color=compute_color, lw=6, label="GEMM: compute"))
+    ax.legend(handles=legend_elements, loc="upper right", fontsize=10)
+
+    # Per-rank wall time summary
+    summary_lines = []
+    for r, grid_size, starts_us, ends_us, waits_us, roles, n_stages, total_fetch, order in rank_infos:
+        wall = ends_us.max() - starts_us.min()
+        gemm_mask = roles == n_stages
+        gemm_wait_pct = 100 * waits_us[gemm_mask].sum() / (ends_us - starts_us)[gemm_mask].sum() if gemm_mask.any() else 0
+        summary_lines.append(f"Rank {r}: wall={wall:.0f}us  wait%={gemm_wait_pct:.1f}%  fetch={total_fetch} GEMM={grid_size - total_fetch}")
+    summary_text = "\n".join(summary_lines)
+    ax.text(
+        0.01, 0.99, summary_text,
+        transform=ax.transAxes, fontsize=8, verticalalignment="top",
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
+    )
+
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [Rank 0] Multi-GPU trace plot saved to: {output_path}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Benchmark column-parallel fused AG+GEMM (HBM buffer, M-sharded A).",
@@ -220,6 +357,10 @@ def parse_args():
         help="Collect per-workgroup trace and save Gantt chart PNG",
     )
     parser.add_argument("--trace_output", type=str, default="trace_col_parallel.png", help="Trace output path")
+    parser.add_argument(
+        "--multi-gpu-trace", action=argparse.BooleanOptionalAction, default=True,
+        help="Create combined multi-GPU trace visualization (default: True when --trace is used)",
+    )
     parser.add_argument(
         "--split_kernels", action=argparse.BooleanOptionalAction, default=True,
         help="Use split fetch/GEMM kernels on separate streams (default: True)",
@@ -550,14 +691,52 @@ def _worker(args):
         torch.cuda.synchronize()
         shmem.barrier()
 
-        if rank == 0 and hasattr(workspace, "trace_data"):
-            trace_out = args.get("trace_output", "trace_col_parallel.png")
+        # Save per-rank trace
+        if hasattr(workspace, "trace_data"):
+            trace_base = args.get("trace_output", "trace_col_parallel.png")
+            trace_stem = trace_base.rsplit(".", 1)[0] if "." in trace_base else trace_base
+            trace_ext = trace_base.rsplit(".", 1)[1] if "." in trace_base else "png"
+            per_rank_path = f"{trace_stem}_rank{rank}.{trace_ext}"
             try:
-                _plot_trace(workspace.trace_data, trace_out, rank, M, N_local, K, num_fetch_sms)
+                _plot_trace(workspace.trace_data, per_rank_path, rank, M, N_local, K, num_fetch_sms)
             except ImportError:
-                print("  (matplotlib not available -- skipping trace plot)")
+                print(f"  [Rank {rank}] (matplotlib not available -- skipping trace plot)")
             except Exception as e:
-                print(f"  (Trace plot failed: {e})")
+                print(f"  [Rank {rank}] (Trace plot failed: {e})")
+
+        # Gather trace data from all ranks to rank 0 for combined plot
+        shmem.barrier()
+
+        if args.get("multi_gpu_trace", True) and hasattr(workspace, "trace_data"):
+            # Serialize trace_data to a tensor for all_gather
+            import pickle
+            trace_bytes = pickle.dumps(workspace.trace_data)
+            trace_tensor = torch.tensor(list(trace_bytes), dtype=torch.uint8, device=f"cuda:{rank}")
+            # Gather sizes first so we can pad
+            size_tensor = torch.tensor([len(trace_bytes)], dtype=torch.int64, device=f"cuda:{rank}")
+            all_sizes = [torch.zeros(1, dtype=torch.int64, device=f"cuda:{rank}") for _ in range(world_size)]
+            dist.all_gather(all_sizes, size_tensor)
+            max_size = max(s.item() for s in all_sizes)
+            # Pad to max_size
+            padded = torch.zeros(max_size, dtype=torch.uint8, device=f"cuda:{rank}")
+            padded[:len(trace_bytes)] = trace_tensor
+            all_padded = [torch.zeros(max_size, dtype=torch.uint8, device=f"cuda:{rank}") for _ in range(world_size)]
+            dist.all_gather(all_padded, padded)
+
+            if rank == 0:
+                all_trace_data = {}
+                for r in range(world_size):
+                    sz = all_sizes[r].item()
+                    raw = bytes(all_padded[r][:sz].cpu().numpy().tolist())
+                    all_trace_data[r] = pickle.loads(raw)
+                multi_gpu_path = f"{trace_stem}_multi_gpu.{trace_ext}"
+                try:
+                    _plot_multi_gpu_trace(all_trace_data, multi_gpu_path, M, N_local, K)
+                except ImportError:
+                    print("  (matplotlib not available -- skipping multi-GPU trace plot)")
+                except Exception as e:
+                    print(f"  (Multi-GPU trace plot failed: {e})")
+
         shmem.barrier()
 
     # ── PyTorch baseline ─────────────────────────────────────────────────
