@@ -510,29 +510,28 @@ def _worker(args):
         if workspace is not None:
             workspace.locks.zero_()
         torch.cuda.current_stream().synchronize()
-        with torch.cuda.stream(comm_stream):
-            start_ev.record()
-            all_gather_matmul_col_parallel(
-                shmem,
-                C,
-                A_sharded,
-                B_local,
-                config=config,
-                async_op=False,
-                workspace=workspace,
-                num_fetch_sms=num_fetch_sms,
-                k_per_flag=k_per_flag,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                num_fetch_stages=num_fetch_stages,
-                first_stage_fetch_sms=first_stage_fetch_sms,
-                fetch_pipe_depth=fetch_pipe_depth,
-                split_kernels=split_kernels,
-                gemm_sms=gemm_sms,
-                gemm_wgs=gemm_wgs,
-            )
-            end_ev.record()
-            num_experiments += 1
+        start_ev.record()
+        all_gather_matmul_col_parallel(
+            shmem,
+            C,
+            A_sharded,
+            B_local,
+            config=config,
+            async_op=False,
+            workspace=workspace,
+            num_fetch_sms=num_fetch_sms,
+            k_per_flag=k_per_flag,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            num_fetch_stages=num_fetch_stages,
+            first_stage_fetch_sms=first_stage_fetch_sms,
+            fetch_pipe_depth=fetch_pipe_depth,
+            split_kernels=split_kernels,
+            gemm_sms=gemm_sms,
+            gemm_wgs=gemm_wgs,
+        )
+        end_ev.record()
+        num_experiments += 1
         shmem.barrier()
         iter_ms = start_ev.elapsed_time(end_ev)
         total_ms += iter_ms
