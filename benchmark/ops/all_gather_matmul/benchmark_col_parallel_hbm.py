@@ -506,6 +506,10 @@ def _worker(args):
     def run_experiment():
         nonlocal total_ms, num_experiments
         shmem.barrier()
+        # Zero flags BEFORE timing — this is setup, not kernel work
+        if workspace is not None:
+            workspace.locks.zero_()
+        torch.cuda.current_stream().synchronize()
         with torch.cuda.stream(comm_stream):
             start_ev.record()
             all_gather_matmul_col_parallel(
