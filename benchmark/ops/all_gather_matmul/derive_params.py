@@ -658,6 +658,148 @@ def print_analysis(M, N, K, world_size, link_bw, p, passthrough_args, bw_profile
     print()
 
 
+def derive_col_parallel(M, N, K, world_size, link_bw, num_cus, peak_tflops, hbm_bw_gbps, l2_size, scheduling_factor, dtype_bytes):
+    """Derive parameters for column-parallel (M-sharded) all_gather_matmul.
+
+    Col-parallel layout:
+      - A_local[M/ws, K] per GPU -> gather along M -> staged_a[M, K]
+      - B_local[K, N/ws] per GPU (no gather)
+      - C_local[M, N/ws] output
+
+    Key difference from row-parallel: each M-block from a remote rank has ALL
+    K columns, so GEMM can process it immediately once staged. The k_per_flag
+    should ideally equal num_k_blocks (1 flag per M-tile).
+    """
+    M_local = M // world_size
+    N_local = N // world_size
+
+    # 1. Tile sizes (use N_local for block size selection)
+    bm = 256 if M >= 8192 else 128
+    while M % bm != 0 and bm > 64:
+        bm //= 2
+    while M_local % bm != 0 and bm > 64:
+        bm //= 2
+
+    # Col-parallel: N_local is typically small (1024 for 8-GPU with N=8192).
+    # bn=128 gives more N-tiles for better GEMM occupancy than bn=256.
+    if N_local >= 512:
+        bn = 128
+    elif N_local >= 256:
+        bn = 128 if N_local % 128 == 0 else 64
+    else:
+        bn = min(128, N_local)
+    while N_local % bn != 0 and bn > 32:
+        bn //= 2
+
+    bk = 64
+    while K % bk != 0 and bk > 16:
+        bk //= 2
+
+    nw = 8 if bm * bn >= 256 * 256 else 4
+    # Col-parallel: gm=8 balances M-tile locality with GEMM dispatch
+    gm = 8
+
+    num_m_tiles = M // bm
+    num_m_tiles_local = M_local // bm
+    num_tiles_n = math.ceil(N_local / bn)
+    num_k_blocks = K // bk
+
+    # 2. Per-tile roofline (use N_local since B is local)
+    roofline_tflops, intensity, ridge, b_in_l2 = _tile_roofline(
+        bm, bn, bk, M, K, N_local, dtype_bytes, peak_tflops, hbm_bw_gbps, l2_size
+    )
+
+    # 3. Communication: gather M_local*K from each remote rank
+    total_remote_bytes = M_local * K * (world_size - 1) * dtype_bytes
+    total_link_bw = link_bw * (world_size - 1)
+    comm_time_ms = total_remote_bytes / (total_link_bw * 1e9) * 1e3
+
+    # 4. Compute: C_local[M, N_local] = staged_a[M, K] @ B_local[K, N_local]
+    total_flops = 2 * M * N_local * K
+    compute_time_ms = total_flops / (roofline_tflops * 1e12) * 1e3
+
+    ratio = comm_time_ms / compute_time_ms if compute_time_ms > 0 else 999
+
+    # 5. k_per_flag: for col-parallel, use all K blocks per flag (1 flag per M-tile)
+    kpf = num_k_blocks
+    num_flag_groups_k = 1
+
+    # 6. Pipeline stages: col-parallel benefits from 1 stage because
+    # each M-block is independent — no cross-rank K accumulation.
+    # All fetchers run in the first CU wave, GEMM fills subsequent waves.
+    num_stages = 1
+    m_per_stage = num_m_tiles
+    gemm_tiles_per_stage = m_per_stage * num_tiles_n
+
+    # 7. num_fetch_sms: use most CUs for fetching to finish ASAP
+    # Empirically ~290/304 CUs on MI300X is the sweet spot
+    nf = max(1, num_cus - 14)
+    fsf = nf
+
+    # 8. Per-WG timing
+    gemm_wg_us_val = _gemm_wg_time_us(bm, bn, bk, K, num_flag_groups_k, roofline_tflops, num_cus)
+
+    # 10. Per-WG fetch times
+    total_fg_per_stage = num_flag_groups_k * m_per_stage
+    fgs_per_wg_stg0 = max(1, math.ceil(total_fg_per_stage / fsf))
+    fgs_per_wg_rest = max(1, math.ceil(total_fg_per_stage / nf))
+    fetch_us_stg0 = _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw, dtype_bytes, fgs_per_wg_stg0)
+    fetch_us_rest = _fetch_wg_time_us(bm, bk, kpf, world_size, link_bw, dtype_bytes, fgs_per_wg_rest)
+
+    # 11. Grid geometry
+    first_stage_size = fsf + gemm_tiles_per_stage
+    rest_stage_size = nf + gemm_tiles_per_stage
+    grid_size = first_stage_size + rest_stage_size * max(0, num_stages - 1)
+    total_fetch_wgs = fsf + nf * max(0, num_stages - 1)
+    total_gemm_wgs = gemm_tiles_per_stage * num_stages
+
+    # 12. Kernel time estimate
+    avg_fetch_us = fsf * fetch_us_stg0 + nf * max(0, num_stages - 1) * fetch_us_rest
+    avg_fetch_us /= max(total_fetch_wgs, 1)
+    est_kernel_ms, est_ideal_ms = _estimate_kernel_time(
+        total_gemm_wgs, gemm_wg_us_val, total_fetch_wgs, avg_fetch_us, num_cus, scheduling_factor
+    )
+
+    # 13. Pipeline estimate
+    stage_m = m_per_stage * bm
+    stage_comm_ms = stage_m * K * (world_size - 1) * dtype_bytes / (total_link_bw * 1e9) * 1e3 / world_size
+    stage_compute_ms = 2 * stage_m * N_local * K / (roofline_tflops * 1e12) * 1e3
+    pipeline_ms = stage_comm_ms + max(stage_comm_ms, stage_compute_ms) * max(0, num_stages - 1) + stage_compute_ms
+    sequential_ms = comm_time_ms + compute_time_ms
+
+    # 14. PyTorch estimate
+    standalone_gemm_eff = 0.30
+    standalone_tflops = roofline_tflops * standalone_gemm_eff
+    standalone_gemm_ms = total_flops / (standalone_tflops * 1e12) * 1e3
+    pytorch_est_ms = comm_time_ms + standalone_gemm_ms
+
+    staged_a_gb = M * K * dtype_bytes / (1024**3)
+
+    return dict(
+        block_size_m=bm, block_size_n=bn, block_size_k=bk,
+        group_size_m=gm, num_warps=nw,
+        num_fetch_sms=nf, k_per_flag=kpf,
+        num_fetch_stages=num_stages, first_stage_fetch_sms=fsf,
+        K_local=K, M_local=M_local, N_local=N_local,
+        num_m_tiles=num_m_tiles, num_tiles_n=num_tiles_n,
+        num_k_blocks=num_k_blocks, num_flag_groups_k=num_flag_groups_k,
+        m_per_stage=m_per_stage, gemm_tiles_per_stage=gemm_tiles_per_stage,
+        grid_size=grid_size, total_fetch_wgs=total_fetch_wgs, total_gemm_wgs=total_gemm_wgs,
+        roofline_tflops=roofline_tflops, tile_intensity=intensity,
+        ridge_point=ridge, b_in_l2=b_in_l2,
+        gemm_wg_us=gemm_wg_us_val,
+        fetch_wg_us_stg0=fetch_us_stg0, fetch_wg_us_rest=fetch_us_rest,
+        total_remote_bytes=total_remote_bytes, total_link_bw=total_link_bw,
+        comm_time_ms=comm_time_ms, total_flops=total_flops,
+        compute_time_ms=compute_time_ms, ratio=ratio,
+        stage_comm_ms=stage_comm_ms, stage_compute_ms=stage_compute_ms,
+        pipeline_ms=pipeline_ms, sequential_ms=sequential_ms,
+        est_kernel_ms=est_kernel_ms, est_ideal_ms=est_ideal_ms,
+        standalone_gemm_ms=standalone_gemm_ms, pytorch_est_ms=pytorch_est_ms,
+        staged_a_gb=staged_a_gb, scheduling_factor=scheduling_factor,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Derive parameters for HBM-buffered all_gather_matmul.",
@@ -683,11 +825,19 @@ def main():
         default=DEFAULT_SCHEDULING_FACTOR,
         help="CU scheduling overhead factor (calibrated from traces)",
     )
+    parser.add_argument(
+        "--col_parallel", action="store_true",
+        help="Derive for column-parallel (M-sharded A) instead of row-parallel (K-sharded A)",
+    )
 
     args, passthrough = parser.parse_known_args()
 
-    if args.k % args.world_size != 0:
+    if not args.col_parallel and args.k % args.world_size != 0:
         parser.error(f"K ({args.k}) must be divisible by world_size ({args.world_size})")
+    if args.col_parallel and args.m % args.world_size != 0:
+        parser.error(f"M ({args.m}) must be divisible by world_size ({args.world_size}) for col-parallel")
+    if args.col_parallel and args.n % args.world_size != 0:
+        parser.error(f"N ({args.n}) must be divisible by world_size ({args.world_size}) for col-parallel")
 
     link_bw = args.link_bw
     bw_profiled = False
@@ -700,7 +850,8 @@ def main():
             print("  Falling back to --link_bw 50 (MI300X default)\n")
             link_bw = 50.0
 
-    p = derive(
+    derive_fn = derive_col_parallel if args.col_parallel else derive
+    p = derive_fn(
         args.m,
         args.n,
         args.k,

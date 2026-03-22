@@ -11,12 +11,18 @@ PyTorch baseline, and validation for every configuration.
 This script does NOT modify benchmark_hbm_buffer.py — it invokes it via
 ``torchrun`` as a subprocess for each parameter set.
 
+Supports both row-parallel (K-sharded, default) and column-parallel (M-sharded)
+kernels via the --col_parallel flag.
+
 Usage:
     # Default one-at-a-time sweep (each param varied independently):
     python benchmark/ops/all_gather_matmul/tune_hbm_buffer.py
 
     # Custom matrix size:
     python benchmark/ops/all_gather_matmul/tune_hbm_buffer.py -m 8192 -n 4096 -k 131072
+
+    # Column-parallel sweep:
+    python benchmark/ops/all_gather_matmul/tune_hbm_buffer.py --col_parallel -m 262144 -n 8192 -k 8192
 
     # Only sweep specific parameters:
     python benchmark/ops/all_gather_matmul/tune_hbm_buffer.py --params num_fetch_sms k_per_flag
@@ -54,6 +60,31 @@ BASELINE = {
     "first_stage_fetch_sms": 304,
 }
 
+# Col-parallel baseline (M-sharded A, N-sharded B).
+# Best found: 82 TFLOPS / 53.5ms for M=262144, N=8192, K=8192 on MI300X.
+# PyTorch baseline: 209 TFLOPS / 21ms — remaining 2.6x gap is fundamentally
+# limited by iris gather bandwidth (~130 GB/s) vs NCCL ring (~270 GB/s).
+# Fetcher WGs spend ~27ms staging 3.5 GB of remote data; NCCL does it in ~14ms.
+#
+# Key insights:
+#   - num_fetch_stages=1 is best: all fetchers run in first CU wave, GEMM fills next.
+#   - bn=128 gives 8 N-tiles (vs 4 with bn=256) for better GEMM occupancy.
+#   - gm=8 balances M-tile locality with dispatch flexibility.
+#   - nf=290 maximizes fetch bandwidth (all but 14 CUs fetch).
+#   - Local rank skip: GEMM reads A_sharded directly for local M-tiles.
+#   - Per-M-tile flags: 1 flag per M-tile (all K ready at once in col-parallel).
+COL_PARALLEL_BASELINE = {
+    "block_size_m": 256,
+    "block_size_n": 128,
+    "block_size_k": 64,
+    "group_size_m": 8,
+    "num_fetch_sms": 290,
+    "k_per_flag": 128,
+    "num_warps": 8,
+    "num_fetch_stages": 1,
+    "first_stage_fetch_sms": 290,
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sweep ranges — values to try for each parameter.
 # In ``oneatatime`` mode only one parameter deviates from the baseline at a
@@ -69,6 +100,18 @@ SWEEP_RANGES = {
     "num_warps": [4, 8],
     "num_fetch_stages": [2, 4, 8],
     "first_stage_fetch_sms": [128, 192, 256, 304],
+}
+
+COL_PARALLEL_SWEEP_RANGES = {
+    "block_size_m": [128, 256],
+    "block_size_n": [64, 128, 256],
+    "block_size_k": [64],
+    "group_size_m": [4, 8, 16, 32],
+    "num_fetch_sms": [200, 250, 280, 290],
+    "k_per_flag": [64, 128],
+    "num_warps": [8],
+    "num_fetch_stages": [1],
+    "first_stage_fetch_sms": [290],
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,23 +136,38 @@ def make_label(cfg):
     return "_".join(parts)
 
 
-def validate_config(cfg, M, N, K, world_size=8):
+def validate_config(cfg, M, N, K, world_size=8, col_parallel=False):
     """Return a list of error strings; empty list means valid."""
     errors = []
-    K_local = K // world_size
     bm, bn, bk = cfg["block_size_m"], cfg["block_size_n"], cfg["block_size_k"]
     kpf = cfg["k_per_flag"]
 
-    if M % bm != 0:
-        errors.append(f"M={M} not divisible by block_size_m={bm}")
-    if N % bn != 0:
-        errors.append(f"N={N} not divisible by block_size_n={bn}")
-    if K % bk != 0:
-        errors.append(f"K={K} not divisible by block_size_k={bk}")
-    if K_local % bk != 0:
-        errors.append(f"K_local={K_local} not divisible by block_size_k={bk}")
+    if col_parallel:
+        # Col-parallel: M is sharded, K is full, N is sharded
+        M_local = M // world_size
+        N_local = N // world_size
+        if M % bm != 0:
+            errors.append(f"M={M} not divisible by block_size_m={bm}")
+        if M_local % bm != 0:
+            errors.append(f"M_local={M_local} not divisible by block_size_m={bm}")
+        if N_local % bn != 0:
+            errors.append(f"N_local={N_local} not divisible by block_size_n={bn}")
+        if K % bk != 0:
+            errors.append(f"K={K} not divisible by block_size_k={bk}")
+        num_k_blocks = K // bk
+    else:
+        # Row-parallel: K is sharded
+        K_local = K // world_size
+        if M % bm != 0:
+            errors.append(f"M={M} not divisible by block_size_m={bm}")
+        if N % bn != 0:
+            errors.append(f"N={N} not divisible by block_size_n={bn}")
+        if K % bk != 0:
+            errors.append(f"K={K} not divisible by block_size_k={bk}")
+        if K_local % bk != 0:
+            errors.append(f"K_local={K_local} not divisible by block_size_k={bk}")
+        num_k_blocks = K // bk
 
-    num_k_blocks = K // bk
     if num_k_blocks % kpf != 0:
         errors.append(f"num_k_blocks={num_k_blocks} not divisible by k_per_flag={kpf}")
 
@@ -119,13 +177,20 @@ def validate_config(cfg, M, N, K, world_size=8):
     return errors
 
 
-def build_command(cfg, M, N, K, trace_path, nproc=8, validate=True, benchmark=True, benchmark_pytorch=False):
+def build_command(cfg, M, N, K, trace_path, nproc=8, validate=True, benchmark=True, benchmark_pytorch=False, master_port=29500, col_parallel=False):
     """Build the ``torchrun`` CLI for one configuration."""
+    benchmark_script = (
+        "benchmark/ops/all_gather_matmul/benchmark_col_parallel_hbm.py"
+        if col_parallel
+        else "benchmark/ops/all_gather_matmul/benchmark_hbm_buffer.py"
+    )
     cmd = [
         "torchrun",
         "--nproc_per_node",
         str(nproc),
-        "benchmark/ops/all_gather_matmul/benchmark_hbm_buffer.py",
+        "--master-port",
+        str(master_port),
+        benchmark_script,
         "-m",
         str(M),
         "-n",
@@ -166,7 +231,7 @@ def build_command(cfg, M, N, K, trace_path, nproc=8, validate=True, benchmark=Tr
 
 # ── Output parsing ────────────────────────────────────────────────────────────
 
-_RE_IRIS = re.compile(r"HBM-Buffer\s*\([^)]*\):\s*([\d.]+)\s*ms,\s*([\d.]+)\s*TFLOPS,\s*([\d.]+)\s*GB/s")
+_RE_IRIS = re.compile(r"HBM-Buffer\s*\([^)]*\):\s*([\d.]+)\s*ms,\s*([\d.]+)\s*TFLOPS,\s*(?:AG_BW=)?([\d.]+)\s*GB/s")
 _RE_PYTORCH = re.compile(r"PyTorch\s*\([^)]*\):\s*([\d.]+)\s*ms,\s*([\d.]+)\s*TFLOPS,\s*([\d.]+)\s*GB/s")
 _RE_SPEEDUP = re.compile(r"Speedup.*?:\s*([\d.]+)x")
 _RE_VALID_FAIL = re.compile(r"Validation FAILED.*?max diff:\s*([\d.eE+-]+)")
@@ -331,12 +396,28 @@ def main():
     parser.add_argument("--dry_run", action="store_true", help="Print configs and exit without running")
     parser.add_argument("--skip_validation", action="store_true", help="Skip validation (faster, no correctness check)")
     parser.add_argument("--timeout", type=int, default=600, help="Per-config timeout in seconds (default: 600)")
+    parser.add_argument("--master_port", type=int, default=29500, help="Master port for torchrun (default: 29500)")
+    parser.add_argument(
+        "--col_parallel", action="store_true",
+        help="Use column-parallel kernel (M-sharded A) instead of row-parallel (K-sharded A)",
+    )
 
     args = parser.parse_args()
     M, N, K = args.m, args.n, args.k
 
+    # Select baseline and sweep ranges based on kernel variant
+    col_parallel = args.col_parallel
+    if col_parallel:
+        base_template = dict(COL_PARALLEL_BASELINE)
+        sweep_ranges = COL_PARALLEL_SWEEP_RANGES
+        variant_name = "Col-Parallel"
+    else:
+        base_template = dict(BASELINE)
+        sweep_ranges = SWEEP_RANGES
+        variant_name = "Row-Parallel"
+
     # Apply any CLI baseline overrides
-    baseline = dict(BASELINE)
+    baseline = dict(base_template)
     for key in baseline:
         cli_val = getattr(args, key, None)
         if cli_val is not None:
@@ -353,13 +434,13 @@ def main():
     trace_dir.mkdir(exist_ok=True)
 
     # Generate configs
-    configs = generate_configs(baseline, SWEEP_RANGES, mode=args.mode, params=args.params)
+    configs = generate_configs(baseline, sweep_ranges, mode=args.mode, params=args.params)
 
     # Pre-validate all configs
     valid_configs = []
     skipped = []
     for cfg in configs:
-        errs = validate_config(cfg, M, N, K, world_size=args.nproc)
+        errs = validate_config(cfg, M, N, K, world_size=args.nproc, col_parallel=col_parallel)
         if errs:
             skipped.append((cfg, errs))
         else:
@@ -367,7 +448,7 @@ def main():
 
     # Banner
     print(f"\n{'=' * 100}")
-    print("  HBM-Buffer All-Gather MatMul  —  Parameter Tuning")
+    print(f"  HBM-Buffer All-Gather MatMul  —  Parameter Tuning ({variant_name})")
     print(f"  M={M}  N={N}  K={K}  nproc={args.nproc}  mode={args.mode}")
     print(f"  Baseline: {make_label(baseline)}")
     print(f"  Configs to run: {len(valid_configs)}  (skipped: {len(skipped)})")
@@ -420,6 +501,8 @@ def main():
             validate=not args.skip_validation,
             benchmark=True,
             benchmark_pytorch=is_first,
+            master_port=args.master_port,
+            col_parallel=col_parallel,
         )
         cmd_str = " ".join(cmd)
         print(f"  $ HSA_NO_SCRATCH_RECLAIM=1 {cmd_str}")
@@ -611,8 +694,10 @@ def main():
                     "K": K,
                     "nproc": args.nproc,
                     "mode": args.mode,
+                    "col_parallel": col_parallel,
+                    "variant": variant_name,
                     "baseline": baseline,
-                    "sweep_ranges": SWEEP_RANGES,
+                    "sweep_ranges": sweep_ranges,
                     "timestamp": datetime.now().isoformat(),
                     "total_elapsed_s": round(total_elapsed, 1),
                     "pytorch_baseline": pytorch_baseline,

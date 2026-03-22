@@ -1337,7 +1337,6 @@ class DeviceContext:
     heap_bases: tl.tensor
     tracing: DeviceTracing
 
-    @triton.constexpr_function
     def __init__(self, rank, world_size, heap_bases, tracing):
         """
         Internal constructor - use DeviceContext.initialize() instead.

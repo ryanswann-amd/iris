@@ -83,7 +83,6 @@ class TraceEvent:
     wg_gemm: tl.constexpr
     wg_gemm_wait: tl.constexpr
 
-    @triton.constexpr_function
     def __init__(self):
         # Data movement
         self.load = tl.constexpr(0)
