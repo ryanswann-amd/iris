@@ -142,6 +142,7 @@ def do_bench(
     n_repeat=100,
     quantiles=None,
     return_mode="mean",
+    clear_l2=True,
 ):
     """
     Benchmark a function by timing its execution.
@@ -172,7 +173,7 @@ def do_bench(
     barrier_fn()
     # Wait for all GPUs to finish their work
 
-    cache = get_empty_cache_for_benchmark()
+    cache = get_empty_cache_for_benchmark() if clear_l2 else None
 
     start_event = [create_timing_event() for i in range(n_repeat)]
     end_event = [create_timing_event() for i in range(n_repeat)]
@@ -181,7 +182,8 @@ def do_bench(
     for _ in range(n_warmup):
         barrier_fn()  # Wait for all GPUs before we clear the cache
         preamble_fn()
-        clear_cache(cache)
+        if clear_l2:
+            clear_cache(cache)
         barrier_fn()  # Wait for clearing the cache before launching any kernels
         fn()
 
@@ -189,7 +191,8 @@ def do_bench(
     for i in range(n_repeat):
         barrier_fn()  # Wait for all GPUs before we clear the cache
         preamble_fn()
-        clear_cache(cache)
+        if clear_l2:
+            clear_cache(cache)
         barrier_fn()  # Wait for clearing the cache before launching any kernels
         start_event[i].record()
         fn()

@@ -488,6 +488,7 @@ def _worker(args):
     end_ev = torch.cuda.Event(enable_timing=True)
     total_ms = 0.0
     num_experiments = 0
+    all_iter_times = []
 
     num_fetch_sms = args["num_fetch_sms"]
     num_warps = args["num_warps"]
@@ -529,7 +530,9 @@ def _worker(args):
             end_ev.record()
             num_experiments += 1
         shmem.barrier()
-        total_ms += start_ev.elapsed_time(end_ev)
+        iter_ms = start_ev.elapsed_time(end_ev)
+        total_ms += iter_ms
+        all_iter_times.append(iter_ms)
 
     shmem.barrier()
 
@@ -573,15 +576,23 @@ def _worker(args):
         total_ms = 0.0
         num_experiments = 0
         if n_warmup > 0:
-            iris.do_bench(run_experiment, shmem.barrier, n_warmup=n_warmup, n_repeat=1)
+            iris.do_bench(run_experiment, shmem.barrier, n_warmup=n_warmup, n_repeat=1, clear_l2=False)
 
         total_ms = 0.0
         num_experiments = 0
         C.zero_()
         shmem.barrier()
 
-        iris.do_bench(run_experiment, shmem.barrier, n_warmup=0, n_repeat=n_repeat)
+        all_iter_times.clear()
+        iris.do_bench(run_experiment, shmem.barrier, n_warmup=0, n_repeat=n_repeat, clear_l2=False)
         avg_ms = total_ms / num_experiments if num_experiments > 0 else 0
+        if all_iter_times:
+            sorted_times = sorted(all_iter_times)
+            median_ms = sorted_times[len(sorted_times) // 2]
+            p10_ms = sorted_times[len(sorted_times) // 10] if len(sorted_times) >= 10 else sorted_times[0]
+            p90_ms = sorted_times[9 * len(sorted_times) // 10] if len(sorted_times) >= 10 else sorted_times[-1]
+            shmem.info(f"Timing: mean={avg_ms:.3f} median={median_ms:.3f} p10={p10_ms:.3f} p90={p90_ms:.3f} n={len(all_iter_times)}")
+            avg_ms = median_ms  # Report median instead of mean
 
         # Per-GPU FLOPs: C_local[M, N_local] = A_full[M, K] @ B_local[K, N_local]
         per_gpu_flops = 2 * M * N_local * K
