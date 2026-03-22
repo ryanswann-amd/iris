@@ -699,13 +699,12 @@ def all_gather_matmul_col_parallel(
         assert num_fetch_stages >= 1
         num_m_tiles_local = M_local // config.block_size_m
         if num_m_tiles_local % num_fetch_stages != 0:
-            import warnings
-            warnings.warn(
-                f"num_fetch_stages={num_fetch_stages} does not divide "
-                f"num_m_tiles_local={num_m_tiles_local} (M_local={M_local}, "
-                f"block_m={config.block_size_m}). This will produce incorrect "
-                f"results. Valid nfs values: {[s for s in range(1, num_m_tiles_local+1) if num_m_tiles_local % s == 0]}"
-            )
+            valid = [s for s in range(1, num_m_tiles_local+1) if num_m_tiles_local % s == 0 and s <= 16]
+            # Auto-select closest valid nfs
+            best = max((s for s in valid if s <= num_fetch_stages), default=valid[-1])
+            shmem.info(f"nfs={num_fetch_stages} invalid for {num_m_tiles_local} M-tiles, "
+                       f"auto-correcting to nfs={best} (valid: {valid})")
+            num_fetch_stages = best
 
         total_gemm_tiles = num_m_tiles * num_tiles_n
 
