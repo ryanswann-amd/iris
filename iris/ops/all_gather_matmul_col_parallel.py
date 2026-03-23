@@ -398,24 +398,23 @@ def _col_parallel_all_gather_matmul_kernel(
         gemm_local_id = local_pid - fetch_threshold
         LOCAL_M_PER_STAGE: tl.constexpr = (NUM_M_TILES_LOCAL + NUM_FETCH_STAGES - 1) // NUM_FETCH_STAGES
 
-        # Handle remainder: last stage may have fewer local m-tiles
+        # nfs auto-correction ensures NUM_M_TILES_LOCAL % NUM_FETCH_STAGES == 0
+        # so LOCAL_M_PER_STAGE is exact (no remainder stage).
         stage_local_m_start = my_stage * LOCAL_M_PER_STAGE
-        actual_local_m = min(LOCAL_M_PER_STAGE, NUM_M_TILES_LOCAL - stage_local_m_start)
-        actual_local_m = max(actual_local_m, 1)  # safety: avoid div-by-zero
-        stage_m_count = actual_local_m * world_size
+        M_PER_STAGE: tl.constexpr = LOCAL_M_PER_STAGE * world_size
 
         num_pid_in_group = GROUP_SIZE_M * NUM_TILES_N
         group_id = gemm_local_id // num_pid_in_group
         first_linear_m = group_id * GROUP_SIZE_M
-        first_linear_m = min(first_linear_m, stage_m_count - 1)
-        group_sz = min(stage_m_count - first_linear_m, GROUP_SIZE_M)
+        first_linear_m = min(first_linear_m, M_PER_STAGE - 1)
+        group_sz = min(M_PER_STAGE - first_linear_m, GROUP_SIZE_M)
         linear_m = first_linear_m + ((gemm_local_id % num_pid_in_group) % group_sz)
         pid_n = (gemm_local_id % num_pid_in_group) // group_sz
-        linear_m = min(linear_m, stage_m_count - 1)
+        linear_m = min(linear_m, M_PER_STAGE - 1)
 
         # Convert linear stage index to global m-tile index
-        stage_rank = linear_m // actual_local_m
-        stage_offset = linear_m % actual_local_m
+        stage_rank = linear_m // LOCAL_M_PER_STAGE
+        stage_offset = linear_m % LOCAL_M_PER_STAGE
         pid_m = stage_rank * NUM_M_TILES_LOCAL + stage_local_m_start + stage_offset
         pid_m = min(pid_m, NUM_M_TILES - 1)
 
