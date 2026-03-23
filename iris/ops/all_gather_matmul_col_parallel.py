@@ -132,12 +132,18 @@ def _col_parallel_fetch_kernel(
                     tl.store(remote_ptr, data)
 
         # Signal flags on all ranks — same per-WG rotation
+        # RCCL-inspired: ONE fence after all data stores, then relaxed atomics.
+        # ISA confirmed: buffer_wbl2 count drops from 9 to 1 per flag group.
         flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+        tl.inline_asm_elementwise(
+            "s_waitcnt vmcnt(0)\nbuffer_wbl2 sc1",
+            "=r", [], dtype=tl.int32, is_pure=False, pack=1,
+        )
+        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="relaxed", scope="gpu")
         for i in range(world_size):
             target_rank = (pid + i) % world_size
             if target_rank != cur_rank:
-                ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
+                ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="relaxed", scope="gpu")
 
 
 # =========================================================================
@@ -374,12 +380,19 @@ def _col_parallel_all_gather_matmul_kernel(
                                 tl.store(remote_ptr, data, cache_modifier=".cs")
 
                     # Signal flags on all ranks — same per-WG rotation
+                    # RCCL-inspired: ONE fence after all data stores, then relaxed atomics.
+                    # Before: sem="release" on each atomic = 9x (s_waitcnt vmcnt(0) + buffer_wbl2).
+                    # After: 1x explicit fence + 9x relaxed atomics = 8 fewer fences.
                     flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
+                    tl.inline_asm_elementwise(
+                        "s_waitcnt vmcnt(0)\nbuffer_wbl2 sc1",
+                        "=r", [], dtype=tl.int32, is_pure=False, pack=1,
+                    )
+                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="relaxed", scope="gpu")
                     for i in range(world_size):
                         target_rank = (stage_pid + i) % world_size
                         if target_rank != cur_rank:
-                            ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
+                            ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="relaxed", scope="gpu")
 
         if TRACE:
             ctx.tracing.record_event_end(_trace_handle)
