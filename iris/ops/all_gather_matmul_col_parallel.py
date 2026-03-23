@@ -132,18 +132,12 @@ def _col_parallel_fetch_kernel(
                     tl.store(remote_ptr, data)
 
         # Signal flags on all ranks — same per-WG rotation
-        # ONE fence after all data stores, then relaxed atomics.
-        # Eliminates 8 redundant buffer_wbl2 fences per flag group.
         flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-        tl.inline_asm_elementwise(
-            "s_waitcnt vmcnt(0)\nbuffer_wbl2 sc1",
-            "=r", [], dtype=tl.int32, is_pure=False, pack=1,
-        )
-        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="relaxed", scope="gpu")
+        tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
         for i in range(world_size):
             target_rank = (pid + i) % world_size
             if target_rank != cur_rank:
-                ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="relaxed", scope="gpu")
+                ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
 
 
 # =========================================================================
@@ -186,12 +180,6 @@ def _col_parallel_gemm_kernel(
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
-        # tritonBLAS-style stride assumes — helps compiler prove alignment
-        tl.assume(stride_sa_m > 0)
-        tl.assume(stride_sa_k > 0)
-        tl.assume(stride_bk > 0)
-        tl.assume(stride_bn > 0)
-
         for k_fg in range(NUM_FLAG_GROUPS_K):
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
@@ -204,11 +192,14 @@ def _col_parallel_gemm_kernel(
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
                 a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                a = tl.load(tl.multiple_of(a_ptrs, (1, 16)))
+                a = tl.load(a_ptrs)
                 B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(tl.multiple_of(B_ptrs, (1, 16)))
+                b = tl.load(B_ptrs)
 
-                acc = tl.dot(a, b, acc, allow_tf32=ALLOW_TF32)
+                if ALLOW_TF32:
+                    acc = tl.dot(a, b, acc, allow_tf32=True)
+                else:
+                    acc += tl.dot(a, b, allow_tf32=False)
 
         if BIAS:
             bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
@@ -383,18 +374,12 @@ def _col_parallel_all_gather_matmul_kernel(
                                 tl.store(remote_ptr, data, cache_modifier=".cs")
 
                     # Signal flags on all ranks — same per-WG rotation
-                    # ONE fence after all data stores, then relaxed atomics.
-                    # Eliminates 8 redundant buffer_wbl2 fences per flag group.
                     flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
-                    tl.inline_asm_elementwise(
-                        "s_waitcnt vmcnt(0)\nbuffer_wbl2 sc1",
-                        "=r", [], dtype=tl.int32, is_pure=False, pack=1,
-                    )
-                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="relaxed", scope="gpu")
+                    tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
                     for i in range(world_size):
                         target_rank = (stage_pid + i) % world_size
                         if target_rank != cur_rank:
-                            ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="relaxed", scope="gpu")
+                            ctx.atomic_xchg(flags_ptr + flag_idx, 1, to_rank=target_rank, sem="release", scope="gpu")
 
         if TRACE:
             ctx.tracing.record_event_end(_trace_handle)
@@ -436,12 +421,6 @@ def _col_parallel_all_gather_matmul_kernel(
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
-        # tritonBLAS-style stride assumes — helps compiler prove alignment
-        tl.assume(stride_sa_m > 0)
-        tl.assume(stride_sa_k > 0)
-        tl.assume(stride_bk > 0)
-        tl.assume(stride_bn > 0)
-
         if TRACE:
             _trace_handle = ctx.tracing.record_event_start(
                 event_id=TraceEvent().wg_gemm, target_rank=cur_rank,
@@ -467,11 +446,14 @@ def _col_parallel_all_gather_matmul_kernel(
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
                 a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                a = tl.load(tl.multiple_of(a_ptrs, (1, 16)))
+                a = tl.load(a_ptrs)
                 B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(tl.multiple_of(B_ptrs, (1, 16)))
+                b = tl.load(B_ptrs)
 
-                acc = tl.dot(a, b, acc, allow_tf32=ALLOW_TF32)
+                if ALLOW_TF32:
+                    acc = tl.dot(a, b, acc, allow_tf32=True)
+                else:
+                    acc += tl.dot(a, b, allow_tf32=False)
 
         if BIAS:
             bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
