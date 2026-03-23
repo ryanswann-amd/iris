@@ -580,6 +580,7 @@ def all_gather_matmul_col_parallel(
     split_kernels: bool = False, gemm_sms: Optional[int] = None,
     gemm_wgs: Optional[int] = None,
     pure_fetch_first_stage: Optional[bool] = None,
+    schedule_hint: Optional[str] = None,
 ) -> FusedWorkspace:
     if config is None:
         config = FusedConfig()
@@ -686,6 +687,8 @@ def all_gather_matmul_col_parallel(
             gemm_launch_kwargs["num_warps"] = num_warps
         if num_stages is not None:
             gemm_launch_kwargs["num_stages"] = num_stages
+        if schedule_hint is not None:
+            gemm_launch_kwargs["schedule_hint"] = schedule_hint
 
         with torch.cuda.stream(gemm_stream):
             _col_parallel_gemm_kernel[(gemm_sms,)](
@@ -771,6 +774,8 @@ def all_gather_matmul_col_parallel(
             launch_kwargs["num_warps"] = num_warps
         if num_stages is not None:
             launch_kwargs["num_stages"] = num_stages
+        if schedule_hint is not None:
+            launch_kwargs["schedule_hint"] = schedule_hint
 
         _col_parallel_all_gather_matmul_kernel[(grid_size,)](
             A_sharded, B_local, output_tensor, bias_ptr,

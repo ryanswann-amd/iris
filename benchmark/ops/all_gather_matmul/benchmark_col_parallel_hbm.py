@@ -373,6 +373,10 @@ def parse_args():
         "--gemm_wgs", type=int, default=None,
         help="Number of persistent GEMM WGs in fused mode (default: one per tile)",
     )
+    parser.add_argument(
+        "--schedule_hint", type=str, default=None,
+        help="AMDGPU schedule hint: none, attention, iterative-ilp-scheduler, or comma-separated combo",
+    )
     return vars(parser.parse_args())
 
 
@@ -499,6 +503,7 @@ def _worker(args):
     split_kernels = args.get("split_kernels", True)
     gemm_sms = args.get("gemm_sms")
     gemm_wgs = args.get("gemm_wgs")
+    schedule_hint = args.get("schedule_hint")
 
     shmem.info(f"Mode: {'split' if split_kernels else 'fused'} kernels"
                f"{f', fetch_sms={num_fetch_sms}, gemm_sms={gemm_sms}' if split_kernels else ''}")
@@ -529,6 +534,7 @@ def _worker(args):
             split_kernels=split_kernels,
             gemm_sms=gemm_sms,
             gemm_wgs=gemm_wgs,
+            schedule_hint=schedule_hint,
         )
         end_ev.record()
         num_experiments += 1
@@ -638,6 +644,7 @@ def _worker(args):
             split_kernels=split_kernels,
             gemm_sms=gemm_sms,
             gemm_wgs=gemm_wgs,
+            schedule_hint=schedule_hint,
         )
         torch.cuda.synchronize()
         t_end = time.perf_counter()
@@ -681,6 +688,7 @@ def _worker(args):
             trace=True,
             split_kernels=False,  # trace requires fused kernel
             gemm_wgs=gemm_wgs,
+            schedule_hint=schedule_hint,
         )
         torch.cuda.synchronize()
         shmem.barrier()
@@ -701,6 +709,7 @@ def _worker(args):
             trace=True,
             split_kernels=False,  # trace requires fused kernel
             gemm_wgs=gemm_wgs,
+            schedule_hint=schedule_hint,
         )
         torch.cuda.synchronize()
         shmem.barrier()
