@@ -72,8 +72,11 @@ def _col_parallel_fetch_kernel(
     base_diff_7 = tl.load(heap_bases + 7).to(tl.int64) - from_base.to(tl.int64)
 
     for fg_idx in range(pid, TOTAL_FLAG_GROUPS, FETCH_SMS):
-        m_tile_local = fg_idx // NUM_FLAG_GROUPS_K
-        k_flag_group = fg_idx % NUM_FLAG_GROUPS_K
+        # K-major ordering: deliver k_group=0 for all m-tiles first,
+        # then k_group=1, etc. This unblocks more GEMM tiles sooner
+        # because the GEMM kernel polls flags in k_fg order per m_tile.
+        k_flag_group = fg_idx // NUM_M_TILES_LOCAL
+        m_tile_local = fg_idx % NUM_M_TILES_LOCAL
         m_tile_local = min(m_tile_local, NUM_M_TILES_LOCAL - 1)
         k_block_start = k_flag_group * K_PER_FLAG
 
@@ -129,7 +132,7 @@ def _col_parallel_fetch_kernel(
                     remote_int = (ptr_int.to(tl.int64) + diff).to(tl.uint64)
                     remote_ptr = tl.cast(remote_int, staged_ptrs.dtype)
                     remote_ptr = tl.max_contiguous(tl.multiple_of(remote_ptr, (1, BLOCK_SIZE_K)), (1, BLOCK_SIZE_K))
-                    tl.store(remote_ptr, data)
+                    tl.store(remote_ptr, data, cache_modifier=".cs")
 
         # Signal flags on all ranks — same per-WG rotation
         flag_idx = m_tile_global * NUM_FLAG_GROUPS_K + k_flag_group
@@ -635,18 +638,37 @@ def all_gather_matmul_col_parallel(
 
     if split_kernels:
         # ============================================================
-        # SPLIT KERNEL PATH
+        # SPLIT KERNEL PATH — two cooperative kernels on separate HW queues
         # ============================================================
+        # The fetch kernel pushes data + sets flags; the GEMM kernel
+        # polls flags and computes. Both run concurrently — the GPU's
+        # wave scheduler interleaves them at CU level.
+        #
+        # Key advantages over the fused kernel:
+        # - GEMM kernel binary has ZERO fetch code (smaller, better occupancy)
+        # - Fetch kernel binary has ZERO GEMM code (fewer VGPRs)
+        # - HW scheduler manages CU sharing (no fs parameter to tune)
+        #
+        # Defaults: fetch WGs should be modest (same range as fused kernel's
+        # fs parameter). Too many fetchers saturate XGMI before GEMM can
+        # consume the data. The GEMM kernel grid should cover all tiles.
         if num_fetch_sms is None:
-            num_fetch_sms = 200
+            # Match fused kernel heuristic: scale with M, inversely with K
+            num_fetch_sms = max(8, min(total_sms // 5, num_m_tiles_local * num_flag_groups_k))
         if gemm_sms is None:
-            gemm_sms = total_sms - num_fetch_sms
-            if gemm_sms <= 0:
-                gemm_sms = total_sms // 3
-                num_fetch_sms = total_sms - gemm_sms
+            # Persistent GEMM: enough WGs to cover all output tiles,
+            # capped at total CUs for reasonable occupancy
+            total_gemm_tiles = num_m_tiles * num_tiles_n
+            gemm_sms = min(total_gemm_tiles, total_sms)
 
+        # Stream setup: both sub-streams must wait on the current stream
+        # to ensure workspace.locks.zero_() (or any prior work) completes
+        # before the kernels begin.
+        current_stream = torch.cuda.current_stream(device)
         fetch_stream = torch.cuda.Stream(device=device)
         gemm_stream = torch.cuda.Stream(device=device)
+        fetch_stream.wait_stream(current_stream)
+        gemm_stream.wait_stream(current_stream)
 
         with torch.cuda.stream(fetch_stream):
             _col_parallel_fetch_kernel[(num_fetch_sms,)](
@@ -677,6 +699,11 @@ def all_gather_matmul_col_parallel(
                 k_per_flag, num_flag_groups_k, use_bias, config.allow_tf32,
                 **gemm_launch_kwargs,
             )
+
+        # Make default stream wait on both sub-streams so that
+        # subsequent ops (e.g., barrier, event recording) see completion
+        current_stream.wait_stream(fetch_stream)
+        current_stream.wait_stream(gemm_stream)
 
         if not async_op:
             shmem.barrier()
