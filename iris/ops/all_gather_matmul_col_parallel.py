@@ -191,10 +191,7 @@ def _col_parallel_gemm_kernel(
         for k_fg in range(NUM_FLAG_GROUPS_K):
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
-                tl.inline_asm_elementwise(
-                    "s_sleep 1",
-                    "=r", [], dtype=tl.int32, is_pure=False, pack=1,
-                )
+                pass
 
             k_block_base = k_fg * K_PER_FLAG
             for k_off in range(K_PER_FLAG):
@@ -453,12 +450,7 @@ def _col_parallel_all_gather_matmul_kernel(
 
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
-                # RCCL-inspired: s_sleep reduces memory bus contention from polling,
-                # freeing HBM bandwidth for actual data stores from fetch WGs.
-                tl.inline_asm_elementwise(
-                    "s_sleep 1",
-                    "=r", [], dtype=tl.int32, is_pure=False, pack=1,
-                )
+                pass
 
             if TRACE:
                 _wt = _wt + (read_realtime() - _ws)
