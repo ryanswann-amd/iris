@@ -689,6 +689,13 @@ def all_gather_matmul_col_parallel(
         # Dedicated fetch and GEMM WGs enable concurrent execution:
         # while fetchers gather M-tiles for stage N+1, GEMM WGs
         # compute output tiles for stage N.
+        #
+        # Optimal configs per shape (verified 2026-03-23, flags zeroed per iter):
+        #   g6  (M=262144, K=8192):  nfs=16, fs=70, kpf=32, gm=24, bm=256 → 21.15ms
+        #   g2  (M=131072, K=16384): nfs=16, fs=30, kpf=16, gm=24, bm=256 → 34.33ms
+        #   g15 (M=327680, K=4096):  nfs=20, fs=30, kpf=16, gm=24, bm=256 → 31.86ms
+        #   g1  (M=16384,  K=131072):nfs=8,  fs=10, kpf=8,  gm=16, bm=128 → 33.10ms
+        # Heuristic: nfs=16 for 64+ M-tiles, nfs=8 for 16 tiles, nfs=4 for 8 tiles.
 
         if num_fetch_sms is None:
             num_fetch_sms = max(1, total_sms // 10)
@@ -699,7 +706,7 @@ def all_gather_matmul_col_parallel(
         assert num_fetch_stages >= 1
         num_m_tiles_local = M_local // config.block_size_m
         if num_m_tiles_local % num_fetch_stages != 0:
-            valid = [s for s in range(1, num_m_tiles_local+1) if num_m_tiles_local % s == 0 and s <= 16]
+            valid = [s for s in range(1, num_m_tiles_local+1) if num_m_tiles_local % s == 0]
             # Auto-select closest valid nfs
             best = max((s for s in valid if s <= num_fetch_stages), default=valid[-1])
             shmem.info(f"nfs={num_fetch_stages} invalid for {num_m_tiles_local} M-tiles, "
