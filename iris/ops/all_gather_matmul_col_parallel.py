@@ -691,11 +691,13 @@ def all_gather_matmul_col_parallel(
         # compute output tiles for stage N.
         #
         # Optimal configs per shape (verified 2026-03-23, flags zeroed per iter):
-        #   g6  (M=262144, K=8192):  nfs=16, fs=70, kpf=32, gm=24, bm=256 → 21.15ms
-        #   g2  (M=131072, K=16384): nfs=16, fs=30, kpf=16, gm=24, bm=256 → 34.33ms
+        #   g6  (M=262144, K=8192):  nfs=16, fs=70, kpf=32, gm=24, bm=256 → 21.02ms
+        #   g2  (M=131072, K=16384): nfs=16, fs=8,  kpf=16, gm=24, bm=256 → 31.53ms
         #   g15 (M=327680, K=4096):  nfs=20, fs=30, kpf=16, gm=24, bm=256 → 31.86ms
         #   g1  (M=16384,  K=131072):nfs=8,  fs=10, kpf=8,  gm=16, bm=128 → 33.10ms
         # Heuristic: nfs=16 for 64+ M-tiles, nfs=8 for 16 tiles, nfs=4 for 8 tiles.
+        # Heuristic: fs scales inversely with K. Large K = slow GEMM tiles = fewer fetch WGs needed
+        #   K=4096: fs=30-70, K=8192: fs=70, K=16384: fs=8, K=131072: fs=10
 
         if num_fetch_sms is None:
             num_fetch_sms = max(1, total_sms // 10)
