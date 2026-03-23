@@ -343,8 +343,8 @@ def _col_parallel_all_gather_matmul_kernel(
                         # Destination pointers in staged_a (using global m_tile)
                         staged_ptrs = staged_a + rm_global.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
 
-                        # Local store: .cg keeps data in L2 for GEMM WGs to read
-                        tl.store(staged_ptrs, data, cache_modifier=".cg")
+                        # Local store (fast, no XGMI)
+                        tl.store(staged_ptrs, data, cache_modifier=".cs")
 
                         # Remote stores with precomputed base_diff — no heap_base
                         # loads in inner loop, no vmcnt(0) between ranks.
