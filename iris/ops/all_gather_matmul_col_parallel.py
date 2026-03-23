@@ -186,6 +186,12 @@ def _col_parallel_gemm_kernel(
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
+        # tritonBLAS-style stride assumes — helps compiler prove alignment
+        tl.assume(stride_sa_m > 0)
+        tl.assume(stride_sa_k > 0)
+        tl.assume(stride_bk > 0)
+        tl.assume(stride_bn > 0)
+
         for k_fg in range(NUM_FLAG_GROUPS_K):
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
@@ -198,14 +204,11 @@ def _col_parallel_gemm_kernel(
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
                 a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                a = tl.load(a_ptrs)
+                a = tl.load(tl.multiple_of(a_ptrs, (1, 16)))
                 B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(B_ptrs)
+                b = tl.load(tl.multiple_of(B_ptrs, (1, 16)))
 
-                if ALLOW_TF32:
-                    acc = tl.dot(a, b, acc, allow_tf32=True)
-                else:
-                    acc += tl.dot(a, b, allow_tf32=False)
+                acc = tl.dot(a, b, acc, allow_tf32=ALLOW_TF32)
 
         if BIAS:
             bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
@@ -433,6 +436,12 @@ def _col_parallel_all_gather_matmul_kernel(
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
+        # tritonBLAS-style stride assumes — helps compiler prove alignment
+        tl.assume(stride_sa_m > 0)
+        tl.assume(stride_sa_k > 0)
+        tl.assume(stride_bk > 0)
+        tl.assume(stride_bn > 0)
+
         if TRACE:
             _trace_handle = ctx.tracing.record_event_start(
                 event_id=TraceEvent().wg_gemm, target_rank=cur_rank,
@@ -458,14 +467,11 @@ def _col_parallel_all_gather_matmul_kernel(
                 rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
                 a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                a = tl.load(a_ptrs)
+                a = tl.load(tl.multiple_of(a_ptrs, (1, 16)))
                 B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(B_ptrs)
+                b = tl.load(tl.multiple_of(B_ptrs, (1, 16)))
 
-                if ALLOW_TF32:
-                    acc = tl.dot(a, b, acc, allow_tf32=True)
-                else:
-                    acc += tl.dot(a, b, allow_tf32=False)
+                acc = tl.dot(a, b, acc, allow_tf32=ALLOW_TF32)
 
         if BIAS:
             bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
