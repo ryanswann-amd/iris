@@ -428,6 +428,7 @@ def _col_parallel_all_gather_matmul_kernel(
             )
             _wt = zero.to(tl.int64)
 
+        # Hoist all flag polls before compute — avoids MFMA pipeline drains
         for k_fg in range(NUM_FLAG_GROUPS_K):
             if TRACE:
                 _ws = read_realtime()
@@ -439,21 +440,20 @@ def _col_parallel_all_gather_matmul_kernel(
             if TRACE:
                 _wt = _wt + (read_realtime() - _ws)
 
-            k_block_base = k_fg * K_PER_FLAG
-            for k_off in range(K_PER_FLAG):
-                k_block = k_block_base + k_off
-                rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-                rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
+        # Clean K-loop — no atomics, uninterrupted MFMA pipeline
+        for k_block in range(NUM_FLAG_GROUPS_K * K_PER_FLAG):
+            rk = k_block * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+            rk = tl.max_contiguous(tl.multiple_of(rk, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
-                a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
-                a = tl.load(a_ptrs)
-                B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
-                b = tl.load(B_ptrs)
+            a_ptrs = staged_a + rm.to(tl.int64)[:, None] * stride_sa_m + rk[None, :] * stride_sa_k
+            a = tl.load(a_ptrs)
+            B_ptrs = B + rk[:, None] * stride_bk + rn[None, :] * stride_bn
+            b = tl.load(B_ptrs)
 
-                if ALLOW_TF32:
-                    acc = tl.dot(a, b, acc, allow_tf32=True)
-                else:
-                    acc += tl.dot(a, b, allow_tf32=False)
+            if ALLOW_TF32:
+                acc = tl.dot(a, b, acc, allow_tf32=True)
+            else:
+                acc += tl.dot(a, b, allow_tf32=False)
 
         if BIAS:
             bias_val = tl.load(bias_ptr + rm * stride_bias, mask=rm < M, other=0.0)
