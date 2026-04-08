@@ -151,7 +151,8 @@ class OpsNamespace:
             output_tensor: Output tensor (M, N) - will contain reduced tiles for this rank
             A: Input matrix A (M, K)
             B: Input matrix B (K, N)
-            bias: Optional bias (currently unused; reserved for future support)
+            bias: Optional bias (currently unused; reserved for future support).
+                  Passing a non-None value will raise a NotImplementedError.
             async_op: If False, performs barrier at end
             config: Optional FusedConfig for tuning
             workspace: Optional pre-allocated workspace
@@ -163,6 +164,8 @@ class OpsNamespace:
             >>> output = shmem.zeros((M, N), dtype=torch.float16)
             >>> shmem.ops.matmul_reduce_scatter(output, A, B)
         """
+        if bias is not None:
+            raise NotImplementedError("bias is not yet supported for matmul_reduce_scatter")
         return matmul_reduce_scatter(self._shmem, output_tensor, A, B, async_op, config, workspace)
 
 
