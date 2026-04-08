@@ -1638,6 +1638,14 @@ class DeviceContext:
                 - ".cg": Cache Global. Equivalent to ".wb" — stored through L1 → L2 → LLC under LRU.
                 - ".cs": Cache Streaming. Bypasses L1, streamed through L2, not retained in LLC.
                 - ".wt": Write-Through. Bypasses L1 and L2 (coherent cache bypass), may hit in LLC with LRU.
+
+        Returns:
+            None
+
+        Example:
+            >>> ctx.get(remote_ptr + offsets, local_ptr + offsets, from_rank=1, mask=mask)
+        """
+        translated_from_ptr = self._translate(from_ptr, self.rank, from_rank, hint)
         data = tl.load(translated_from_ptr, mask=mask, other=other, cache_modifier=load_cache_modifier)
         tl.store(to_ptr, data, mask=mask, cache_modifier=store_cache_modifier)
 

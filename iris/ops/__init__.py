@@ -36,6 +36,7 @@ from .workspace import FusedWorkspace
 # from .matmul import matmul  # Simple single-GPU GEMM - TODO: implement
 from .matmul_all_reduce import matmul_all_reduce, matmul_all_reduce_preamble
 from .all_gather_matmul import all_gather_matmul, all_gather_matmul_preamble
+from .all_gather_matmul_hbm_buffer import all_gather_matmul_hbm_buffer, all_gather_matmul_hbm_buffer_preamble
 from .matmul_all_gather import matmul_all_gather
 from .matmul_reduce_scatter import matmul_reduce_scatter, matmul_reduce_scatter_preamble
 
@@ -145,14 +146,13 @@ class OpsNamespace:
         """
         Fused matrix multiplication and reduce-scatter.
 
-        Computes: output = reduce_scatter(A @ B) where each rank keeps assigned tiles
+        Computes: output = reduce_scatter(A @ B + bias) along N dimension
 
         Args:
-            output_tensor: Output tensor (M, N) - will contain reduced tiles for this rank
+            output_tensor: Output tensor (M, N_local) where N_local = N / world_size
             A: Input matrix A (M, K)
             B: Input matrix B (K, N)
-            bias: Optional bias (currently unused; reserved for future support).
-                  Passing a non-None value will raise a NotImplementedError.
+            bias: Optional bias vector (M,) or (N,)
             async_op: If False, performs barrier at end
             config: Optional FusedConfig for tuning
             workspace: Optional pre-allocated workspace
@@ -161,12 +161,11 @@ class OpsNamespace:
             workspace: Updated workspace object
 
         Example:
-            >>> output = shmem.zeros((M, N), dtype=torch.float16)
+            >>> N_local = N // world_size
+            >>> output = shmem.zeros((M, N_local), dtype=torch.float16)
             >>> shmem.ops.matmul_reduce_scatter(output, A, B)
         """
-        if bias is not None:
-            raise NotImplementedError("bias is not yet supported for matmul_reduce_scatter")
-        return matmul_reduce_scatter(self._shmem, output_tensor, A, B, async_op, config, workspace)
+        return matmul_reduce_scatter(self._shmem, output_tensor, A, B, bias, async_op, config, workspace)
 
 
 # Export public API
@@ -177,10 +176,13 @@ __all__ = [
     # Namespace
     "OpsNamespace",
     # Operations
+    "matmul",  # Simple single-GPU GEMM
     "matmul_all_reduce",
     "matmul_all_reduce_preamble",
     "all_gather_matmul",
     "all_gather_matmul_preamble",
+    "all_gather_matmul_hbm_buffer",
+    "all_gather_matmul_hbm_buffer_preamble",
     "matmul_all_gather",
     "matmul_reduce_scatter",
     "matmul_reduce_scatter_preamble",

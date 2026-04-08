@@ -19,12 +19,12 @@ class FusedConfig:
     but users can override specific settings for performance tuning.
 
     GEMM Parameters:
-        block_size_m: Block size for M dimension (rows). Default: 128.
-        block_size_n: Block size for N dimension (columns). Default: 256.
+        block_size_m: Block size for M dimension (rows). Default: 256.
+        block_size_n: Block size for N dimension (columns). Default: 64.
         block_size_k: Block size for K dimension (reduction). Default: 64.
         group_size_m: Group size for M dimension tiling. Default: 1.
         num_sms: Number of SMs to use. If None, auto-detects from device. Default: None.
-        num_xcds: Number of XCDs (chiplets). Default: 8.
+        num_xcds: Number of XCDs (chiplets). Default: 1.
         chunk_size: Chunk size for chiplet transform. Default: 1.
         cache_modifier_a: Cache modifier for matrix A (".ca" for cached). Default: ".ca".
         cache_modifier_b: Cache modifier for matrix B (".ca" for cached). Default: ".ca".
@@ -50,12 +50,12 @@ class FusedConfig:
     """
 
     # GEMM parameters
-    block_size_m: int = 128
-    block_size_n: int = 256
+    block_size_m: int = 256
+    block_size_n: int = 64
     block_size_k: int = 64
     group_size_m: int = 1
     num_sms: Optional[int] = None  # Auto-detect if None
-    num_xcds: int = 8
+    num_xcds: int = 1
     chunk_size: int = 1
     cache_modifier_a: str = ".ca"
     cache_modifier_b: str = ".ca"

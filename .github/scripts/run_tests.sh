@@ -74,10 +74,10 @@ EXIT_CODE=0
 # shellcheck disable=SC2086
 "$SCRIPT_DIR/container_exec.sh" $GPU_ARG "
     set -e
-
+    
     echo \"Installing iris using method: $INSTALL_METHOD\"
     $INSTALL_CMD
-
+    
     # Run tests in the specified directory
     for test_file in tests/$TEST_DIR/test_*.py; do
         if [ -f \"\$test_file\" ]; then
