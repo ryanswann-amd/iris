@@ -76,7 +76,7 @@ def _worker(local_rank: int, world_size: int, init_url: str, args: dict):
         init_method=init_url,
         world_size=world_size,
         rank=local_rank,
-        device_id=torch.device(f"cuda:{local_rank}"),
+        device_id=torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else None,
     )
 
     shmem = iris.iris(args["heap_size"])

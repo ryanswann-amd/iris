@@ -83,9 +83,6 @@ def test_all_gather_matmul(dtype, atol, rtol, M, K_local, N, variant):
     # Run fused all_gather + matmul using shmem.ops API
     from iris.ops.config import FusedConfig
 
-    if rank == 0:
-        print(f"\n[Test] Testing variant={variant}, M={M}, K_local={K_local}, N={N}, dtype={dtype}")
-
     # Use appropriate block sizes based on problem size
     # For small problems, use smaller blocks
     if M <= 256 or K_local <= 64 or N <= 128:

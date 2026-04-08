@@ -283,6 +283,8 @@ def all_gather_matmul(
             even_k,
             config.allow_tf32,
         )
+    else:
+        raise ValueError(f"Unsupported all_gather_matmul_variant '{variant}'. Only 'pull' is currently supported.")
 
     if not async_op:
         shmem.barrier()

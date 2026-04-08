@@ -75,7 +75,7 @@ def parse_args():
         "--variant",
         type=str,
         default="pull",
-        choices=["pull", "chunked", "push", "pipelined_pull"],
+        choices=["pull"],
         help="All-gather matmul variant",
     )
     parser.add_argument(

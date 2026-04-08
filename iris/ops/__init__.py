@@ -141,7 +141,7 @@ class OpsNamespace:
         """
         return matmul_all_gather(self._shmem, output_tensor, A, B, bias, async_op, config, workspace)
 
-    def matmul_reduce_scatter(self, output_tensor, A, B, async_op=False, config=None, workspace=None):
+    def matmul_reduce_scatter(self, output_tensor, A, B, bias=None, async_op=False, config=None, workspace=None):
         """
         Fused matrix multiplication and reduce-scatter.
 
@@ -151,6 +151,7 @@ class OpsNamespace:
             output_tensor: Output tensor (M, N) - will contain reduced tiles for this rank
             A: Input matrix A (M, K)
             B: Input matrix B (K, N)
+            bias: Optional bias (currently unused; reserved for future support)
             async_op: If False, performs barrier at end
             config: Optional FusedConfig for tuning
             workspace: Optional pre-allocated workspace

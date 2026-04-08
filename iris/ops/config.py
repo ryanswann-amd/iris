@@ -22,9 +22,9 @@ class FusedConfig:
         block_size_m: Block size for M dimension (rows). Default: 128.
         block_size_n: Block size for N dimension (columns). Default: 256.
         block_size_k: Block size for K dimension (reduction). Default: 64.
-        group_size_m: Group size for M dimension tiling. Default: 4.
+        group_size_m: Group size for M dimension tiling. Default: 1.
         num_sms: Number of SMs to use. If None, auto-detects from device. Default: None.
-        num_xcds: Number of XCDs (chiplets). Default: 1.
+        num_xcds: Number of XCDs (chiplets). Default: 8.
         chunk_size: Chunk size for chiplet transform. Default: 1.
         cache_modifier_a: Cache modifier for matrix A (".ca" for cached). Default: ".ca".
         cache_modifier_b: Cache modifier for matrix B (".ca" for cached). Default: ".ca".
@@ -64,7 +64,7 @@ class FusedConfig:
     # CCL-specific parameters
     all_reduce_variant: str = "two_shot"  # atomic, ring, one_shot, two_shot, spinlock
     all_reduce_num_rings: int = 1
-    all_gather_matmul_variant: str = "pull"  # pull, chunked
+    all_gather_matmul_variant: str = "pull"  # pull
 
     def validate(self, world_size: Optional[int] = None):
         """

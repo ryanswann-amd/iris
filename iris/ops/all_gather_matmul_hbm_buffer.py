@@ -317,7 +317,9 @@ def _extract_wg_trace(shmem, grid_size, **metadata):
     event_ids = bufs["event_id"][:n].cpu().numpy()
     pids = bufs["pid"][:n].cpu().numpy()
     timestamps = bufs["timestamp"][:n].cpu().numpy().astype(np.int64)
-    end_ts = bufs["duration_cycles"][:n].cpu().numpy().astype(np.int64)
+    # Note: despite the field name, "duration_cycles" stores the absolute end timestamp
+    # (set by record_event_end). The actual duration is end_ts - start_ts.
+    end_timestamps = bufs["duration_cycles"][:n].cpu().numpy().astype(np.int64)
     xcc_ids = bufs["xcc_id"][:n].cpu().numpy().astype(np.int32)
     pid_ns = bufs["pid_n"][:n].cpu().numpy()
 
@@ -333,7 +335,7 @@ def _extract_wg_trace(shmem, grid_size, **metadata):
             continue
         if eid == _WG_FETCH or eid == _WG_GEMM:
             starts[wg] = int(timestamps[i])
-            ends[wg] = int(end_ts[i])
+            ends[wg] = int(end_timestamps[i])
             xcds[wg] = int(xcc_ids[i])
         elif eid == _WG_GEMM_WAIT:
             waits[wg] = int(pid_ns[i])
