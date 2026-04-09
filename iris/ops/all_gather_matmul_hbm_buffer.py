@@ -16,7 +16,6 @@ import triton.language as tl
 import iris
 import iris.x
 
-from iris.device_utils import read_realtime
 from iris.tracing.events import TraceEvent
 from .config import FusedConfig
 from .workspace import FusedWorkspace
@@ -98,7 +97,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
         if TRACE:
             _trace_handle = ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_fetch,
+                event_id=TraceEvent().fetch,
                 target_rank=cur_rank,
                 address=flags_ptr + tl.arange(0, 1),
                 pid_m=pid,
@@ -178,24 +177,29 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
         if TRACE:
             _trace_handle = ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_gemm,
+                event_id=TraceEvent().compute,
                 target_rank=cur_rank,
                 address=flags_ptr + tl.arange(0, 1),
                 pid_m=pid,
                 pid_n=my_stage,
             )
-            _wt = zero.to(tl.int64)
 
         for k_fg in range(NUM_FLAG_GROUPS_K):
             if TRACE:
-                _ws = read_realtime()
+                _wait_handle = ctx.tracing.record_event_start(
+                    event_id=TraceEvent().wait,
+                    target_rank=cur_rank,
+                    address=flags_ptr + tl.arange(0, 1),
+                    pid_m=pid,
+                    pid_n=k_fg,
+                )
 
             flag_idx = pid_m * NUM_FLAG_GROUPS_K + k_fg
             while tl.atomic_add(flags_ptr + flag_idx, 0, sem="acquire", scope="gpu") == 0:
                 pass
 
             if TRACE:
-                _wt = _wt + (read_realtime() - _ws)
+                ctx.tracing.record_event_end(_wait_handle)
 
             k_block_base = k_fg * K_PER_FLAG
             for k_off in range(K_PER_FLAG):
@@ -225,13 +229,6 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
         if TRACE:
             ctx.tracing.record_event_end(_trace_handle)
-            ctx.tracing.record_event_start(
-                event_id=TraceEvent().wg_gemm_wait,
-                target_rank=cur_rank,
-                address=flags_ptr + tl.arange(0, 1),
-                pid_m=pid,
-                pid_n=_wt.to(tl.int32),
-            )
 
 
 # ==========================================================================
@@ -302,9 +299,9 @@ def all_gather_matmul_hbm_buffer_preamble(
     return ws
 
 
-_WG_FETCH = 14
-_WG_GEMM = 15
-_WG_GEMM_WAIT = 16
+_EID_FETCH = 1024    # TraceEvent().fetch
+_EID_COMPUTE = 2048  # TraceEvent().compute
+_EID_WAIT = 3072     # TraceEvent().wait
 
 
 def _extract_wg_trace(ctx, grid_size, **metadata):
@@ -321,7 +318,6 @@ def _extract_wg_trace(ctx, grid_size, **metadata):
     # (set by record_event_end). The actual duration is end_ts - start_ts.
     end_timestamps = bufs["duration_cycles"][:n].cpu().numpy().astype(np.int64)
     xcc_ids = bufs["xcc_id"][:n].cpu().numpy().astype(np.int32)
-    pid_ns = bufs["pid_n"][:n].cpu().numpy()
 
     starts = torch.zeros(grid_size, dtype=torch.int64)
     ends = torch.zeros(grid_size, dtype=torch.int64)
@@ -333,12 +329,12 @@ def _extract_wg_trace(ctx, grid_size, **metadata):
         wg = int(pids[i])
         if wg >= grid_size:
             continue
-        if eid == _WG_FETCH or eid == _WG_GEMM:
+        if eid == _EID_FETCH or eid == _EID_COMPUTE:
             starts[wg] = int(timestamps[i])
             ends[wg] = int(end_timestamps[i])
             xcds[wg] = int(xcc_ids[i])
-        elif eid == _WG_GEMM_WAIT:
-            waits[wg] = int(pid_ns[i])
+        elif eid == _EID_WAIT:
+            waits[wg] += int(end_timestamps[i]) - int(timestamps[i])
 
     return {"start": starts, "end": ends, "wait": waits, "xcd": xcds, "grid_size": grid_size, **metadata}
 
