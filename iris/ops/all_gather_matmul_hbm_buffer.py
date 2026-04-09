@@ -240,7 +240,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
 
 
 def all_gather_matmul_hbm_buffer_preamble(
-    shmem,
+    ctx,
     A_sharded: torch.Tensor,
     B: torch.Tensor,
     config: Optional[FusedConfig] = None,
@@ -259,7 +259,7 @@ def all_gather_matmul_hbm_buffer_preamble(
 
     M, K_local = A_sharded.shape
     K, N = B.shape
-    world_size = shmem.get_num_ranks()
+    world_size = ctx.get_num_ranks()
 
     assert world_size * K_local == K
     assert K_local % config.block_size_k == 0
@@ -282,23 +282,23 @@ def all_gather_matmul_hbm_buffer_preamble(
 
     if staged_a_layout == "m_contiguous":
         # Allocate (K, M) row-major, .T gives (M, K) with stride_m=1, stride_k=M
-        storage = shmem.zeros((K, M), dtype=A_sharded.dtype)
+        storage = ctx.zeros((K, M), dtype=A_sharded.dtype)
         ws.aux_buffer = storage.T  # (M, K) view, M-contiguous
     else:
         # Default: (M, K) row-major, stride_m=K, stride_k=1
-        ws.aux_buffer = shmem.zeros((M, K), dtype=A_sharded.dtype)
+        ws.aux_buffer = ctx.zeros((M, K), dtype=A_sharded.dtype)
 
-    ws.locks = shmem.zeros((num_m_tiles * num_flag_groups_k,), dtype=torch.int32)
+    ws.locks = ctx.zeros((num_m_tiles * num_flag_groups_k,), dtype=torch.int32)
 
     buffer_mb = M * K * A_sharded.element_size() / (1024**2)
     sa_stride_m, sa_stride_k = ws.aux_buffer.stride()
-    shmem.info(
+    ctx.info(
         f"HBM buffer: staged_a=({M},{K}) [{buffer_mb:.1f} MB] "
         f"layout={staged_a_layout} strides=({sa_stride_m},{sa_stride_k}), "
         f"flags={num_m_tiles}x{num_flag_groups_k}, k_per_flag={k_per_flag}"
     )
 
-    shmem.barrier()
+    ctx.barrier()
     return ws
 
 
@@ -307,12 +307,12 @@ _WG_GEMM = 15
 _WG_GEMM_WAIT = 16
 
 
-def _extract_wg_trace(shmem, grid_size, **metadata):
+def _extract_wg_trace(ctx, grid_size, **metadata):
     """Reconstruct per-workgroup trace arrays from DeviceTracing events."""
     import numpy as np
 
-    bufs = shmem.tracing.trace_buffers
-    n = min(shmem.tracing.trace_counter.item(), shmem.tracing.max_events)
+    bufs = ctx.tracing.trace_buffers
+    n = min(ctx.tracing.trace_counter.item(), ctx.tracing.max_events)
 
     event_ids = bufs["event_id"][:n].cpu().numpy()
     pids = bufs["pid"][:n].cpu().numpy()
@@ -344,7 +344,7 @@ def _extract_wg_trace(shmem, grid_size, **metadata):
 
 
 def all_gather_matmul_hbm_buffer(
-    shmem,
+    ctx,
     output_tensor: torch.Tensor,
     A_sharded: torch.Tensor,
     B: torch.Tensor,
@@ -376,8 +376,8 @@ def all_gather_matmul_hbm_buffer(
 
     M, K_local = A_sharded.shape
     K, N = B.shape
-    world_size = shmem.get_num_ranks()
-    rank = shmem.get_rank()
+    world_size = ctx.get_num_ranks()
+    rank = ctx.get_rank()
 
     assert world_size * K_local == K
     assert output_tensor.shape == (M, N)
@@ -394,7 +394,7 @@ def all_gather_matmul_hbm_buffer(
     assert num_k_blocks % k_per_flag == 0
 
     if workspace is None:
-        workspace = all_gather_matmul_hbm_buffer_preamble(shmem, A_sharded, B, config, k_per_flag, staged_a_layout)
+        workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded, B, config, k_per_flag, staged_a_layout)
 
     workspace.locks.zero_()
 
@@ -445,10 +445,10 @@ def all_gather_matmul_hbm_buffer(
 
     if trace:
         max_trace_events = grid_size * 4
-        if not shmem.tracing.enabled:
-            shmem.tracing.enable(max_events=max_trace_events)
+        if not ctx.tracing.enabled:
+            ctx.tracing.enable(max_events=max_trace_events)
         else:
-            shmem.tracing.reset()
+            ctx.tracing.reset()
 
     launch_kwargs = {"matrix_instr_nonkdim": 16}
     if num_warps is not None:
@@ -476,7 +476,7 @@ def all_gather_matmul_hbm_buffer(
         stride_sa_m,
         stride_sa_k,
         stride_bias,
-        shmem.get_device_context(),
+        ctx.get_device_context(),
         rank,
         world_size,
         config.block_size_m,
@@ -501,12 +501,12 @@ def all_gather_matmul_hbm_buffer(
     )
 
     if not async_op:
-        shmem.barrier()
+        ctx.barrier()
 
     if trace:
         torch.cuda.synchronize()
         workspace.trace_data = _extract_wg_trace(
-            shmem,
+            ctx,
             grid_size,
             num_fetch_sms=num_fetch_sms,
             num_fetch_stages=num_fetch_stages,

@@ -46,9 +46,9 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
         pytest.skip("torch.distributed not initialized")
 
     heap_size = 2**33
-    shmem = iris.iris(heap_size)
-    rank = shmem.get_rank()
-    world_size = shmem.get_num_ranks()
+    ctx = iris.iris(heap_size)
+    rank = ctx.get_rank()
+    world_size = ctx.get_num_ranks()
 
     K = K_local * world_size  # Full K dimension
 
@@ -67,14 +67,14 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
     ref_output = torch.matmul(A_gathered_ref, B)
     torch.cuda.synchronize()
 
-    # Create shmem tensors
-    A_sharded_shmem = shmem.zeros((M, K_local), dtype=dtype)
+    # Create ctx tensors
+    A_sharded_shmem = ctx.zeros((M, K_local), dtype=dtype)
     A_sharded_shmem.copy_(A_sharded)
-    B_shmem = shmem.zeros((K, N), dtype=dtype)
+    B_shmem = ctx.zeros((K, N), dtype=dtype)
     B_shmem.copy_(B)
-    output = shmem.zeros((M, N), dtype=dtype)
+    output = ctx.zeros((M, N), dtype=dtype)
 
-    shmem.barrier()
+    ctx.barrier()
 
     # Use small block sizes for small test problems
     config = FusedConfig(
@@ -84,11 +84,11 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
     )
 
     workspace = all_gather_matmul_hbm_buffer_preamble(
-        shmem, A_sharded_shmem, B_shmem, config=config, staged_a_layout=staged_a_layout
+        ctx, A_sharded_shmem, B_shmem, config=config, staged_a_layout=staged_a_layout
     )
 
     all_gather_matmul_hbm_buffer(
-        shmem,
+        ctx,
         output,
         A_sharded_shmem,
         B_shmem,
@@ -99,7 +99,7 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
     )
 
     torch.cuda.synchronize()
-    shmem.barrier()
+    ctx.barrier()
 
     max_diff = (output - ref_output).abs().max().item()
 
@@ -127,9 +127,9 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
         pytest.skip("torch.distributed not initialized")
 
     heap_size = 2**33
-    shmem = iris.iris(heap_size)
-    rank = shmem.get_rank()
-    world_size = shmem.get_num_ranks()
+    ctx = iris.iris(heap_size)
+    rank = ctx.get_rank()
+    world_size = ctx.get_num_ranks()
 
     K = K_local * world_size
 
@@ -149,16 +149,16 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
     ref_output = torch.matmul(A_gathered_ref, B) + bias[:, None]
     torch.cuda.synchronize()
 
-    # Create shmem tensors
-    A_sharded_shmem = shmem.zeros((M, K_local), dtype=dtype)
+    # Create ctx tensors
+    A_sharded_shmem = ctx.zeros((M, K_local), dtype=dtype)
     A_sharded_shmem.copy_(A_sharded)
-    B_shmem = shmem.zeros((K, N), dtype=dtype)
+    B_shmem = ctx.zeros((K, N), dtype=dtype)
     B_shmem.copy_(B)
-    bias_shmem = shmem.zeros((M,), dtype=dtype)
+    bias_shmem = ctx.zeros((M,), dtype=dtype)
     bias_shmem.copy_(bias)
-    output = shmem.zeros((M, N), dtype=dtype)
+    output = ctx.zeros((M, N), dtype=dtype)
 
-    shmem.barrier()
+    ctx.barrier()
 
     config = FusedConfig(
         block_size_m=64,
@@ -167,7 +167,7 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
     )
 
     all_gather_matmul_hbm_buffer(
-        shmem,
+        ctx,
         output,
         A_sharded_shmem,
         B_shmem,
@@ -177,7 +177,7 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
     )
 
     torch.cuda.synchronize()
-    shmem.barrier()
+    ctx.barrier()
 
     max_diff = (output - ref_output).abs().max().item()
 
