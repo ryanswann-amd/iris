@@ -354,7 +354,7 @@ def all_gather_matmul_hbm_buffer(
     fetch_block_k: Optional[int] = None,
     staged_a_layout: str = "k_contiguous",
     num_warps: Optional[int] = 8,
-    num_stages: Optional[int] = 3,
+    num_stages: Optional[int] = 2,
     num_fetch_stages: int = 1,
     first_stage_fetch_sms: Optional[int] = 256,
     trace: bool = False,
