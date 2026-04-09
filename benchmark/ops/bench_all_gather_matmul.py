@@ -44,7 +44,7 @@ def rccl_all_gather_matmul(state, ctx):
 
 @bench.register
 @bench.axis("num_ranks", [2, 4, 8])
-@bench.axis("algorithm", ["one_shot", "prefetch"])
+@bench.axis("algorithm", ["one_shot", "prefetch_prev", "prefetch"])
 @bench.axis("M", [1024, 4096, 16384])
 @bench.axis("N", [3584])
 @bench.axis("K", [8192])
@@ -60,18 +60,39 @@ def all_gather_matmul(state, ctx):
     A_sharded.fill_(1.0)
     B = torch.randn((K, N), device="cuda", dtype=dtype)
 
-    config = FusedConfig()
-
     state.set_flops(2 * M * N * K)
     state.set_bytes((world_size - 1) * M * K_local * A_sharded.element_size())
 
     if algorithm == "one_shot":
+        config = FusedConfig()
         C = torch.zeros((M, N), device="cuda", dtype=dtype)
         workspace = all_gather_matmul_preamble(ctx, A_sharded, B, config)
         state.exec(
             lambda: ctx.ops.all_gather_matmul(C, A_sharded, B, config=config, workspace=workspace),
         )
-    else:  # prefetch
+    elif algorithm == "prefetch_prev":
+        # Previous defaults: block_m=256, block_n=64, block_k=64, k_per_flag=1
+        config = FusedConfig(block_size_m=256, block_size_n=64, block_size_k=64)
+        C = ctx.zeros((M, N), dtype=dtype)
+        workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded, B, config, k_per_flag=1)
+        state.exec(
+            lambda: _hbm_buffer(
+                ctx,
+                C,
+                A_sharded,
+                B,
+                config=config,
+                workspace=workspace,
+                k_per_flag=1,
+                num_fetch_sms=None,
+                num_warps=None,
+                num_stages=None,
+                first_stage_fetch_sms=None,
+            ),
+            preamble_fn=lambda: C.zero_(),
+        )
+    else:  # prefetch — new tuned defaults
+        config = FusedConfig(block_size_m=128, block_size_n=256, block_size_k=64)
         C = ctx.zeros((M, N), dtype=dtype)
         workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded, B, config)
         state.exec(
