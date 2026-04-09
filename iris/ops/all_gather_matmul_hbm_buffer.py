@@ -299,9 +299,9 @@ def all_gather_matmul_hbm_buffer_preamble(
     return ws
 
 
-_EID_FETCH = 1024    # TraceEvent().fetch
+_EID_FETCH = 1024  # TraceEvent().fetch
 _EID_COMPUTE = 2048  # TraceEvent().compute
-_EID_WAIT = 3072     # TraceEvent().wait
+_EID_WAIT = 3072  # TraceEvent().wait
 
 
 def _extract_wg_trace(ctx, grid_size, **metadata):
