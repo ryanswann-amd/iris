@@ -23,7 +23,7 @@ from iris.ops.all_gather_matmul_hbm_buffer import (
 def rccl_all_gather_matmul(state, ctx):
     M, N, K = state["M"], state["N"], state["K"]
     dtype = state["dtype"]
-    world_size = ctx.get_num_ranks()
+    world_size = dist.get_world_size()
     K_local = K // world_size
 
     A_sharded = torch.ones((M, K_local), device="cuda", dtype=dtype)
