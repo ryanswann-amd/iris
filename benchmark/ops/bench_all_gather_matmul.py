@@ -26,8 +26,7 @@ def rccl_all_gather_matmul(state, ctx):
     world_size = ctx.get_num_ranks()
     K_local = K // world_size
 
-    A_sharded = ctx.zeros((M, K_local), dtype=dtype)
-    A_sharded.fill_(1.0)
+    A_sharded = torch.ones((M, K_local), device="cuda", dtype=dtype)
     B = torch.randn((K, N), device="cuda", dtype=dtype)
     A_gathered = torch.empty((M, K), device="cuda", dtype=dtype)
     C = torch.empty((M, N), device="cuda", dtype=dtype)
