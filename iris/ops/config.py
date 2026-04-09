@@ -34,9 +34,6 @@ class FusedConfig:
         all_reduce_variant: All-reduce algorithm variant. Options: "atomic", "ring",
                            "one_shot", "two_shot", "spinlock". Default: "two_shot".
         all_reduce_num_rings: Number of concurrent rings (for ring variant). Default: 1.
-        all_gather_matmul_variant: All-gather + matmul algorithm variant. Options:
-                                   "pull" (on-demand pull from remote ranks).
-                                   Default: "pull".
 
     Example:
         >>> # Use defaults
@@ -64,7 +61,6 @@ class FusedConfig:
     # CCL-specific parameters
     all_reduce_variant: str = "two_shot"  # atomic, ring, one_shot, two_shot, spinlock
     all_reduce_num_rings: int = 1
-    all_gather_matmul_variant: str = "pull"  # pull
 
     def validate(self, world_size: Optional[int] = None):
         """
@@ -106,10 +102,3 @@ class FusedConfig:
 
         if self.all_reduce_num_rings <= 0:
             raise ValueError(f"all_reduce_num_rings must be positive, got {self.all_reduce_num_rings}")
-
-        # Validate all_gather_matmul_variant
-        valid_ag_variants = ["pull"]
-        if self.all_gather_matmul_variant not in valid_ag_variants:
-            raise ValueError(
-                f"all_gather_matmul_variant must be one of {valid_ag_variants}, got {self.all_gather_matmul_variant}"
-            )
