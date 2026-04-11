@@ -159,9 +159,7 @@ def _allgather_paths_tensor(my_path: str, num_ranks: int):
     _PATH_BUF_LEN = 256
     path_bytes = my_path.encode("utf-8")
     if len(path_bytes) >= _PATH_BUF_LEN:
-        raise ValueError(
-            f"Socket path too long ({len(path_bytes)} bytes, max {_PATH_BUF_LEN - 1}): {my_path}"
-        )
+        raise ValueError(f"Socket path too long ({len(path_bytes)} bytes, max {_PATH_BUF_LEN - 1}): {my_path}")
 
     # Encode into a fixed-size uint8 tensor (CPU for gloo, GPU for nccl).
     # uint8 matches the [0,255] byte range; NCCL supports it natively.

@@ -30,25 +30,74 @@ from .workspace import FusedWorkspace
 # Key: (M, N, K) -> dict of kernel params that beat PyTorch.
 _CHAMPION_CONFIGS = {
     (262144, 8192, 8192): dict(
-        bm=256, bn=256, bk=64, gm=24, kpf=64, fs=52, nfs=128, fsf=304,
+        bm=256,
+        bn=256,
+        bk=64,
+        gm=24,
+        kpf=64,
+        fs=52,
+        nfs=128,
+        fsf=304,
     ),
     (131072, 16384, 16384): dict(
-        bm=256, bn=256, bk=64, gm=24, kpf=32, fs=4, nfs=64, fsf=52,
+        bm=256,
+        bn=256,
+        bk=64,
+        gm=24,
+        kpf=32,
+        fs=4,
+        nfs=64,
+        fsf=52,
     ),
     (147456, 28672, 4096): dict(
-        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=59, nfs=36, fsf=52,
+        bm=256,
+        bn=256,
+        bk=64,
+        gm=24,
+        kpf=16,
+        fs=59,
+        nfs=36,
+        fsf=52,
     ),
     (229376, 28672, 4096): dict(
-        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=4, nfs=56, fsf=52,
+        bm=256,
+        bn=256,
+        bk=64,
+        gm=24,
+        kpf=16,
+        fs=4,
+        nfs=56,
+        fsf=52,
     ),
     (327680, 28672, 4096): dict(
-        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=4, nfs=32, fsf=52,
+        bm=256,
+        bn=256,
+        bk=64,
+        gm=24,
+        kpf=16,
+        fs=4,
+        nfs=32,
+        fsf=52,
     ),
     (8192, 8192, 262144): dict(
-        bm=128, bn=256, bk=64, gm=8, kpf=32, fs=4, nfs=8, fsf=52,
+        bm=128,
+        bn=256,
+        bk=64,
+        gm=8,
+        kpf=32,
+        fs=4,
+        nfs=8,
+        fsf=52,
     ),
     (16384, 16384, 131072): dict(
-        bm=128, bn=256, bk=64, gm=16, kpf=16, fs=16, nfs=8, fsf=52,
+        bm=128,
+        bn=256,
+        bk=64,
+        gm=16,
+        kpf=16,
+        fs=16,
+        nfs=8,
+        fsf=52,
     ),
 }
 
@@ -82,8 +131,10 @@ def _auto_config(M: int, N: int, K: int, world_size: int = 8):
         while num_k_blocks % kpf != 0 and kpf > 1:
             kpf //= 2
         config = FusedConfig(
-            block_size_m=c["bm"], block_size_n=c["bn"],
-            block_size_k=c["bk"], group_size_m=c["gm"],
+            block_size_m=c["bm"],
+            block_size_n=c["bn"],
+            block_size_k=c["bk"],
+            group_size_m=c["gm"],
         )
         return config, kpf, c["fs"], c["nfs"], c["fsf"]
 
@@ -128,7 +179,9 @@ def _auto_config(M: int, N: int, K: int, world_size: int = 8):
     gm = 24 if num_m_tiles >= 64 else (8 if num_m_tiles >= 16 else 1)
 
     config = FusedConfig(
-        block_size_m=bm, block_size_n=256, block_size_k=64,
+        block_size_m=bm,
+        block_size_n=256,
+        block_size_k=64,
         group_size_m=gm,
     )
     return config, kpf, fs, nfs, 64
@@ -495,9 +548,7 @@ def all_gather_matmul_hbm_buffer(
 
     if config is None:
         # Shape-adaptive auto-config from K-021 sweep data
-        auto_cfg, auto_kpf, auto_fs, auto_nfs, auto_fsf = _auto_config(
-            M, N, K, world_size
-        )
+        auto_cfg, auto_kpf, auto_fs, auto_nfs, auto_fsf = _auto_config(M, N, K, world_size)
         config = auto_cfg
         if k_per_flag is None:
             k_per_flag = auto_kpf
