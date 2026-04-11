@@ -21,6 +21,119 @@ from .config import FusedConfig
 from .workspace import FusedWorkspace
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Auto-config: shape-adaptive parameter selection for HBM buffer kernel
+# Source: K-021 sweep data (1076+ trials, 7 verified champion shapes)
+# ──────────────────────────────────────────────────────────────────────
+
+# Verified champion configs from IRIS-0018/0019 sweeps + optimize-loop iter3.
+# Key: (M, N, K) -> dict of kernel params that beat PyTorch.
+_CHAMPION_CONFIGS = {
+    (262144, 8192, 8192): dict(
+        bm=256, bn=256, bk=64, gm=24, kpf=64, fs=52, nfs=128, fsf=304,
+    ),
+    (131072, 16384, 16384): dict(
+        bm=256, bn=256, bk=64, gm=24, kpf=32, fs=4, nfs=64, fsf=52,
+    ),
+    (147456, 28672, 4096): dict(
+        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=59, nfs=36, fsf=52,
+    ),
+    (229376, 28672, 4096): dict(
+        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=4, nfs=56, fsf=52,
+    ),
+    (327680, 28672, 4096): dict(
+        bm=256, bn=256, bk=64, gm=24, kpf=16, fs=4, nfs=32, fsf=52,
+    ),
+    (8192, 8192, 262144): dict(
+        bm=128, bn=256, bk=64, gm=8, kpf=32, fs=4, nfs=8, fsf=52,
+    ),
+    (16384, 16384, 131072): dict(
+        bm=128, bn=256, bk=64, gm=16, kpf=16, fs=16, nfs=8, fsf=52,
+    ),
+}
+
+
+def _auto_config(M: int, N: int, K: int, world_size: int = 8):
+    """
+    Select optimal HBM buffer kernel parameters for a given shape.
+
+    Returns (FusedConfig, k_per_flag, num_fetch_sms, num_fetch_stages,
+             first_stage_fetch_sms) — ready to pass to the kernel.
+
+    Priority order:
+      1. Exact match in champion configs (verified 1.12-1.44x vs PyTorch)
+      2. Shape-heuristic derivation from 1076-trial sweep principles
+
+    Heuristics (from K-021 sweep analysis):
+      - k_per_flag is the #1 knob (52% of perf range). Maximize it.
+      - bm=256 for M%256==0 and M>=8K; bm=128 otherwise
+      - bn=256 always (bn=128 is 15-35% worse)
+      - bk=64 always (bk=128 exceeds 64KB LDS on MI300X)
+      - num_stages=2 always (num_stages=3 crashes — 98KB LDS needed)
+      - num_warps=8 always (fewer warps = 22% worse)
+      - group_size_m: 1 for small M, 24 for large M (L2 locality)
+    """
+    key = (M, N, K)
+    if key in _CHAMPION_CONFIGS:
+        c = _CHAMPION_CONFIGS[key]
+        # Validate kpf for this world_size
+        num_k_blocks = K // c["bk"]
+        kpf = c["kpf"]
+        while num_k_blocks % kpf != 0 and kpf > 1:
+            kpf //= 2
+        config = FusedConfig(
+            block_size_m=c["bm"], block_size_n=c["bn"],
+            block_size_k=c["bk"], group_size_m=c["gm"],
+        )
+        return config, kpf, c["fs"], c["nfs"], c["fsf"]
+
+    # Derive from heuristics
+    num_k_blocks = K // 64
+
+    # Block sizes
+    bm = 256 if (M % 256 == 0 and M >= 8192) else 128
+    num_m_tiles = M // bm
+
+    # k_per_flag: maximize for throughput
+    if num_k_blocks >= 512:
+        kpf = 64
+    elif num_k_blocks >= 128:
+        kpf = 16
+    elif num_k_blocks >= 64:
+        kpf = 8
+    else:
+        kpf = 4
+    while num_k_blocks % kpf != 0 and kpf > 1:
+        kpf //= 2
+
+    # num_fetch_sms: scale with M-tiles (more tiles → more fetchers)
+    if num_m_tiles <= 8:
+        fs = 4
+    elif num_m_tiles <= 32:
+        fs = 16
+    elif num_m_tiles <= 128:
+        fs = 32
+    else:
+        fs = 52
+
+    # num_fetch_stages
+    if num_m_tiles >= 512:
+        nfs = 4
+    elif num_m_tiles >= 64:
+        nfs = 2
+    else:
+        nfs = 1
+
+    # group_size_m
+    gm = 24 if num_m_tiles >= 64 else (8 if num_m_tiles >= 16 else 1)
+
+    config = FusedConfig(
+        block_size_m=bm, block_size_n=256, block_size_k=64,
+        group_size_m=gm,
+    )
+    return config, kpf, fs, nfs, 64
+
+
 @triton.jit
 def _hbm_buffer_all_gather_matmul_kernel(
     A_sharded,
@@ -241,7 +354,7 @@ def all_gather_matmul_hbm_buffer_preamble(
     A_sharded: torch.Tensor,
     B: torch.Tensor,
     config: Optional[FusedConfig] = None,
-    k_per_flag: int = 16,
+    k_per_flag: Optional[int] = None,
     staged_a_layout: str = "k_contiguous",
 ) -> FusedWorkspace:
     """
@@ -251,12 +364,17 @@ def all_gather_matmul_hbm_buffer_preamble(
         staged_a_layout: "k_contiguous" (default, row-major (M,K)) or
                          "m_contiguous" (col-major, stored as (K,M) transposed).
     """
-    if config is None:
-        config = FusedConfig()
-
     M, K_local = A_sharded.shape
     K, N = B.shape
     world_size = ctx.get_num_ranks()
+
+    if config is None:
+        auto_cfg, auto_kpf, _, _, _ = _auto_config(M, N, K, world_size)
+        config = auto_cfg
+        if k_per_flag is None:
+            k_per_flag = auto_kpf
+    if k_per_flag is None:
+        k_per_flag = 8  # Safety default; see K-021 best_configs.json for peak perf
 
     assert world_size * K_local == K
     assert K_local % config.block_size_k == 0
@@ -348,31 +466,62 @@ def all_gather_matmul_hbm_buffer(
     async_op: bool = False,
     config: Optional[FusedConfig] = None,
     workspace: Optional[FusedWorkspace] = None,
-    num_fetch_sms: Optional[int] = 32,
-    k_per_flag: int = 16,
+    num_fetch_sms: Optional[int] = None,
+    k_per_flag: Optional[int] = None,
     fetch_block_m: Optional[int] = None,
     fetch_block_k: Optional[int] = None,
     staged_a_layout: str = "k_contiguous",
     num_warps: Optional[int] = 8,
     num_stages: Optional[int] = 2,
-    num_fetch_stages: int = 1,
-    first_stage_fetch_sms: Optional[int] = 256,
+    num_fetch_stages: Optional[int] = None,
+    first_stage_fetch_sms: Optional[int] = None,
     trace: bool = False,
 ) -> FusedWorkspace:
     """
     All-gather + matmul with dedicated fetcher/GEMM workgroups.
+
+    When ``config`` is None, uses ``_auto_config()`` to select shape-optimal
+    parameters from verified sweep data (K-021). This gives up to 1.44×
+    speedup over PyTorch on champion shapes without any manual tuning.
 
     Args:
         staged_a_layout: Buffer layout for gathered A.
             "k_contiguous" — (M,K) row-major, K is fast dim. Matches NN convention.
             "m_contiguous" — (M,K) with M as fast dim. Matches TN convention (best for tritonblas).
     """
-    if config is None:
-        config = FusedConfig()
-
     M, K_local = A_sharded.shape
     K, N = B.shape
     world_size = ctx.get_num_ranks()
+
+    if config is None:
+        # Shape-adaptive auto-config from K-021 sweep data
+        auto_cfg, auto_kpf, auto_fs, auto_nfs, auto_fsf = _auto_config(
+            M, N, K, world_size
+        )
+        config = auto_cfg
+        if k_per_flag is None:
+            k_per_flag = auto_kpf
+        if num_fetch_sms is None:
+            num_fetch_sms = auto_fs
+        if num_fetch_stages is None:
+            num_fetch_stages = auto_nfs
+        if first_stage_fetch_sms is None:
+            first_stage_fetch_sms = auto_fsf
+
+    # Apply defaults for any remaining None values (when config is explicit
+    # but some params are left at None).
+    # kpf=8 is the safety default: +4.3% vs kpf=16 on g6 (IRIS-0018, 934 trials)
+    # and avoids kpf=16 validation failures on 2/8 ranks at M=262144.
+    # For peak performance on known shapes, use best_configs.json from K-021.
+    if k_per_flag is None:
+        k_per_flag = 8
+    if num_fetch_sms is None:
+        num_fetch_sms = 32
+    if num_fetch_stages is None:
+        num_fetch_stages = 1
+    if first_stage_fetch_sms is None:
+        first_stage_fetch_sms = 256
+
     rank = ctx.get_rank()
 
     assert world_size * K_local == K
