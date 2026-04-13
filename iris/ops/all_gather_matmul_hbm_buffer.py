@@ -36,8 +36,8 @@ _CHAMPION_CONFIGS = {
         gm=24,
         kpf=64,
         fs=52,
-        nfs=128,
-        fsf=304,
+        nfs=4,
+        fsf=52,
     ),
     (131072, 16384, 16384): dict(
         bm=256,
@@ -146,10 +146,11 @@ def _auto_config(M: int, N: int, K: int, world_size: int = 8):
     num_m_tiles = M // bm
 
     # k_per_flag: maximize for throughput
+    # kpf=8 for 128-511 range: +4.5-17% vs kpf=16 (K-017 benchmark_v4, MI300X)
     if num_k_blocks >= 512:
         kpf = 64
     elif num_k_blocks >= 128:
-        kpf = 16
+        kpf = 8
     elif num_k_blocks >= 64:
         kpf = 8
     else:
@@ -580,6 +581,21 @@ def all_gather_matmul_hbm_buffer(
     assert M % config.block_size_m == 0
     assert K % config.block_size_k == 0
     assert K_local % config.block_size_k == 0
+
+    # LDS guard: prevent silent GPU hangs from exceeding 64KB LDS limit.
+    # Triton uses (num_stages - 1) stages of look-ahead buffering.
+    # Evidence: num_stages=3 crash reports "Required: 98304" = (3-1)*49152.
+    _ns = num_stages if num_stages is not None else 2
+    lds_per_stage = (
+        config.block_size_m * config.block_size_k
+        + config.block_size_n * config.block_size_k
+    ) * 2  # fp16 = 2 bytes
+    lds_total = (_ns - 1) * lds_per_stage
+    assert lds_total <= 65536, (
+        f"LDS overflow: {lds_total} bytes > 64KB limit. "
+        f"Tile {config.block_size_m}x{config.block_size_n}x{config.block_size_k} "
+        f"@ num_stages={_ns} needs (ns-1)={_ns - 1} x {lds_per_stage} B"
+    )
 
     if fetch_block_m is None:
         fetch_block_m = config.block_size_m
