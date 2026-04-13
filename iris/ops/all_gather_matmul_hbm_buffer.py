@@ -587,8 +587,7 @@ def all_gather_matmul_hbm_buffer(
     # Evidence: num_stages=3 crash reports "Required: 98304" = (3-1)*49152.
     _ns = num_stages if num_stages is not None else 2
     lds_per_stage = (
-        config.block_size_m * config.block_size_k
-        + config.block_size_n * config.block_size_k
+        config.block_size_m * config.block_size_k + config.block_size_n * config.block_size_k
     ) * 2  # fp16 = 2 bytes
     lds_total = (_ns - 1) * lds_per_stage
     assert lds_total <= 65536, (
