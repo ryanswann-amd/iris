@@ -29,6 +29,8 @@ omni*.pdf
 slurm*.out
 
 *.egg-info
+*.backup
+*.with_chunked
 
 examples/gemm/results/*
 asm/
@@ -62,3 +64,5 @@ core
 
 docker/TheRock/
 docker/rocm-systems/
+.intellikit/
+.github/agents/

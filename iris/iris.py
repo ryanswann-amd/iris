@@ -1581,6 +1581,7 @@ class DeviceContext:
             value (Block): The tensor of elements to be stored.
             to_rank (int): The rank ID to which the data will be written.
             mask (Block of triton.int1, optional): If mask[idx] is false, do not store the data at address pointer[idx]. Defaults to None.
+            hint (int or tuple, optional): Vectorization hint passed to tl.multiple_of / tl.max_contiguous on the translated pointer. Defaults to None.
             cache_modifier (str, optional): Controls cache behavior of the store. Supported values are:
 
                 - None: *(default)* — Same as ".wb". Uses write-back caching at all levels (CU, L2, LLC) with LRU policy.
@@ -1623,6 +1624,7 @@ class DeviceContext:
             to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer to local memory in current rank where the data will be written.
             from_rank (int): The rank ID from which to read the data.
             mask (Block of triton.int1, optional): If mask[idx] is false, do not load from from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
+            hint (int or tuple, optional): Vectorization hint passed to tl.multiple_of / tl.max_contiguous on the translated pointer. Defaults to None.
             other (Block, optional): Value to return for masked-out elements during the load operation. If not provided, the result for masked-out elements is undefined. Defaults to None.
             load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
                 - None: *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
@@ -1672,6 +1674,7 @@ class DeviceContext:
             to_ptr (triton.PointerType, or block of dtype=triton.PointerType): Pointer in the current rank's address space that references memory in `to_rank`.
             to_rank (int): The rank ID to which the data will be written.
             mask (Block of triton.int1, optional): If mask[idx] is false, do not load from from_ptr[idx] and do not store to to_ptr[idx]. Defaults to None.
+            hint (int or tuple, optional): Vectorization hint passed to tl.multiple_of / tl.max_contiguous on the translated pointer. Defaults to None.
             other (Block, optional): Value to return for masked-out elements during the load operation. If not provided, the result for masked-out elements is undefined. Defaults to None.
             load_cache_modifier (str, optional): Controls cache behavior of the load. Supported values are:
                 - None: *(default)* — Same as ".ca". Uses cache at all levels (CU, L2, LLC) with LRU policy.
