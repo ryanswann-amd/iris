@@ -36,8 +36,8 @@ _CHAMPION_CONFIGS = {
         gm=24,
         kpf=64,
         fs=52,
-        nfs=4,
-        fsf=52,
+        nfs=128,
+        fsf=304,
     ),
     (131072, 16384, 16384): dict(
         bm=256,
