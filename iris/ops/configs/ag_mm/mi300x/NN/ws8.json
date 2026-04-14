@@ -1,0 +1,228 @@
+{
+    "_meta": {
+        "description": "Champion configs for HBM buffer AG+MM ws=8 on MI300X (gfx942)",
+        "source": "sweep (3489 trials), optimize-loop iter3",
+        "gpu": "AMD Instinct MI300X (gfx942)",
+        "date": "2026-04-13",
+        "data_tag": "[VERIFIED]",
+        "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM"
+    },
+    "enabled": true,
+    "shapes": {
+        "262144x8192x8192": {
+            "label": "g6",
+            "description": "Llama-70B MLP hidden×hidden — M-dominant",
+            "M": 262144, "N": 8192, "K": 8192,
+            "speedup": 1.200,
+            "tflops": 253.0,
+            "n_trials": 27,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 64,
+                "num_fetch_sms": 52,
+                "num_fetch_stages": 4,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "131072x16384x16384": {
+            "label": "g2",
+            "description": "Llama MLP variant — balanced large",
+            "M": 131072, "N": 16384, "K": 16384,
+            "speedup": 1.343,
+            "tflops": 420.5,
+            "n_trials": 102,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 32,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 64,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "147456x28672x4096": {
+            "label": "g14",
+            "description": "Llama-70B up-projection medium batch",
+            "M": 147456, "N": 28672, "K": 4096,
+            "speedup": 1.288,
+            "tflops": 466.5,
+            "n_trials": 108,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 59,
+                "num_fetch_stages": 36,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "229376x28672x4096": {
+            "label": "g16",
+            "description": "Llama-70B up-projection mid batch",
+            "M": 229376, "N": 28672, "K": 4096,
+            "speedup": 1.277,
+            "tflops": 471.5,
+            "n_trials": 124,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 56,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "327680x28672x4096": {
+            "label": "g15",
+            "description": "Llama-70B up-projection large batch — highest TFLOPS",
+            "M": 327680, "N": 28672, "K": 4096,
+            "speedup": 1.284,
+            "tflops": 474.7,
+            "n_trials": 70,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 32,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "8192x8192x262144": {
+            "label": "g5",
+            "description": "K-dominant square — best speedup shape",
+            "M": 8192, "N": 8192, "K": 262144,
+            "speedup": 1.224,
+            "tflops": 161.6,
+            "n_trials": 9,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 32,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 8,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "16384x16384x131072": {
+            "label": "g1",
+            "description": "K-dominant large — parity shape",
+            "M": 16384, "N": 16384, "K": 131072,
+            "speedup": 1.136,
+            "tflops": 314.5,
+            "n_trials": 101,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 16,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 16,
+                "num_fetch_stages": 8,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "196608x18432x16384": {
+            "label": "g9",
+            "description": "Large balanced shape",
+            "M": 196608, "N": 18432, "K": 16384,
+            "speedup": 0.950,
+            "tflops": 483.9,
+            "n_trials": 15,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 32,
+                "num_fetch_sms": 32,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 32
+            }
+        }
+    },
+    "default_config": {
+        "block_size_m": 256,
+        "block_size_n": 256,
+        "block_size_k": 64,
+        "group_size_m": 24,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_xcds": 8,
+        "allow_tf32": true
+    },
+    "default_hbm_buffer_params": {
+        "k_per_flag": 8,
+        "num_fetch_sms": 32,
+        "num_fetch_stages": 1,
+        "first_stage_fetch_sms": 64
+    },
+    "heuristic_rules": {
+        "block_size_m": "Use 128 when M <= 16384, else 256",
+        "group_size_m": "Use 8 when M <= 8192, 16 when M <= 16384, else 24",
+        "k_per_flag": "Maximize: 64 for K_blocks>=512, 16 for >=128, 8 for >=64, else 4. Must divide K_blocks evenly.",
+        "num_fetch_sms": "Scale with M-tiles: 4 for <=8, 16 for <=32, 32 for <=128, else 52",
+        "num_fetch_stages": "4 for M_tiles>=512, 2 for >=64, else 1"
+    }
+}
