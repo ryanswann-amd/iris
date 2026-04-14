@@ -67,11 +67,12 @@ _detected_arch: Optional[str] = None
 SUPPORTED_TRANSPOSES = ("NN",)
 
 # Supported GPU architectures with tuned configs
-SUPPORTED_ARCHITECTURES = ("mi300x",)
+SUPPORTED_ARCHITECTURES = ("mi300x", "mi355x")
 
 # Map gfx target IDs to architecture names used in config paths
 _GFX_TO_ARCH = {
     "gfx942": "mi300x",  # MI300X, MI300A
+    "gfx950": "mi355x",  # MI355X
 }
 
 
@@ -218,9 +219,6 @@ def _find_nearest_shape(M: int, N: int, K: int, shapes: dict, tolerance: float =
 
     for shape_key, shape_data in shapes.items():
         sm, sn, sk = shape_data["M"], shape_data["N"], shape_data["K"]
-        # Skip shapes with speedup <= 1.0 (losers)
-        if shape_data.get("speedup", 0) is not None and shape_data.get("speedup", 0) <= 1.0:
-            continue
 
         # Check per-dimension ratio tolerance
         if sm == 0 or sn == 0 or sk == 0:
@@ -245,20 +243,18 @@ def _find_nearest_shape(M: int, N: int, K: int, shapes: dict, tolerance: float =
     return best_key
 
 
-def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
+def _apply_heuristic(M: int, N: int, K: int, arch: str = "mi300x") -> Tuple[Dict, Dict]:
     """Apply heuristic rules to generate config + HBM buffer params.
 
-    Based on optimization data (3,489 measured trials on MI300X):
-    - block_size_m: 128 for M <= 16384, else 256
-    - group_size_m: 8 for M <= 8192, 16 for M <= 16384, else 24
-    - k_per_flag: maximize for throughput (52% of perf range)
-    - num_fetch_sms: scale with M-tiles
-    - All other params are fixed invariants across all 7+ champion shapes.
+    Based on optimization data:
+    - MI300X: 3,489 measured trials
+    - MI355X: Optuna TPE + broad sweep (K-026 campaign)
 
     Args:
         M: Rows dimension.
         N: Columns dimension.
         K: Reduction dimension.
+        arch: GPU architecture for arch-specific heuristics.
 
     Returns:
         Tuple of (config_params dict, hbm_buffer_params dict).
@@ -266,7 +262,32 @@ def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
     bk = 64
     num_k_blocks = K // bk
 
-    # block_size_m selection based on M
+    if arch == "mi355x":
+        bm = 256
+        num_m_tiles = M // bm
+        gm = 4 if M <= 32768 else 8
+        config_params = {
+            "block_size_m": bm,
+            "block_size_n": 256,
+            "block_size_k": bk,
+            "group_size_m": gm,
+            "num_warps": 8,
+            "num_stages": 2,
+            "num_xcds": 8,
+            "allow_tf32": True,
+        }
+        kpf = 8 if num_k_blocks <= 512 else 16
+        while num_k_blocks % kpf != 0 and kpf > 1:
+            kpf //= 2
+        hbm_params = {
+            "k_per_flag": kpf,
+            "num_fetch_sms": 16,
+            "num_fetch_stages": 1,
+            "first_stage_fetch_sms": 52,
+        }
+        return config_params, hbm_params
+
+    # MI300X heuristics
     if M <= 16384:
         bm = 128
     else:
@@ -274,7 +295,6 @@ def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
 
     num_m_tiles = M // bm
 
-    # group_size_m selection
     if M <= 8192:
         gm = 8
     elif M <= 16384:
@@ -293,7 +313,6 @@ def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
         "allow_tf32": True,
     }
 
-    # k_per_flag: #1 performance knob (52% of perf range from sweep)
     if num_k_blocks >= 512:
         kpf = 64
     elif num_k_blocks >= 128:
@@ -302,11 +321,9 @@ def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
         kpf = 8
     else:
         kpf = 4
-    # Ensure divisibility
     while num_k_blocks % kpf != 0 and kpf > 1:
         kpf //= 2
 
-    # num_fetch_sms: scale with M-tiles
     if num_m_tiles <= 8:
         fs = 4
     elif num_m_tiles <= 32:
@@ -316,7 +333,6 @@ def _apply_heuristic(M: int, N: int, K: int) -> Tuple[Dict, Dict]:
     else:
         fs = 52
 
-    # num_fetch_stages
     if num_m_tiles >= 512:
         nfs = 4
     elif num_m_tiles >= 64:
@@ -428,7 +444,7 @@ def select_ag_mm_config(
         file_default_config = data.get("default_config")
         file_default_hbm = data.get("default_hbm_buffer_params", {})
         if file_default_config:
-            heuristic_config, heuristic_hbm = _apply_heuristic(M, N, K)
+            heuristic_config, heuristic_hbm = _apply_heuristic(M, N, K, arch=arch)
             # Merge: heuristic provides shape-aware bm/gm, file_default provides rest
             merged_config = {**file_default_config, **heuristic_config}
             # For HBM params, prefer heuristic (shape-aware) over static defaults
@@ -452,7 +468,7 @@ def select_ag_mm_config(
         )
 
     # World size OK but no specific config — apply heuristic
-    heuristic_config, heuristic_hbm = _apply_heuristic(M, N, K)
+    heuristic_config, heuristic_hbm = _apply_heuristic(M, N, K, arch=arch)
     return AutoConfigResult(
         enabled=True,
         config_params=heuristic_config,
