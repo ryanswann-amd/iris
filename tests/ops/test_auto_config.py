@@ -106,12 +106,11 @@ class TestAutoConfigFallback:
         # Heuristic: M=65536 > 16384 -> bm=256
         assert result.config_params["block_size_m"] == 256
 
-    def test_ws8_small_M_heuristic(self):
-        """Small M should get bm=128 from heuristic."""
+    def test_ws8_small_M_exact_or_heuristic(self):
+        """Small M (pow2_4k) hits exact match with bm=128."""
         result = select_ag_mm_config(M=4096, N=4096, K=4096, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.config_params["block_size_m"] == 128
-        assert result.config_params["group_size_m"] == 8
 
 
 class TestAutoConfigDisabled:

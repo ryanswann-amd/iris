@@ -13,7 +13,9 @@
         "8192x8192x262144": {
             "label": "g5",
             "description": "Best ws=2 result — still loses (0.887x)",
-            "M": 8192, "N": 8192, "K": 262144,
+            "M": 8192,
+            "N": 8192,
+            "K": 262144,
             "speedup": 0.887,
             "tflops": 189.1,
             "n_trials": 5,
@@ -37,10 +39,12 @@
         "16384x16384x131072": {
             "label": "g1",
             "description": "ws=2 measured — 0.772x vs PyTorch",
-            "M": 16384, "N": 16384, "K": 131072,
+            "M": 16384,
+            "N": 16384,
+            "K": 131072,
             "speedup": 0.772,
             "tflops": 459.8,
-            "n_trials": 5,
+            "n_trials": 10,
             "config": {
                 "block_size_m": 128,
                 "block_size_n": 256,
@@ -53,8 +57,138 @@
             },
             "hbm_buffer_params": {
                 "k_per_flag": 16,
-                "num_fetch_sms": 16,
+                "num_fetch_sms": 8,
                 "num_fetch_stages": 8,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "4096x14336x4096": {
+            "label": "mixtral_gate",
+            "description": "Mixtral gate projection — ws=2",
+            "M": 4096,
+            "N": 14336,
+            "K": 4096,
+            "speedup": null,
+            "tflops": 206.1,
+            "n_trials": 20,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 8,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "4096x11008x4096": {
+            "label": "llama7b_gate",
+            "description": "Llama-7B gate projection — ws=2",
+            "M": 4096,
+            "N": 11008,
+            "K": 4096,
+            "speedup": null,
+            "tflops": 207.1,
+            "n_trials": 20,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 8,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "4096x4096x4096": {
+            "label": "pow2_4k",
+            "description": "Small power-of-2 square — ws=2",
+            "M": 4096,
+            "N": 4096,
+            "K": 4096,
+            "speedup": null,
+            "tflops": 123.9,
+            "n_trials": 20,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 8,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "5120x13824x5120": {
+            "label": "llama13b_gate",
+            "description": "Llama-13B gate projection — ws=2",
+            "M": 5120,
+            "N": 13824,
+            "K": 5120,
+            "speedup": null,
+            "tflops": 174.9,
+            "n_trials": 20,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 8,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "4096x4096x11008": {
+            "label": "llama7b_down",
+            "description": "Llama-7B down projection — ws=2",
+            "M": 4096,
+            "N": 4096,
+            "K": 11008,
+            "speedup": null,
+            "tflops": 149.1,
+            "n_trials": 20,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 8,
+                "num_fetch_stages": 1,
                 "first_stage_fetch_sms": 52
             }
         }
