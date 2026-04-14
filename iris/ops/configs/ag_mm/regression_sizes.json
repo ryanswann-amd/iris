@@ -1,7 +1,7 @@
 {
     "_meta": {
         "description": "Regression test sizes for HBM buffer AG+MM kernel across ws=2/4/8",
-        "source": "champion configs — 7 winning shapes at ws=8, 2 reference shapes at ws=2/4",
+        "source": "28 measured shapes (12 ws=8, 9 ws=4, 7 ws=2) from 3489 trials",
         "gpu_target": "MI300X (gfx942)",
         "date": "2026-04-13",
         "usage": "from iris.ops import load_regression_sizes"
