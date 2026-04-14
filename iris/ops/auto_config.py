@@ -10,7 +10,7 @@ a sensible default. For world sizes where iris AG+MM is known to lose
 against PyTorch (ws<8), the default disables iris and signals fallback.
 
 Config files live under:
-    iris/ops/configs/ag_mm/{arch}/{transpose}/ws{N}.json
+    benchmark/ops/all_gather_matmul/configs/{arch}/{transpose}/ws{N}.json
 
 Each config file contains:
   - FusedConfig parameters (block sizes, group sizes, etc.)
@@ -52,8 +52,9 @@ from typing import Dict, List, Optional, Tuple
 
 from .config import FusedConfig
 
-# Root directory for config files (relative to this module)
-_CONFIGS_DIR = Path(__file__).parent / "configs" / "ag_mm"
+# Root directory for config files (in benchmark/ops/all_gather_matmul/configs/)
+# Walk up from iris/ops/ to repo root, then into benchmark/
+_CONFIGS_DIR = Path(__file__).parent.parent.parent / "benchmark" / "ops" / "all_gather_matmul" / "configs"
 
 # In-memory cache: (arch, transpose, world_size) -> loaded JSON data
 _config_cache: Dict[Tuple[str, str, int], dict] = {}
@@ -344,9 +345,9 @@ def select_ag_mm_config(
     """Select the best AG+MM config for the given problem.
 
     Lookup order:
-    1. Exact shape match in configs/ag_mm/{arch}/{transpose}/ws{world_size}.json
+    1. Exact shape match in benchmark/ops/all_gather_matmul/configs/{arch}/{transpose}/ws{world_size}.json
     2. Heuristic-based config from the same file's defaults
-    3. Global default from configs/ag_mm/default_config.json
+    3. Global default from benchmark/ops/all_gather_matmul/configs/default_config.json
 
     For world sizes where iris is known to lose (ws<8 on MI300X), returns
     a disabled result signaling fallback to PyTorch.
