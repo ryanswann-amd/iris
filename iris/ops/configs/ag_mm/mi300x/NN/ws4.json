@@ -1,0 +1,111 @@
+{
+    "_meta": {
+        "description": "AG+MM ws=4 on MI300X — DISABLED (loses vs PyTorch on all shapes)",
+        "source": "benchmarking: best speedup 0.856x (g6). LDS overflow forces ns=1 on K=4096 shapes.",
+        "gpu": "AMD Instinct MI300X (gfx942)",
+        "date": "2026-04-13",
+        "data_tag": "[VERIFIED]"
+    },
+    "enabled": false,
+    "reason": "ws=4 loses on all 7 tested shapes (best 0.856x). K=4096 shapes crash at ns=2 due to LDS overflow (65540>65536). ns=1 workaround constrains pipelining depth below break-even.",
+    "best_measured_speedup": 0.856,
+    "shapes": {
+        "262144x8192x8192": {
+            "label": "g6",
+            "description": "Best ws=4 result — still loses (0.856x)",
+            "M": 262144, "N": 8192, "K": 8192,
+            "speedup": 0.856,
+            "tflops": 218.5,
+            "n_trials": 10,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 64,
+                "num_fetch_sms": 52,
+                "num_fetch_stages": 4,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "8192x8192x262144": {
+            "label": "g5",
+            "description": "ws=4 measured — 0.848x",
+            "M": 8192, "N": 8192, "K": 262144,
+            "speedup": 0.848,
+            "tflops": 209.5,
+            "n_trials": 8,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 8,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 32,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 8,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "131072x16384x16384": {
+            "label": "g2",
+            "description": "ws=4 measured — 0.727x",
+            "M": 131072, "N": 16384, "K": 16384,
+            "speedup": 0.727,
+            "tflops": 335.8,
+            "n_trials": 3,
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 24,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 32,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 64,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "16384x16384x131072": {
+            "label": "g1",
+            "description": "ws=4 measured — 0.650x",
+            "M": 16384, "N": 16384, "K": 131072,
+            "speedup": 0.650,
+            "tflops": 293.5,
+            "n_trials": 5,
+            "config": {
+                "block_size_m": 128,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 16,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 16,
+                "num_fetch_stages": 8,
+                "first_stage_fetch_sms": 52
+            }
+        }
+    },
+    "default_config": null
+}

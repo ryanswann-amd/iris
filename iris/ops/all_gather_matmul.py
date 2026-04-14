@@ -164,9 +164,22 @@ def all_gather_matmul_preamble(
     B: torch.Tensor,
     config: Optional[FusedConfig] = None,
 ) -> FusedWorkspace:
-    """Allocate workspace for all_gather_matmul (none needed for pull pattern)."""
+    """Allocate workspace for all_gather_matmul (none needed for pull pattern).
+
+    When config=None, uses auto-selection to pick the best known configuration.
+    """
     if config is None:
-        config = FusedConfig()
+        from .auto_config import select_ag_mm_config
+        M_auto, K_local_auto = A_sharded.shape
+        K_auto, N_auto = B.shape
+        world_size_auto = shmem.get_num_ranks()
+        auto_result = select_ag_mm_config(M_auto, N_auto, K_auto, world_size=world_size_auto)
+        if not auto_result.enabled:
+            raise RuntimeError(
+                f"iris AG+MM auto-config disabled: {auto_result.source}. "
+                f"Pass config=FusedConfig(...) to override."
+            )
+        config = auto_result.to_fused_config()
 
     M, K_local = A_sharded.shape
     K, N = B.shape
@@ -194,9 +207,27 @@ def all_gather_matmul(
     config: Optional[FusedConfig] = None,
     workspace: Optional[FusedWorkspace] = None,
 ) -> FusedWorkspace:
-    """Fused all-gather and matrix multiplication using pull pattern."""
+    """Fused all-gather and matrix multiplication using pull pattern.
+
+    When config=None, uses auto-selection to pick the best known configuration
+    for the given (M, N, K, world_size) on the current GPU. If the auto-config
+    disables iris for this combination (e.g., ws<8 on MI300X), raises RuntimeError
+    advising fallback to PyTorch. To bypass auto-selection, pass an explicit
+    FusedConfig instance.
+    """
     if config is None:
-        config = FusedConfig()
+        from .auto_config import select_ag_mm_config
+        M_auto, K_local_auto = A_sharded.shape
+        K_auto, N_auto = B.shape
+        world_size_auto = shmem.get_num_ranks()
+        auto_result = select_ag_mm_config(M_auto, N_auto, K_auto, world_size=world_size_auto)
+        if not auto_result.enabled:
+            raise RuntimeError(
+                f"iris AG+MM auto-config disabled for this shape/world_size: "
+                f"{auto_result.source}. Pass config=FusedConfig(...) to override, "
+                f"or use PyTorch all_gather + matmul instead."
+            )
+        config = auto_result.to_fused_config()
 
     M, K_local = A_sharded.shape
     K, N = B.shape

@@ -31,6 +31,16 @@ Available operations:
 
 from .config import FusedConfig
 from .workspace import FusedWorkspace
+from .auto_config import (
+    AutoConfigResult,
+    select_ag_mm_config,
+    list_known_shapes,
+    load_regression_sizes,
+    clear_config_cache,
+    detect_gpu_arch,
+    SUPPORTED_TRANSPOSES,
+    SUPPORTED_ARCHITECTURES,
+)
 
 # Import operations
 # from .matmul import matmul  # Simple single-GPU GEMM - TODO: implement
@@ -172,6 +182,15 @@ __all__ = [
     # Configuration
     "FusedConfig",
     "FusedWorkspace",
+    # Auto-selection
+    "AutoConfigResult",
+    "select_ag_mm_config",
+    "list_known_shapes",
+    "load_regression_sizes",
+    "clear_config_cache",
+    "detect_gpu_arch",
+    "SUPPORTED_TRANSPOSES",
+    "SUPPORTED_ARCHITECTURES",
     # Namespace
     "OpsNamespace",
     # Operations

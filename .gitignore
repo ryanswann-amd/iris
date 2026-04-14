@@ -50,6 +50,7 @@ __pycache__/
 
 !.devcontainer/devcontainer.json
 !.github/scripts/examples_config.json
+!iris/ops/configs/*.json
 
 
 resources/

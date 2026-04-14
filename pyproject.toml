@@ -50,6 +50,9 @@ package-dir = { "" = "." }
 [tool.setuptools.packages.find]
 include = ["iris*"]
 
+[tool.setuptools.package-data]
+"iris.ops.configs" = ["**/*.json"]
+
 # ---- setuptools-scm versioning ----
 [tool.setuptools_scm]
 version_scheme = "post-release"   # .postN after last tag
