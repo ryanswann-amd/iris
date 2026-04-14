@@ -70,7 +70,7 @@ SUPPORTED_ARCHITECTURES = ("mi300x",)
 
 # Map gfx target IDs to architecture names used in config paths
 _GFX_TO_ARCH = {
-    "gfx942": "mi300x",    # MI300X, MI300A
+    "gfx942": "mi300x",  # MI300X, MI300A
 }
 
 
@@ -100,7 +100,9 @@ def detect_gpu_arch() -> str:
     try:
         result = subprocess.run(
             ["rocminfo"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -193,9 +195,7 @@ def _load_default_config() -> dict:
     return {}
 
 
-def _find_nearest_shape(
-    M: int, N: int, K: int, shapes: dict, tolerance: float = 0.15
-) -> Optional[str]:
+def _find_nearest_shape(M: int, N: int, K: int, shapes: dict, tolerance: float = 0.15) -> Optional[str]:
     """Find the nearest matching shape in the config database.
 
     Uses log-space geometric distance to find shapes that are structurally
@@ -476,15 +476,17 @@ def list_known_shapes(
 
     result = []
     for shape_key, shape_data in data.get("shapes", {}).items():
-        result.append({
-            "shape_key": shape_key,
-            "label": shape_data.get("label", ""),
-            "M": shape_data["M"],
-            "N": shape_data["N"],
-            "K": shape_data["K"],
-            "speedup": shape_data.get("speedup"),
-            "n_trials": shape_data.get("n_trials"),
-        })
+        result.append(
+            {
+                "shape_key": shape_key,
+                "label": shape_data.get("label", ""),
+                "M": shape_data["M"],
+                "N": shape_data["N"],
+                "K": shape_data["K"],
+                "speedup": shape_data.get("speedup"),
+                "n_trials": shape_data.get("n_trials"),
+            }
+        )
 
     # Sort by speedup descending
     result.sort(key=lambda x: x.get("speedup", 0) or 0, reverse=True)

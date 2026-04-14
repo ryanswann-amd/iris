@@ -170,14 +170,14 @@ def all_gather_matmul_preamble(
     """
     if config is None:
         from .auto_config import select_ag_mm_config
+
         M_auto, K_local_auto = A_sharded.shape
         K_auto, N_auto = B.shape
         world_size_auto = shmem.get_num_ranks()
         auto_result = select_ag_mm_config(M_auto, N_auto, K_auto, world_size=world_size_auto)
         if not auto_result.enabled:
             raise RuntimeError(
-                f"iris AG+MM auto-config disabled: {auto_result.source}. "
-                f"Pass config=FusedConfig(...) to override."
+                f"iris AG+MM auto-config disabled: {auto_result.source}. Pass config=FusedConfig(...) to override."
             )
         config = auto_result.to_fused_config()
 
@@ -219,6 +219,7 @@ def all_gather_matmul(
     """
     if config is None:
         from .auto_config import select_ag_mm_config
+
         M_auto, K_local_auto = A_sharded.shape
         K_auto, N_auto = B.shape
         world_size_auto = shmem.get_num_ranks()
