@@ -23,7 +23,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from iris.ops.auto_config import (
-    AutoConfigResult,
     select_ag_mm_config,
     list_known_shapes,
     load_regression_sizes,
@@ -32,7 +31,6 @@ from iris.ops.auto_config import (
     SUPPORTED_TRANSPOSES,
     SUPPORTED_ARCHITECTURES,
     _apply_heuristic,
-    _detected_arch,
 )
 import iris.ops.auto_config as auto_config_module
 from iris.ops.config import FusedConfig
@@ -46,9 +44,7 @@ class TestAutoConfigExactMatch:
 
     def test_ws8_g2_exact_match(self):
         """g2 shape (131072x16384x16384) should return champion config."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.shape_key == "131072x16384x16384"
         assert result.speedup == 1.343
@@ -60,9 +56,7 @@ class TestAutoConfigExactMatch:
 
     def test_ws8_g5_exact_match(self):
         """g5 shape (8192x8192x262144) should use bm=128 (small M)."""
-        result = select_ag_mm_config(
-            M=8192, N=8192, K=262144, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=8192, N=8192, K=262144, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.shape_key == "8192x8192x262144"
         assert result.speedup == 1.224
@@ -71,9 +65,7 @@ class TestAutoConfigExactMatch:
 
     def test_ws8_g1_exact_match(self):
         """g1 shape (16384x16384x131072) should use bm=128."""
-        result = select_ag_mm_config(
-            M=16384, N=16384, K=131072, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=16384, N=16384, K=131072, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.shape_key == "16384x16384x131072"
         assert result.speedup == 1.136
@@ -82,13 +74,13 @@ class TestAutoConfigExactMatch:
     def test_ws8_winning_shapes_enabled(self):
         """All 7 winning champion shapes (speedup > 1.0) should be enabled."""
         winning_shapes = [
-            (131072, 16384, 16384),   # g2  — 1.343x
-            (327680, 28672, 4096),    # g15 — 1.284x
-            (147456, 28672, 4096),    # g14 — 1.288x
-            (229376, 28672, 4096),    # g16 — 1.277x
-            (8192, 8192, 262144),     # g5  — 1.224x
-            (262144, 8192, 8192),     # g6  — 1.200x
-            (16384, 16384, 131072),   # g1  — 1.136x
+            (131072, 16384, 16384),  # g2  — 1.343x
+            (327680, 28672, 4096),  # g15 — 1.284x
+            (147456, 28672, 4096),  # g14 — 1.288x
+            (229376, 28672, 4096),  # g16 — 1.277x
+            (8192, 8192, 262144),  # g5  — 1.224x
+            (262144, 8192, 8192),  # g6  — 1.200x
+            (16384, 16384, 131072),  # g1  — 1.136x
         ]
         for M, N, K in winning_shapes:
             result = select_ag_mm_config(M, N, K, world_size=8)
@@ -106,9 +98,7 @@ class TestAutoConfigFallback:
 
     def test_ws8_unknown_shape_returns_heuristic(self):
         """An unknown shape at ws=8 should still be enabled with heuristic config."""
-        result = select_ag_mm_config(
-            M=65536, N=4096, K=8192, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=65536, N=4096, K=8192, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.shape_key is None
         assert result.speedup is None
@@ -118,9 +108,7 @@ class TestAutoConfigFallback:
 
     def test_ws8_small_M_heuristic(self):
         """Small M should get bm=128 from heuristic."""
-        result = select_ag_mm_config(
-            M=4096, N=4096, K=4096, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=4096, N=4096, K=4096, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.config_params["block_size_m"] == 128
         assert result.config_params["group_size_m"] == 8
@@ -134,31 +122,23 @@ class TestAutoConfigDisabled:
 
     def test_ws2_disabled(self):
         """ws=2 should be disabled on MI300X."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=2, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=2, transpose="NN", arch="mi300x")
         assert result.enabled is False
         assert "Disabled" in result.source or "world_size" in result.source
 
     def test_ws4_disabled(self):
         """ws=4 should be disabled on MI300X."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=4, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=4, transpose="NN", arch="mi300x")
         assert result.enabled is False
 
     def test_ws1_disabled(self):
         """ws=1 should be disabled (no config file, below min_world_size)."""
-        result = select_ag_mm_config(
-            M=4096, N=4096, K=4096, world_size=1, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=4096, N=4096, K=4096, world_size=1, transpose="NN", arch="mi300x")
         assert result.enabled is False
 
     def test_ws3_disabled_by_default_gate(self):
         """ws=3 has no config file, should be disabled by global default min_world_size=8."""
-        result = select_ag_mm_config(
-            M=4096, N=4096, K=4096, world_size=3, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=4096, N=4096, K=4096, world_size=3, transpose="NN", arch="mi300x")
         assert result.enabled is False
 
 
@@ -170,9 +150,7 @@ class TestFusedConfigConversion:
 
     def test_enabled_config_converts(self):
         """Enabled configs should produce valid FusedConfig."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8)
         config = result.to_fused_config()
         assert isinstance(config, FusedConfig)
         assert config.block_size_m == 256
@@ -182,9 +160,7 @@ class TestFusedConfigConversion:
 
     def test_disabled_config_raises(self):
         """Disabled configs should raise RuntimeError on to_fused_config()."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=2
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=2)
         assert result.enabled is False
         with pytest.raises(RuntimeError, match="disabled"):
             result.to_fused_config()
@@ -226,20 +202,14 @@ class TestUnknownArchTranspose:
 
     def test_unknown_arch_uses_global_default(self):
         """Unknown GPU arch should fall through to global default."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8,
-            transpose="NN", arch="mi300a"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300a")
         # No config file exists for mi300a, should use heuristic fallback
         assert result.enabled is True
         assert "Heuristic" in result.source or "fallback" in result.source
 
     def test_unknown_transpose_ws_lt8_disabled(self):
         """Unknown transpose at ws<8 should still be disabled."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=4,
-            transpose="TN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=4, transpose="TN", arch="mi300x")
         assert result.enabled is False
 
 
@@ -371,43 +341,33 @@ class TestTransposeCoverage:
 
     def test_nn_ws8_returns_exact_match(self):
         """NN transpose at ws=8 should find champion configs."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="NN"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="NN")
         assert result.enabled is True
         assert "Exact match" in result.source
 
     def test_tn_ws8_returns_heuristic_fallback(self):
         """TN transpose at ws=8 — no config file exists, falls back to heuristic."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="TN"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="TN")
         # No configs/ag_mm/mi300x/TN/ directory → heuristic fallback for ws>=8
         assert result.enabled is True
         assert "Heuristic" in result.source or "fallback" in result.source
 
     def test_nt_ws8_returns_heuristic_fallback(self):
         """NT transpose at ws=8 — no config file exists, falls back to heuristic."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="NT"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="NT")
         assert result.enabled is True
         assert "Heuristic" in result.source or "fallback" in result.source
 
     def test_tt_ws8_returns_heuristic_fallback(self):
         """TT transpose at ws=8 — no config file exists, falls back to heuristic."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="TT"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="TT")
         assert result.enabled is True
         assert "Heuristic" in result.source or "fallback" in result.source
 
     def test_non_nn_ws_lt8_disabled(self):
         """Non-NN transpose at ws<8 should still be disabled."""
         for t in ("TN", "NT", "TT"):
-            result = select_ag_mm_config(
-                M=131072, N=16384, K=16384, world_size=4, transpose=t
-            )
+            result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=4, transpose=t)
             assert result.enabled is False, f"{t} at ws=4 should be disabled"
 
     def test_supported_architectures(self):
@@ -486,9 +446,7 @@ class TestHeuristicFallbackValidation:
     def test_heuristic_via_select_for_unknown_shape(self):
         """Full pipeline: unknown shape at ws=8 uses heuristic with reasonable params."""
         # Llama-13B gate projection: batch=2048, hidden=5120, intermediate=13824
-        result = select_ag_mm_config(
-            M=2048 * 8, N=13824, K=5120, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=2048 * 8, N=13824, K=5120, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert result.shape_key is None  # no exact match
         assert "Heuristic" in result.source
@@ -569,9 +527,7 @@ class TestIntegrationPath:
                 config.validate(world_size=ws)  # Must not raise
                 # HBM params must be complete
                 hbm = result.hbm_buffer_params
-                assert all(k in hbm for k in ["k_per_flag", "num_fetch_sms"]), (
-                    f"{s['name']} ws={ws} missing HBM params"
-                )
+                assert all(k in hbm for k in ["k_per_flag", "num_fetch_sms"]), f"{s['name']} ws={ws} missing HBM params"
 
     def test_config_content_g15_champion(self):
         """Verify actual g15 champion config content — highest TFLOPS shape (474.7 TFLOPS)."""
@@ -603,9 +559,7 @@ class TestNearestShapeMatching:
 
     def test_close_to_g2_uses_g2_config(self):
         """M=130000 is ~0.8% below g2 (131072) — should use g2 champion config."""
-        result = select_ag_mm_config(
-            M=130000, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=130000, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert "Nearest match" in result.source
         assert result.shape_key == "131072x16384x16384"
@@ -613,27 +567,21 @@ class TestNearestShapeMatching:
 
     def test_close_to_g15_uses_g15_config(self):
         """M=320000 is ~2.3% below g15 (327680) — should use g15 champion config."""
-        result = select_ag_mm_config(
-            M=320000, N=28672, K=4096, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=320000, N=28672, K=4096, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert "Nearest match" in result.source
         assert result.shape_key == "327680x28672x4096"
 
     def test_far_shape_uses_heuristic(self):
         """M=50000, N=50000, K=50000 — far from all champions, should use heuristic."""
-        result = select_ag_mm_config(
-            M=50000, N=50000, K=50000, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=50000, N=50000, K=50000, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert "Heuristic" in result.source
         assert result.shape_key is None
 
     def test_exact_match_still_preferred(self):
         """Exact match should still be returned even when nearest would also match."""
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, transpose="NN", arch="mi300x")
         assert result.enabled is True
         assert "Exact match" in result.source
         assert result.shape_key == "131072x16384x16384"
@@ -641,9 +589,7 @@ class TestNearestShapeMatching:
     def test_nearest_skips_losing_shapes(self):
         """Nearest matching should skip shapes with speedup <= 1.0."""
         # g9 (196608x18432x16384) has speedup 0.950 — should NOT be matched
-        result = select_ag_mm_config(
-            M=196608, N=18432, K=16384, world_size=8, transpose="NN", arch="mi300x"
-        )
+        result = select_ag_mm_config(M=196608, N=18432, K=16384, world_size=8, transpose="NN", arch="mi300x")
         # g9 is an exact match, but its speedup is 0.950
         # The exact match path doesn't filter by speedup, but nearest does
         assert result.enabled is True
@@ -733,9 +679,7 @@ class TestGpuArchAutoDetection:
     def test_select_with_auto_arch(self):
         """select_ag_mm_config(arch='auto') should work end-to-end."""
         os.environ["IRIS_GPU_ARCH"] = "mi300x"
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8, arch="auto"
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8, arch="auto")
         assert result.enabled is True
         assert result.shape_key == "131072x16384x16384"
 
@@ -743,9 +687,7 @@ class TestGpuArchAutoDetection:
         """Default arch parameter should be 'auto'."""
         os.environ["IRIS_GPU_ARCH"] = "mi300x"
         # Call without specifying arch — should use auto
-        result = select_ag_mm_config(
-            M=131072, N=16384, K=16384, world_size=8
-        )
+        result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8)
         assert result.enabled is True
 
     def test_caching_across_calls(self):
