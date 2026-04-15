@@ -1,12 +1,10 @@
 {
     "_meta": {
         "description": "Champion configs for HBM buffer AG+MM ws=8 on MI355X (gfx950)",
-        "source": "Optuna TPE (150 trials) + broad sweep",
+        "source": "Optuna TPE + broad sweep",
         "gpu": "AMD Instinct MI355X (gfx950)",
         "date": "2026-04-15",
-        "validated": "2026-04-15 (Rainier Job 329)",
-        "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM",
-        "note": "expected_iris_ms is the validated kernel time on MI355X (Rainier). Large FFN shapes (g14/g15/g16) OOM or crash with hipErrorIllegalAddress."
+        "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM"
     },
     "enabled": true,
     "shapes": {
@@ -14,8 +12,6 @@
             "label": "g6",
             "description": "Llama-70B MLP hidden x hidden — M-dominant",
             "M": 262144, "N": 8192, "K": 8192,
-            "expected_iris_ms": 37.558,
-            "n_trials": 196, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 2, "num_xcds": 8, "allow_tf32": true,
@@ -28,8 +24,6 @@
             "label": "a3",
             "description": "Output proj, 128K seq, 4K hidden",
             "M": 131072, "N": 4096, "K": 4096,
-            "expected_iris_ms": 6.304,
-            "n_trials": 150, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 16, "num_xcds": 8, "allow_tf32": true,
@@ -42,8 +36,6 @@
             "label": "f4",
             "description": "Llama 70B down, 64K seq",
             "M": 65536, "N": 8192, "K": 28672,
-            "expected_iris_ms": 35.959,
-            "n_trials": 6, "tuning": "broad_sweep",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -56,8 +48,6 @@
             "label": "l1",
             "description": "Training batch 32K",
             "M": 32768, "N": 8192, "K": 8192,
-            "expected_iris_ms": 5.445,
-            "n_trials": 88, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 2, "num_xcds": 8, "allow_tf32": true,
@@ -70,8 +60,6 @@
             "label": "a2",
             "description": "QKV proj, 64K seq, 8K hidden",
             "M": 65536, "N": 8192, "K": 4096,
-            "expected_iris_ms": 5.775,
-            "n_trials": 150, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 2, "num_xcds": 8, "allow_tf32": true,
@@ -84,8 +72,6 @@
             "label": "f2",
             "description": "Llama 7B down, 32K seq",
             "M": 32768, "N": 4096, "K": 14336,
-            "expected_iris_ms": 5.961,
-            "n_trials": 6, "tuning": "broad_sweep",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 1, "num_xcds": 8, "allow_tf32": true,
@@ -98,8 +84,6 @@
             "label": "a1",
             "description": "QKV proj, 32K seq, 4K hidden",
             "M": 32768, "N": 4096, "K": 4096,
-            "expected_iris_ms": 1.864,
-            "n_trials": 150, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 4, "num_xcds": 8, "allow_tf32": true,
@@ -112,8 +96,6 @@
             "label": "f3",
             "description": "Llama 70B gate/up, 64K seq",
             "M": 65536, "N": 28672, "K": 8192,
-            "expected_iris_ms": 32.303,
-            "n_trials": 6, "tuning": "broad_sweep",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -126,8 +108,6 @@
             "label": "m2",
             "description": "Large FFN up (Llama 70B-like)",
             "M": 16384, "N": 28672, "K": 4096,
-            "expected_iris_ms": 4.658,
-            "n_trials": 150, "tuning": "optuna",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 2, "num_xcds": 8, "allow_tf32": true,
@@ -140,8 +120,6 @@
             "label": "f1",
             "description": "Llama 7B gate/up, 32K seq",
             "M": 32768, "N": 14336, "K": 4096,
-            "expected_iris_ms": 4.86,
-            "n_trials": 6, "tuning": "broad_sweep",
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -157,11 +135,5 @@
         "num_warps": 8, "num_stages": 2,
         "k_per_flag": 16, "num_fetch_sms": 4,
         "num_fetch_stages": 1, "first_stage_fetch_sms": 52
-    },
-    "heuristic_rules": {
-        "block_size_m": "Always 256 on MI355X",
-        "num_warps": "Must be 8 on MI355X",
-        "num_stages": "Must be 2 on MI355X",
-        "num_fetch_stages": "1 — higher values cause hangs on gfx950"
     }
 }

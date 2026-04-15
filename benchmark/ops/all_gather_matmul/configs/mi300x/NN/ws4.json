@@ -1,21 +1,15 @@
 {
     "_meta": {
         "description": "AG+MM ws=4 on MI300X — DISABLED (loses vs PyTorch on all shapes)",
-        "source": "benchmarking: best speedup 0.856x (g6). LDS overflow forces ns=1 on K=4096 shapes.",
         "gpu": "AMD Instinct MI300X (gfx942)",
-        "date": "2026-04-13",
-        "validated": "unvalidated"
+        "date": "2026-04-13"
     },
     "enabled": false,
-    "reason": "ws=4 loses on all 7 tested shapes (best 0.856x). K=4096 shapes crash at ns=2 due to LDS overflow (65540>65536). ns=1 workaround constrains pipelining depth below break-even.",
-    "best_measured_speedup": 0.856,
+    "reason": "ws=4 loses on all tested shapes. K=4096 shapes crash at ns=2 due to LDS overflow (65540>65536). ns=1 workaround constrains pipelining depth below break-even.",
     "shapes": {
         "262144x8192x8192": {
             "label": "g6",
-            "description": "Best ws=4 result — still loses (0.856x)",
             "M": 262144, "N": 8192, "K": 8192,
-            "expected_iris_ms": 161.027, "tflops": 218.5,
-            "n_trials": 10,
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 24, "num_xcds": 8, "allow_tf32": true,
@@ -26,10 +20,7 @@
         },
         "8192x8192x262144": {
             "label": "g5",
-            "description": "ws=4 measured — 0.848x",
             "M": 8192, "N": 8192, "K": 262144,
-            "expected_iris_ms": 167.944, "tflops": 209.5,
-            "n_trials": 8,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -40,10 +31,7 @@
         },
         "131072x16384x16384": {
             "label": "g2",
-            "description": "ws=4 measured — 0.727x",
             "M": 131072, "N": 16384, "K": 16384,
-            "expected_iris_ms": 209.556, "tflops": 335.8,
-            "n_trials": 3,
             "params": {
                 "block_size_m": 256, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 24, "num_xcds": 8, "allow_tf32": true,
@@ -54,10 +42,7 @@
         },
         "16384x16384x131072": {
             "label": "g1",
-            "description": "ws=4 measured — 0.650x",
             "M": 16384, "N": 16384, "K": 131072,
-            "expected_iris_ms": 239.757, "tflops": 293.5,
-            "n_trials": 5,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 16, "num_xcds": 8, "allow_tf32": true,
@@ -68,10 +53,7 @@
         },
         "4096x14336x4096": {
             "label": "mixtral_gate",
-            "description": "Mixtral gate projection — ws=4",
             "M": 4096, "N": 14336, "K": 4096,
-            "expected_iris_ms": 2.192, "tflops": 219.5,
-            "n_trials": 20,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -82,10 +64,7 @@
         },
         "4096x11008x4096": {
             "label": "llama7b_gate",
-            "description": "Llama-7B gate projection — ws=4",
             "M": 4096, "N": 11008, "K": 4096,
-            "expected_iris_ms": 2.163, "tflops": 170.8,
-            "n_trials": 20,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -96,10 +75,7 @@
         },
         "4096x4096x4096": {
             "label": "pow2_4k",
-            "description": "Small power-of-2 square — ws=4",
             "M": 4096, "N": 4096, "K": 4096,
-            "expected_iris_ms": 1.494, "tflops": 92.0,
-            "n_trials": 20,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -110,10 +86,7 @@
         },
         "5120x13824x5120": {
             "label": "llama13b_gate",
-            "description": "Llama-13B gate projection — ws=4",
             "M": 5120, "N": 13824, "K": 5120,
-            "expected_iris_ms": 3.257, "tflops": 222.5,
-            "n_trials": 20,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
@@ -124,10 +97,7 @@
         },
         "4096x4096x11008": {
             "label": "llama7b_down",
-            "description": "Llama-7B down projection — ws=4",
             "M": 4096, "N": 4096, "K": 11008,
-            "expected_iris_ms": 2.578, "tflops": 143.3,
-            "n_trials": 20,
             "params": {
                 "block_size_m": 128, "block_size_n": 256, "block_size_k": 64,
                 "group_size_m": 8, "num_xcds": 8, "allow_tf32": true,
