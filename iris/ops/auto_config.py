@@ -248,7 +248,7 @@ def _apply_heuristic(M: int, N: int, K: int, arch: str = "mi300x") -> Tuple[Dict
 
     Based on optimization data:
     - MI300X: 3,489 measured trials
-    - MI355X: Optuna TPE + broad sweep (K-026 campaign)
+    - MI355X: Optuna TPE + broad sweep
 
     Args:
         M: Rows dimension.
