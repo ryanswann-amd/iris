@@ -61,14 +61,8 @@ _FUSED_CONFIG_FIELDS = {f.name for f in FusedConfig.__dataclass_fields__.values(
 
 # HBM buffer param names (kernel launch params, not FusedConfig fields)
 _HBM_BUFFER_FIELDS = {
-    "k_per_flag",
-    "num_fetch_sms",
-    "num_fetch_stages",
-    "first_stage_fetch_sms",
-    "fetch_block_m",
-    "fetch_block_k",
-    "num_warps",
-    "num_stages",
+    "k_per_flag", "num_fetch_sms", "num_fetch_stages", "first_stage_fetch_sms",
+    "fetch_block_m", "fetch_block_k", "num_warps", "num_stages",
 }
 
 # In-memory cache: (arch, transpose, world_size) -> loaded JSON data
@@ -148,6 +142,7 @@ class AutoConfigResult:
             (k_per_flag, num_fetch_sms, num_fetch_stages, first_stage_fetch_sms).
         source: Human-readable description of where this config came from.
         shape_key: The MxNxK key that matched (None if heuristic/default).
+        expected_iris_ms: Expected kernel time in ms on target GPU (None if unknown).
     """
 
     enabled: bool = False
@@ -155,6 +150,7 @@ class AutoConfigResult:
     hbm_buffer_params: Dict = field(default_factory=dict)
     source: str = "default"
     shape_key: Optional[str] = None
+    expected_iris_ms: Optional[float] = None
 
     def to_fused_config(self) -> FusedConfig:
         """Convert to FusedConfig for use with iris.ops functions.
@@ -477,6 +473,7 @@ def select_ag_mm_config(
                 hbm_buffer_params=hbm,
                 source=f"Exact match: {arch}/{transpose}/ws{world_size}.json [{shape_data.get('label', shape_key)}]",
                 shape_key=shape_key,
+                expected_iris_ms=shape_data.get("expected_iris_ms"),
             )
 
         # No exact match — try nearest champion shape (within 15% per dim)
@@ -490,6 +487,7 @@ def select_ag_mm_config(
                 hbm_buffer_params=hbm,
                 source=f"Nearest match: {arch}/{transpose}/ws{world_size}.json [{nearest_data.get('label', nearest_key)}] (target {M}x{N}x{K} ≈ {nearest_key})",
                 shape_key=nearest_key,
+                expected_iris_ms=nearest_data.get("expected_iris_ms"),
             )
 
         # No nearby match — use heuristic + file defaults
@@ -535,7 +533,7 @@ def list_known_shapes(
     """List all known shape configurations for a given world_size/transpose/arch.
 
     Returns:
-        List of dicts with keys: shape_key, label, M, N, K.
+        List of dicts with keys: shape_key, label, M, N, K, expected_iris_ms.
     """
     data = _load_config_file(arch, transpose.upper(), world_size)
     if data is None or not data.get("enabled", True):
@@ -550,10 +548,11 @@ def list_known_shapes(
                 "M": shape_data["M"],
                 "N": shape_data["N"],
                 "K": shape_data["K"],
+                "expected_iris_ms": shape_data.get("expected_iris_ms"),
             }
         )
 
-    result.sort(key=lambda x: (x["M"], x["N"], x["K"]))
+    result.sort(key=lambda x: x.get("expected_iris_ms") or float("inf"))
     return result
 
 
