@@ -61,8 +61,14 @@ _FUSED_CONFIG_FIELDS = {f.name for f in FusedConfig.__dataclass_fields__.values(
 
 # HBM buffer param names (kernel launch params, not FusedConfig fields)
 _HBM_BUFFER_FIELDS = {
-    "k_per_flag", "num_fetch_sms", "num_fetch_stages", "first_stage_fetch_sms",
-    "fetch_block_m", "fetch_block_k", "num_warps", "num_stages",
+    "k_per_flag",
+    "num_fetch_sms",
+    "num_fetch_stages",
+    "first_stage_fetch_sms",
+    "fetch_block_m",
+    "fetch_block_k",
+    "num_warps",
+    "num_stages",
 }
 
 # In-memory cache: (arch, transpose, world_size) -> loaded JSON data
