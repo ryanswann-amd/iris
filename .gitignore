@@ -61,4 +61,4 @@ logs/
 hsakmt_counters.csv
 core
 .intellikit/
-.github/agents/
+.github/agents/docs/benchmark-results/
