@@ -15,14 +15,13 @@ import os
 import torch
 import torch.distributed as dist
 import iris.bench as bench
-from iris.ops import FusedConfig, all_gather_matmul_preamble
 from iris.ops.all_gather_matmul_hbm_buffer import (
     all_gather_matmul_hbm_buffer as _hbm_buffer,
     all_gather_matmul_hbm_buffer_preamble,
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "all_gather_matmul"))
-from auto_config import select_ag_mm_config, detect_gpu_arch
+from auto_config import select_ag_mm_config
 
 
 @bench.register
@@ -77,7 +76,10 @@ def all_gather_matmul_hbm_buffer(state, ctx):
     C = ctx.zeros((M, N), dtype=dtype)
 
     workspace = all_gather_matmul_hbm_buffer_preamble(
-        ctx, A_sharded, B, config,
+        ctx,
+        A_sharded,
+        B,
+        config,
         k_per_flag=hbm.get("k_per_flag", 8),
     )
 
@@ -86,7 +88,10 @@ def all_gather_matmul_hbm_buffer(state, ctx):
 
     state.exec(
         lambda: _hbm_buffer(
-            ctx, C, A_sharded, B,
+            ctx,
+            C,
+            A_sharded,
+            B,
             config=config,
             workspace=workspace,
             num_fetch_sms=hbm.get("num_fetch_sms", 16),
