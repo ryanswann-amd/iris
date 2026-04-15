@@ -1,30 +1,89 @@
 {
     "_meta": {
         "description": "Champion configs for HBM buffer AG+MM ws=8 on MI355X (gfx950)",
-        "source": "Optuna TPE (150 trials) + broad sweep (6 configs), K-026 campaign",
+        "source": "Optuna TPE (150 trials) + broad sweep, K-026 campaign",
         "gpu": "AMD Instinct MI355X (gfx950)",
-        "date": "2026-04-14",
+        "date": "2026-04-15",
         "data_tag": "[VERIFIED]",
         "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM",
-        "note": "MI355X does not beat PyTorch AG+MM yet; configs represent best-known iris performance. Large shapes OOM due to symmetric heap size."
+        "note": "m1 beats PyTorch at 1.47x. Most shapes 0.66-0.88x. Large FFN shapes (g14/g15/g16) OOM or crash with hipErrorIllegalAddress."
     },
     "enabled": true,
     "shapes": {
-        "131072x4096x4096": {
-            "label": "a3",
-            "description": "Output proj, 128K seq, 4K hidden — best MI355X shape",
-            "M": 131072,
-            "N": 4096,
-            "K": 4096,
-            "speedup": 0.851,
-            "tflops": null,
-            "n_trials": 27,
-            "tuning": "optuna_in_progress",
+        "8192x8192x8192": {
+            "label": "m1",
+            "description": "Standard square-ish 8K — beats PyTorch",
+            "M": 8192,
+            "N": 8192,
+            "K": 8192,
+            "speedup": 1.468,
+            "iris_ms": 15.5,
+            "pytorch_ms": 22.8,
+            "n_trials": 66,
+            "tuning": "optuna",
             "config": {
                 "block_size_m": 256,
                 "block_size_n": 256,
                 "block_size_k": 64,
-                "group_size_m": 4,
+                "group_size_m": 16,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "262144x8192x8192": {
+            "label": "g6",
+            "description": "Llama-70B MLP hidden x hidden — M-dominant",
+            "M": 262144,
+            "N": 8192,
+            "K": 8192,
+            "speedup": 0.882,
+            "iris_ms": 37.365,
+            "pytorch_ms": 32.956,
+            "tflops": 941.65,
+            "n_trials": 196,
+            "tuning": "optuna",
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 2,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 16,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "131072x4096x4096": {
+            "label": "a3",
+            "description": "Output proj, 128K seq, 4K hidden",
+            "M": 131072,
+            "N": 4096,
+            "K": 4096,
+            "speedup": 0.878,
+            "iris_ms": 6.317,
+            "pytorch_ms": 5.549,
+            "tflops": 696.23,
+            "n_trials": 150,
+            "tuning": "optuna",
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 16,
                 "num_warps": 8,
                 "num_stages": 2,
                 "num_xcds": 8,
@@ -32,7 +91,7 @@
             },
             "hbm_buffer_params": {
                 "k_per_flag": 8,
-                "num_fetch_sms": 4,
+                "num_fetch_sms": 32,
                 "num_fetch_stages": 1,
                 "first_stage_fetch_sms": 52
             }
@@ -65,6 +124,63 @@
                 "first_stage_fetch_sms": 52
             }
         },
+        "32768x8192x8192": {
+            "label": "l1",
+            "description": "Training batch 32K",
+            "M": 32768,
+            "N": 8192,
+            "K": 8192,
+            "speedup": 0.803,
+            "iris_ms": 5.3,
+            "pytorch_ms": 4.2,
+            "n_trials": 88,
+            "tuning": "optuna",
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 2,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 16,
+                "num_fetch_sms": 4,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 52
+            }
+        },
+        "65536x8192x4096": {
+            "label": "a2",
+            "description": "QKV proj, 64K seq, 8K hidden",
+            "M": 65536,
+            "N": 8192,
+            "K": 4096,
+            "speedup": 0.796,
+            "iris_ms": 5.528,
+            "pytorch_ms": 4.397,
+            "tflops": 795.59,
+            "n_trials": 150,
+            "tuning": "optuna",
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 2,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 32,
+                "num_fetch_stages": 2,
+                "first_stage_fetch_sms": 52
+            }
+        },
         "32768x4096x14336": {
             "label": "f2",
             "description": "Llama 7B down, 32K seq",
@@ -81,34 +197,6 @@
                 "block_size_n": 256,
                 "block_size_k": 64,
                 "group_size_m": 1,
-                "num_warps": 8,
-                "num_stages": 2,
-                "num_xcds": 8,
-                "allow_tf32": true
-            },
-            "hbm_buffer_params": {
-                "k_per_flag": 16,
-                "num_fetch_sms": 4,
-                "num_fetch_stages": 1,
-                "first_stage_fetch_sms": 52
-            }
-        },
-        "32768x8192x8192": {
-            "label": "l1",
-            "description": "Training batch 32K",
-            "M": 32768,
-            "N": 8192,
-            "K": 8192,
-            "speedup": 0.768,
-            "iris_ms": 5.36,
-            "pytorch_ms": 4.12,
-            "n_trials": 6,
-            "tuning": "broad_sweep",
-            "config": {
-                "block_size_m": 256,
-                "block_size_n": 256,
-                "block_size_k": 64,
-                "group_size_m": 8,
                 "num_warps": 8,
                 "num_stages": 2,
                 "num_xcds": 8,
@@ -150,34 +238,6 @@
                 "first_stage_fetch_sms": 256
             }
         },
-        "65536x8192x4096": {
-            "label": "a2",
-            "description": "QKV proj, 64K seq, 8K hidden",
-            "M": 65536,
-            "N": 8192,
-            "K": 4096,
-            "speedup": 0.760,
-            "iris_ms": null,
-            "pytorch_ms": null,
-            "n_trials": 55,
-            "tuning": "optuna_in_progress",
-            "config": {
-                "block_size_m": 256,
-                "block_size_n": 256,
-                "block_size_k": 64,
-                "group_size_m": 8,
-                "num_warps": 8,
-                "num_stages": 2,
-                "num_xcds": 8,
-                "allow_tf32": true
-            },
-            "hbm_buffer_params": {
-                "k_per_flag": 8,
-                "num_fetch_sms": 52,
-                "num_fetch_stages": 2,
-                "first_stage_fetch_sms": 16
-            }
-        },
         "65536x28672x8192": {
             "label": "f3",
             "description": "Llama 70B gate/up, 64K seq",
@@ -204,6 +264,35 @@
                 "num_fetch_sms": 4,
                 "num_fetch_stages": 1,
                 "first_stage_fetch_sms": 52
+            }
+        },
+        "16384x28672x4096": {
+            "label": "m2",
+            "description": "Large FFN up (Llama 70B-like)",
+            "M": 16384,
+            "N": 28672,
+            "K": 4096,
+            "speedup": 0.662,
+            "iris_ms": 4.674,
+            "pytorch_ms": 3.094,
+            "tflops": 823.36,
+            "n_trials": 150,
+            "tuning": "optuna",
+            "config": {
+                "block_size_m": 256,
+                "block_size_n": 256,
+                "block_size_k": 64,
+                "group_size_m": 2,
+                "num_warps": 8,
+                "num_stages": 2,
+                "num_xcds": 8,
+                "allow_tf32": true
+            },
+            "hbm_buffer_params": {
+                "k_per_flag": 8,
+                "num_fetch_sms": 2,
+                "num_fetch_stages": 1,
+                "first_stage_fetch_sms": 256
             }
         },
         "32768x14336x4096": {
@@ -246,16 +335,16 @@
         "allow_tf32": true
     },
     "default_hbm_buffer_params": {
-        "k_per_flag": 8,
-        "num_fetch_sms": 16,
+        "k_per_flag": 16,
+        "num_fetch_sms": 4,
         "num_fetch_stages": 1,
         "first_stage_fetch_sms": 52
     },
     "heuristic_rules": {
         "block_size_m": "Always 256 on MI355X",
-        "group_size_m": "Use 4 for M <= 32768, 8 otherwise",
+        "group_size_m": "Use 4 for M <= 32768, 8-16 otherwise",
         "k_per_flag": "8 for K_local <= 512, 16 otherwise",
-        "num_fetch_sms": "4 to 52, scale with shape. 16 for small M, 52 for large M",
+        "num_fetch_sms": "4 to 32, scale with shape",
         "num_fetch_stages": "1 for most shapes. Higher values cause hangs on gfx950.",
         "note": "nw must be 8 and ns must be 2 on MI355X — other values hang"
     }
