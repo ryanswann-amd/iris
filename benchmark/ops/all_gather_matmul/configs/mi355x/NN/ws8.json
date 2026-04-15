@@ -1,53 +1,22 @@
 {
     "_meta": {
         "description": "Champion configs for HBM buffer AG+MM ws=8 on MI355X (gfx950)",
-        "source": "Optuna TPE (150 trials) + broad sweep, K-026 campaign",
+        "source": "Optuna TPE (150 trials) + broad sweep",
         "gpu": "AMD Instinct MI355X (gfx950)",
         "date": "2026-04-15",
-        "data_tag": "[VERIFIED]",
+        "validated": "2026-04-15 (Rainier Job 329)",
         "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM",
-        "note": "m1 beats PyTorch at 1.47x. Most shapes 0.66-0.88x. Large FFN shapes (g14/g15/g16) OOM or crash with hipErrorIllegalAddress."
+        "note": "expected_iris_ms is the validated kernel time on MI355X (Rainier). Large FFN shapes (g14/g15/g16) OOM or crash with hipErrorIllegalAddress."
     },
     "enabled": true,
     "shapes": {
-        "8192x8192x8192": {
-            "label": "m1",
-            "description": "Standard square-ish 8K — beats PyTorch",
-            "M": 8192,
-            "N": 8192,
-            "K": 8192,
-            "speedup": 1.468,
-            "iris_ms": 15.5,
-            "pytorch_ms": 22.8,
-            "n_trials": 66,
-            "tuning": "optuna",
-            "config": {
-                "block_size_m": 256,
-                "block_size_n": 256,
-                "block_size_k": 64,
-                "group_size_m": 16,
-                "num_warps": 8,
-                "num_stages": 2,
-                "num_xcds": 8,
-                "allow_tf32": true
-            },
-            "hbm_buffer_params": {
-                "k_per_flag": 16,
-                "num_fetch_sms": 4,
-                "num_fetch_stages": 1,
-                "first_stage_fetch_sms": 52
-            }
-        },
         "262144x8192x8192": {
             "label": "g6",
             "description": "Llama-70B MLP hidden x hidden — M-dominant",
             "M": 262144,
             "N": 8192,
             "K": 8192,
-            "speedup": 0.882,
-            "iris_ms": 37.365,
-            "pytorch_ms": 32.956,
-            "tflops": 941.65,
+            "expected_iris_ms": 37.558,
             "n_trials": 196,
             "tuning": "optuna",
             "config": {
@@ -73,10 +42,7 @@
             "M": 131072,
             "N": 4096,
             "K": 4096,
-            "speedup": 0.878,
-            "iris_ms": 6.317,
-            "pytorch_ms": 5.549,
-            "tflops": 696.23,
+            "expected_iris_ms": 6.304,
             "n_trials": 150,
             "tuning": "optuna",
             "config": {
@@ -102,9 +68,7 @@
             "M": 65536,
             "N": 8192,
             "K": 28672,
-            "speedup": 0.828,
-            "iris_ms": 36.11,
-            "pytorch_ms": 29.91,
+            "expected_iris_ms": 35.959,
             "n_trials": 6,
             "tuning": "broad_sweep",
             "config": {
@@ -130,9 +94,7 @@
             "M": 32768,
             "N": 8192,
             "K": 8192,
-            "speedup": 0.803,
-            "iris_ms": 5.3,
-            "pytorch_ms": 4.2,
+            "expected_iris_ms": 5.445,
             "n_trials": 88,
             "tuning": "optuna",
             "config": {
@@ -158,10 +120,7 @@
             "M": 65536,
             "N": 8192,
             "K": 4096,
-            "speedup": 0.796,
-            "iris_ms": 5.528,
-            "pytorch_ms": 4.397,
-            "tflops": 795.59,
+            "expected_iris_ms": 5.775,
             "n_trials": 150,
             "tuning": "optuna",
             "config": {
@@ -187,9 +146,7 @@
             "M": 32768,
             "N": 4096,
             "K": 14336,
-            "speedup": 0.783,
-            "iris_ms": 6.04,
-            "pytorch_ms": 4.73,
+            "expected_iris_ms": 5.961,
             "n_trials": 6,
             "tuning": "broad_sweep",
             "config": {
@@ -215,10 +172,7 @@
             "M": 32768,
             "N": 4096,
             "K": 4096,
-            "speedup": 0.763,
-            "iris_ms": 1.84,
-            "pytorch_ms": 1.404,
-            "tflops": 597.6,
+            "expected_iris_ms": 1.864,
             "n_trials": 150,
             "tuning": "optuna",
             "config": {
@@ -244,9 +198,7 @@
             "M": 65536,
             "N": 28672,
             "K": 8192,
-            "speedup": 0.724,
-            "iris_ms": 32.27,
-            "pytorch_ms": 23.34,
+            "expected_iris_ms": 32.303,
             "n_trials": 6,
             "tuning": "broad_sweep",
             "config": {
@@ -272,10 +224,7 @@
             "M": 16384,
             "N": 28672,
             "K": 4096,
-            "speedup": 0.662,
-            "iris_ms": 4.674,
-            "pytorch_ms": 3.094,
-            "tflops": 823.36,
+            "expected_iris_ms": 4.658,
             "n_trials": 150,
             "tuning": "optuna",
             "config": {
@@ -301,9 +250,7 @@
             "M": 32768,
             "N": 14336,
             "K": 4096,
-            "speedup": 0.655,
-            "iris_ms": 4.91,
-            "pytorch_ms": 3.21,
+            "expected_iris_ms": 4.86,
             "n_trials": 6,
             "tuning": "broad_sweep",
             "config": {

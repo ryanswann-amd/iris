@@ -4,7 +4,7 @@
         "source": "sweep (3489 trials), optimize-loop iter3",
         "gpu": "AMD Instinct MI300X (gfx942)",
         "date": "2026-04-13",
-        "data_tag": "[VERIFIED]",
+        "validated": "unvalidated — expected_iris_ms derived from TFLOPS, not independently measured",
         "convention": "Shapes are (M, N, K) for col-parallel (M-sharded) AG+MM"
     },
     "enabled": true,
@@ -15,7 +15,7 @@
             "M": 262144,
             "N": 8192,
             "K": 8192,
-            "speedup": 1.2,
+            "expected_iris_ms": 139.069,
             "tflops": 253.0,
             "n_trials": 27,
             "config": {
@@ -41,7 +41,7 @@
             "M": 131072,
             "N": 16384,
             "K": 16384,
-            "speedup": 1.343,
+            "expected_iris_ms": 167.345,
             "tflops": 420.5,
             "n_trials": 102,
             "config": {
@@ -67,7 +67,7 @@
             "M": 147456,
             "N": 28672,
             "K": 4096,
-            "speedup": 1.288,
+            "expected_iris_ms": 74.244,
             "tflops": 466.5,
             "n_trials": 108,
             "config": {
@@ -93,7 +93,7 @@
             "M": 229376,
             "N": 28672,
             "K": 4096,
-            "speedup": 1.277,
+            "expected_iris_ms": 114.265,
             "tflops": 471.5,
             "n_trials": 124,
             "config": {
@@ -119,7 +119,7 @@
             "M": 327680,
             "N": 28672,
             "K": 4096,
-            "speedup": 1.284,
+            "expected_iris_ms": 162.136,
             "tflops": 474.7,
             "n_trials": 70,
             "config": {
@@ -145,7 +145,7 @@
             "M": 8192,
             "N": 8192,
             "K": 262144,
-            "speedup": 1.224,
+            "expected_iris_ms": 217.725,
             "tflops": 161.6,
             "n_trials": 9,
             "config": {
@@ -171,7 +171,7 @@
             "M": 16384,
             "N": 16384,
             "K": 131072,
-            "speedup": 1.136,
+            "expected_iris_ms": 223.748,
             "tflops": 314.5,
             "n_trials": 101,
             "config": {
@@ -197,7 +197,7 @@
             "M": 196608,
             "N": 18432,
             "K": 16384,
-            "speedup": 0.854,
+            "expected_iris_ms": 266.608,
             "tflops": 445.4,
             "n_trials": 80,
             "config": {
@@ -223,7 +223,7 @@
             "M": 262144,
             "N": 28672,
             "K": 8192,
-            "speedup": 0.857,
+            "expected_iris_ms": 278.546,
             "tflops": 442.1,
             "n_trials": 72,
             "config": {
@@ -249,7 +249,7 @@
             "M": 4096,
             "N": 14336,
             "K": 4096,
-            "speedup": 0.703,
+            "expected_iris_ms": 1.933,
             "tflops": 248.9,
             "n_trials": 20,
             "config": {
@@ -275,7 +275,7 @@
             "M": 4096,
             "N": 11008,
             "K": 4096,
-            "speedup": 0.551,
+            "expected_iris_ms": 1.946,
             "tflops": 189.8,
             "n_trials": 20,
             "config": {
@@ -301,7 +301,7 @@
             "M": 4096,
             "N": 4096,
             "K": 4096,
-            "speedup": 0.527,
+            "expected_iris_ms": 1.512,
             "tflops": 90.9,
             "n_trials": 20,
             "config": {

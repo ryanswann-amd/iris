@@ -15,7 +15,7 @@ Config files live under:
 Each config file contains:
   - FusedConfig parameters (block sizes, group sizes, etc.)
   - HBM buffer kernel parameters (k_per_flag, num_fetch_sms, etc.)
-  - Per-shape champion configs with verified speedup measurements
+  - Per-shape champion configs with expected kernel times
 
 Transpose coverage:
     The iris AG+MM kernel (`_fused_all_gather_matmul_kernel`) uses stride-based
@@ -133,7 +133,7 @@ class AutoConfigResult:
             (k_per_flag, num_fetch_sms, num_fetch_stages, first_stage_fetch_sms).
         source: Human-readable description of where this config came from.
         shape_key: The MxNxK key that matched (None if heuristic/default).
-        speedup: Expected speedup vs PyTorch (None if unknown).
+        expected_iris_ms: Expected kernel time in ms on target GPU (None if unknown).
     """
 
     enabled: bool = False
@@ -141,7 +141,7 @@ class AutoConfigResult:
     hbm_buffer_params: Dict = field(default_factory=dict)
     source: str = "default"
     shape_key: Optional[str] = None
-    speedup: Optional[float] = None
+    expected_iris_ms: Optional[float] = None
 
     def to_fused_config(self) -> FusedConfig:
         """Convert to FusedConfig for use with iris.ops functions.
@@ -386,8 +386,8 @@ def select_ag_mm_config(
         >>> result = select_ag_mm_config(131072, 16384, 16384, world_size=8)
         >>> result.enabled
         True
-        >>> result.speedup
-        1.343
+        >>> result.expected_iris_ms
+        167.345
         >>> config = result.to_fused_config()
         >>> result.hbm_buffer_params
         {'k_per_flag': 32, 'num_fetch_sms': 4, 'num_fetch_stages': 64, 'first_stage_fetch_sms': 52}
@@ -424,7 +424,7 @@ def select_ag_mm_config(
                 hbm_buffer_params=shape_data.get("hbm_buffer_params", {}),
                 source=f"Exact match: {arch}/{transpose}/ws{world_size}.json [{shape_data.get('label', shape_key)}]",
                 shape_key=shape_key,
-                speedup=shape_data.get("speedup"),
+                expected_iris_ms=shape_data.get("expected_iris_ms"),
             )
 
         # No exact match — try nearest champion shape (within 15% per dim)
@@ -437,7 +437,7 @@ def select_ag_mm_config(
                 hbm_buffer_params=nearest_data.get("hbm_buffer_params", {}),
                 source=f"Nearest match: {arch}/{transpose}/ws{world_size}.json [{nearest_data.get('label', nearest_key)}] (target {M}x{N}x{K} ≈ {nearest_key})",
                 shape_key=nearest_key,
-                speedup=nearest_data.get("speedup"),
+                expected_iris_ms=nearest_data.get("expected_iris_ms"),
             )
 
         # No nearby match — use heuristic + file defaults
@@ -485,7 +485,7 @@ def list_known_shapes(
     """List all known shape configurations for a given world_size/transpose/arch.
 
     Returns:
-        List of dicts with keys: shape_key, label, M, N, K, speedup, n_trials.
+        List of dicts with keys: shape_key, label, M, N, K, expected_iris_ms, n_trials.
     """
     data = _load_config_file(arch, transpose.upper(), world_size)
     if data is None or not data.get("enabled", True):
@@ -500,13 +500,13 @@ def list_known_shapes(
                 "M": shape_data["M"],
                 "N": shape_data["N"],
                 "K": shape_data["K"],
-                "speedup": shape_data.get("speedup"),
+                "expected_iris_ms": shape_data.get("expected_iris_ms"),
                 "n_trials": shape_data.get("n_trials"),
             }
         )
 
-    # Sort by speedup descending
-    result.sort(key=lambda x: x.get("speedup", 0) or 0, reverse=True)
+    # Sort by expected_iris_ms ascending (fastest first)
+    result.sort(key=lambda x: x.get("expected_iris_ms") or float("inf"))
     return result
 
 
