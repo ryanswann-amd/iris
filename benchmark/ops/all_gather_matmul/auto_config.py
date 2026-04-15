@@ -10,7 +10,7 @@ a sensible default. For world sizes where iris AG+MM is known to lose
 against PyTorch (ws<8), the default disables iris and signals fallback.
 
 Config files live under:
-    benchmark/ops/all_gather_matmul/configs/{arch}/{transpose}/ws{N}.json
+    configs/{arch}/{transpose}/ws{N}.json
 
 Each config file contains:
   - FusedConfig parameters (block sizes, group sizes, etc.)
@@ -28,7 +28,7 @@ Transpose coverage:
     are disabled (NO-GO based on NN benchmarks).
 
 Usage:
-    >>> from iris.ops.auto_config import select_ag_mm_config
+    >>> from auto_config import select_ag_mm_config
     >>> result = select_ag_mm_config(M=131072, N=16384, K=16384, world_size=8)
     >>> if result.enabled:
     ...     config = result.to_fused_config()
@@ -39,7 +39,7 @@ Usage:
     ...     ...
 
     >>> # List all regression test sizes
-    >>> from iris.ops.auto_config import load_regression_sizes
+    >>> from auto_config import load_regression_sizes
     >>> sizes = load_regression_sizes()
 """
 
@@ -50,11 +50,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .config import FusedConfig
+from iris.ops.config import FusedConfig
 
-# Root directory for config files (in benchmark/ops/all_gather_matmul/configs/)
-# Walk up from iris/ops/ to repo root, then into benchmark/
-_CONFIGS_DIR = Path(__file__).parent.parent.parent / "benchmark" / "ops" / "all_gather_matmul" / "configs"
+# Config files live alongside this module
+_CONFIGS_DIR = Path(__file__).parent / "configs"
 
 # In-memory cache: (arch, transpose, world_size) -> loaded JSON data
 _config_cache: Dict[Tuple[str, str, int], dict] = {}
