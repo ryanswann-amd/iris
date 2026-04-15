@@ -13,9 +13,10 @@ Config files live under:
     configs/{arch}/{transpose}/ws{N}.json
 
 Each config file contains:
-  - FusedConfig parameters (block sizes, group sizes, etc.)
-  - HBM buffer kernel parameters (k_per_flag, num_fetch_sms, etc.)
-  - Per-shape champion configs with expected kernel times
+  - Per-shape champion configs with all kernel parameters in a flat "params" dict
+  - A "default_params" dict with architecture-appropriate defaults
+  - Parameters include both FusedConfig fields (block_size_m, etc.) and
+    HBM buffer kernel params (k_per_flag, num_fetch_sms, etc.)
 
 Transpose coverage:
     The iris AG+MM kernel (`_fused_all_gather_matmul_kernel`) uses stride-based
@@ -54,6 +55,15 @@ from iris.ops.config import FusedConfig
 
 # Config files live alongside this module
 _CONFIGS_DIR = Path(__file__).parent / "configs"
+
+# FusedConfig field names — everything else in "params" is an HBM buffer param
+_FUSED_CONFIG_FIELDS = {f.name for f in FusedConfig.__dataclass_fields__.values()}
+
+# HBM buffer param names (kernel launch params, not FusedConfig fields)
+_HBM_BUFFER_FIELDS = {
+    "k_per_flag", "num_fetch_sms", "num_fetch_stages", "first_stage_fetch_sms",
+    "fetch_block_m", "fetch_block_k", "num_warps", "num_stages",
+}
 
 # In-memory cache: (arch, transpose, world_size) -> loaded JSON data
 _config_cache: Dict[Tuple[str, str, int], dict] = {}
@@ -158,6 +168,47 @@ class AutoConfigResult:
         valid_fields = {f.name for f in FusedConfig.__dataclass_fields__.values()}
         filtered = {k: v for k, v in self.config_params.items() if k in valid_fields}
         return FusedConfig(**filtered)
+
+
+def _split_params(params: Dict) -> Tuple[Dict, Dict]:
+    """Split a flat params dict into (config_params, hbm_buffer_params).
+
+    FusedConfig fields go into config_params.
+    Everything else (num_warps, num_stages, k_per_flag, etc.) goes into hbm_buffer_params.
+    """
+    config_params = {}
+    hbm_params = {}
+    for k, v in params.items():
+        if k in _FUSED_CONFIG_FIELDS:
+            config_params[k] = v
+        else:
+            hbm_params[k] = v
+    return config_params, hbm_params
+
+
+def _extract_shape_params(shape_data: Dict) -> Tuple[Dict, Dict]:
+    """Extract config_params and hbm_buffer_params from shape data.
+
+    Supports both the new flat "params" format and the legacy split
+    "config" + "hbm_buffer_params" format for backward compatibility.
+    """
+    if "params" in shape_data:
+        return _split_params(shape_data["params"])
+    return shape_data.get("config", {}), shape_data.get("hbm_buffer_params", {})
+
+
+def _extract_default_params(data: Dict) -> Optional[Tuple[Dict, Dict]]:
+    """Extract default config_params and hbm_buffer_params from file-level defaults.
+
+    Supports both "default_params" (flat) and legacy "default_config" + "default_hbm_buffer_params".
+    Returns None if no defaults are available.
+    """
+    if "default_params" in data and data["default_params"] is not None:
+        return _split_params(data["default_params"])
+    default_config = data.get("default_config")
+    if default_config:
+        return default_config, data.get("default_hbm_buffer_params", {})
+    return None
 
 
 def _load_config_file(arch: str, transpose: str, world_size: int) -> Optional[dict]:
@@ -417,10 +468,11 @@ def select_ag_mm_config(
         shapes = data.get("shapes", {})
         if shape_key in shapes:
             shape_data = shapes[shape_key]
+            cfg, hbm = _extract_shape_params(shape_data)
             return AutoConfigResult(
                 enabled=True,
-                config_params=shape_data["config"],
-                hbm_buffer_params=shape_data.get("hbm_buffer_params", {}),
+                config_params=cfg,
+                hbm_buffer_params=hbm,
                 source=f"Exact match: {arch}/{transpose}/ws{world_size}.json [{shape_data.get('label', shape_key)}]",
                 shape_key=shape_key,
                 expected_iris_ms=shape_data.get("expected_iris_ms"),
@@ -430,23 +482,22 @@ def select_ag_mm_config(
         nearest_key = _find_nearest_shape(M, N, K, shapes)
         if nearest_key is not None:
             nearest_data = shapes[nearest_key]
+            cfg, hbm = _extract_shape_params(nearest_data)
             return AutoConfigResult(
                 enabled=True,
-                config_params=nearest_data["config"],
-                hbm_buffer_params=nearest_data.get("hbm_buffer_params", {}),
+                config_params=cfg,
+                hbm_buffer_params=hbm,
                 source=f"Nearest match: {arch}/{transpose}/ws{world_size}.json [{nearest_data.get('label', nearest_key)}] (target {M}x{N}x{K} ≈ {nearest_key})",
                 shape_key=nearest_key,
                 expected_iris_ms=nearest_data.get("expected_iris_ms"),
             )
 
         # No nearby match — use heuristic + file defaults
-        file_default_config = data.get("default_config")
-        file_default_hbm = data.get("default_hbm_buffer_params", {})
-        if file_default_config:
+        defaults = _extract_default_params(data)
+        if defaults is not None:
+            file_default_config, file_default_hbm = defaults
             heuristic_config, heuristic_hbm = _apply_heuristic(M, N, K, arch=arch)
-            # Merge: heuristic provides shape-aware bm/gm, file_default provides rest
             merged_config = {**file_default_config, **heuristic_config}
-            # For HBM params, prefer heuristic (shape-aware) over static defaults
             merged_hbm = {**file_default_hbm, **heuristic_hbm}
             return AutoConfigResult(
                 enabled=True,
