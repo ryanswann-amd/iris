@@ -70,6 +70,9 @@ def all_gather_matmul_hbm_buffer(state, ctx):
     K_local = K // world_size
 
     result = select_ag_mm_config(M, N, K, world_size=world_size)
+    if not result.enabled:
+        state.skip(f"iris disabled for ws={world_size}: {result.source}")
+        return
     config = result.to_fused_config()
     hbm = result.hbm_buffer_params
 
