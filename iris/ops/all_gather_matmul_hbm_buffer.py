@@ -313,6 +313,7 @@ def _hbm_buffer_all_gather_matmul_kernel(
                                 tl.store(staged_ptrs, a_tile, cache_modifier=".cg")
 
                     flag_idx = m_tile * NUM_FLAG_GROUPS_K + k_flag_group
+                    tl.debug_barrier()  # ensure all per-block stores are visible before setting the flag
                     tl.atomic_xchg(flags_ptr + flag_idx, 1, sem="release", scope="gpu")
 
         if TRACE:

@@ -145,8 +145,14 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
 
     config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
+    # k_per_flag must divide num_k_blocks = K // block_size_k; use 1 for small shapes
+    num_k_blocks = K // config.block_size_k
+    k_per_flag = 1
+    while k_per_flag * 2 <= 8 and num_k_blocks % (k_per_flag * 2) == 0:
+        k_per_flag *= 2
+
     workspace = all_gather_matmul_hbm_buffer_preamble(
-        ctx, A_sharded_shmem, B_shmem, config=config, staged_a_layout=staged_a_layout
+        ctx, A_sharded_shmem, B_shmem, config=config, staged_a_layout=staged_a_layout, k_per_flag=k_per_flag
     )
 
     all_gather_matmul_hbm_buffer(
@@ -156,6 +162,7 @@ def test_all_gather_matmul_hbm_buffer(dtype, atol, rtol, M, K_local, N, staged_a
         B_shmem,
         config=config,
         workspace=workspace,
+        k_per_flag=k_per_flag,
         staged_a_layout=staged_a_layout,
         trace=False,
     )
@@ -213,6 +220,12 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
 
     config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
+    # k_per_flag must divide num_k_blocks = K // block_size_k; use 1 for small shapes
+    num_k_blocks = K // config.block_size_k
+    k_per_flag = 1
+    while k_per_flag * 2 <= 8 and num_k_blocks % (k_per_flag * 2) == 0:
+        k_per_flag *= 2
+
     all_gather_matmul_hbm_buffer(
         ctx,
         output,
@@ -220,6 +233,7 @@ def test_all_gather_matmul_hbm_buffer_with_bias(dtype, atol, rtol, M, K_local, N
         B_shmem,
         bias=bias_shmem,
         config=config,
+        k_per_flag=k_per_flag,
         trace=False,
     )
 
