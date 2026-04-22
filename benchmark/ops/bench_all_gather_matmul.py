@@ -31,7 +31,7 @@ from auto_config import select_ag_mm_config
 @bench.axis("K", [8192])
 @bench.axis("dtype", [torch.float16])
 def rccl_all_gather_matmul(state, ctx):
-    """PyTorch/RCCL baseline: all_gather_into_tensor + torch.mm"""
+    """PyTorch/RCCL baseline: all_gather (along K) + torch.mm"""
     M, N, K = state["M"], state["N"], state["K"]
     dtype = state["dtype"]
     world_size = dist.get_world_size()
@@ -43,18 +43,18 @@ def rccl_all_gather_matmul(state, ctx):
         (M, K_local), device="cuda", dtype=dtype, generator=torch.Generator("cuda").manual_seed(42 + rank)
     )
     B = torch.randn((K, N), device="cuda", dtype=dtype, generator=torch.Generator("cuda").manual_seed(123))
-    A_gathered = torch.empty((M, K), device="cuda", dtype=dtype)
+    A_gathered_list = [torch.empty((M, K_local), device="cuda", dtype=dtype) for _ in range(world_size)]
     C = torch.empty((M, N), device="cuda", dtype=dtype)
 
     state.set_flops(2 * M * N * K)
     state.set_bytes((world_size - 1) * M * K_local * A_sharded.element_size())
 
-    state.exec(
-        lambda: (
-            dist.all_gather_into_tensor(A_gathered, A_sharded),
-            torch.mm(A_gathered, B, out=C),
-        ),
-    )
+    def _run():
+        dist.all_gather(A_gathered_list, A_sharded)
+        A_gathered = torch.cat(A_gathered_list, dim=1)
+        torch.mm(A_gathered, B, out=C)
+
+    state.exec(_run)
 
 
 @bench.register
