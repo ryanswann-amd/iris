@@ -38,10 +38,11 @@ def rccl_all_gather_matmul(state, ctx):
     rank = dist.get_rank()
     K_local = K // world_size
 
-    torch.manual_seed(42 + rank)
-    A_sharded = torch.randn((M, K_local), device="cuda", dtype=dtype)
-    torch.manual_seed(123)
-    B = torch.randn((K, N), device="cuda", dtype=dtype)
+    # Per-rank seed for A (each rank holds different shards); shared seed for B
+    A_sharded = torch.randn(
+        (M, K_local), device="cuda", dtype=dtype, generator=torch.Generator("cuda").manual_seed(42 + rank)
+    )
+    B = torch.randn((K, N), device="cuda", dtype=dtype, generator=torch.Generator("cuda").manual_seed(123))
     A_gathered = torch.empty((M, K), device="cuda", dtype=dtype)
     C = torch.empty((M, N), device="cuda", dtype=dtype)
 
@@ -77,11 +78,9 @@ def all_gather_matmul_hbm_buffer(state, ctx):
     hbm = result.hbm_buffer_params
 
     rank = ctx.get_rank()
-    torch.manual_seed(42 + rank)
-    A_sharded = ctx.zeros((M, K_local), dtype=dtype)
-    A_sharded.copy_(torch.randn((M, K_local), dtype=dtype, device="cuda"))
-    torch.manual_seed(123)
-    B = torch.randn((K, N), device="cuda", dtype=dtype)
+    # Per-rank seed for A (each rank holds different shards); shared seed for B
+    A_sharded = ctx.randn((M, K_local), dtype=dtype, generator=torch.Generator("cuda").manual_seed(42 + rank))
+    B = torch.randn((K, N), device="cuda", dtype=dtype, generator=torch.Generator("cuda").manual_seed(123))
     C = ctx.zeros((M, N), dtype=dtype)
 
     workspace = all_gather_matmul_hbm_buffer_preamble(
