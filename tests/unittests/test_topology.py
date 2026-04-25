@@ -20,8 +20,8 @@ import pytest
 import torch
 import torch.distributed as dist
 
-import iris.topology as topology
-from iris.topology import (
+import iris.host.distributed.topology as topology
+from iris.host.distributed.topology import (
     FabricInfo,
     GPUInfo,
     IntraNodeLinkType,

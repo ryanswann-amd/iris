@@ -9,7 +9,7 @@ Gathers tensors from all ranks and concatenates them along the last dimension.
 import triton
 import triton.language as tl
 import iris
-from iris.tracing.kernel_artifacts import iris_launch
+from iris.host.tracing.kernel_artifacts import iris_launch
 from .config import Config
 from .utils import extract_group_info
 
@@ -17,7 +17,7 @@ from .utils import extract_group_info
 try:
     from triton.experimental import gluon
     from triton.experimental.gluon import language as gl
-    from iris.experimental.iris_gluon import IrisDeviceCtx
+    from iris.device.gluon.context import IrisDeviceCtx
 
     GLUON_AVAILABLE = True
 except ImportError:
@@ -497,10 +497,6 @@ def all_gather(
 
     # Choose between Triton and Gluon implementation
     if config.use_gluon and GLUON_AVAILABLE:
-        # Check if ctx is Iris Gluon (has get_device_context method)
-        if not hasattr(ctx, "get_device_context"):
-            raise ValueError("use_gluon=True requires Iris Gluon context. Use iris.experimental.iris_gluon.iris()")
-
         # Gluon only supports the persistent variant
         if config.all_gather_variant != "persistent":
             raise ValueError(

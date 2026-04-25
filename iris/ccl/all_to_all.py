@@ -9,7 +9,7 @@ Supports both Triton and Gluon implementations based on config.
 import triton
 import triton.language as tl
 import iris
-from iris.tracing.kernel_artifacts import iris_launch
+from iris.host.tracing.kernel_artifacts import iris_launch
 from .config import Config
 from .utils import chiplet_transform_chunked, extract_group_info
 
@@ -17,7 +17,7 @@ from .utils import chiplet_transform_chunked, extract_group_info
 try:
     from triton.experimental import gluon
     from triton.experimental.gluon import language as gl
-    from iris.experimental.iris_gluon import IrisDeviceCtx
+    from iris.device.gluon.context import IrisDeviceCtx
 
     GLUON_AVAILABLE = True
 except ImportError:
@@ -348,7 +348,7 @@ def all_to_all(
     Args:
         output_tensor: Output tensor of shape (M, N * world_size)
         input_tensor: Input tensor of shape (M, N * world_size)
-        shmem: Iris shmem context (regular Iris or Iris Gluon)
+        shmem: Iris context
         group: ProcessGroup or None. If None, uses all ranks in shmem context.
                Default: None.
         async_op: If False, performs a barrier at the end. If True, returns immediately.
@@ -374,10 +374,6 @@ def all_to_all(
 
     # Choose between Triton and Gluon implementation
     if config.use_gluon and GLUON_AVAILABLE:
-        # Check if shmem is Iris Gluon (has get_device_context method)
-        if not hasattr(shmem, "get_device_context"):
-            raise ValueError("use_gluon=True requires Iris Gluon context. Use iris.experimental.iris_gluon.iris()")
-
         context_tensor = shmem.get_device_context()
 
         iris_launch(
