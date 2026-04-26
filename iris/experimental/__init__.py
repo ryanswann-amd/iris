@@ -8,7 +8,7 @@ This module contains experimental features for Iris that may not be fully stable
 or may undergo breaking changes in future releases.
 
 Current experimental features:
-- Gluon backend: @aggregate-based implementation via iris.device.gluon
+- Gluon backend: @aggregate-based implementation via iris.mem.gluon
 
 Usage:
     >>> import iris
@@ -27,6 +27,6 @@ Usage:
     >>>     ctx.load(buffer, 1)
 """
 
-from iris.device.gluon import context as gluon_context  # noqa: F401
+from iris.mem.gluon import context as gluon_context  # noqa: F401
 
 __all__ = ["gluon_context"]

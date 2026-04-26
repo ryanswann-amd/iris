@@ -15,7 +15,7 @@ This package provides:
 - Utility functions: do_bench
 - HIP integration for AMD GPU support
 - Logging utilities with rank information
-- Gluon backend: @aggregate-based implementation via iris.device.gluon
+- Gluon backend: @aggregate-based implementation via iris.mem.gluon
 
 Quick Start (Traditional API):
     >>> import iris
@@ -43,9 +43,9 @@ Quick Start (Gluon API - Experimental):
 """
 
 from iris.host.iris import Iris, iris
-from iris.device.triton.context import DeviceContext
+from iris.mem.triton.context import Context, Context as DeviceContext
 from iris.host.tracing.events import TraceEvent
-from iris.device.triton.ops import (
+from iris.mem.triton.ops import (
     load,
     store,
     copy,
@@ -91,6 +91,7 @@ __all__ = [
     "Iris",
     "iris",
     "get_device_id_for_rank",
+    "Context",
     "DeviceContext",
     "TraceEvent",
     "load",
