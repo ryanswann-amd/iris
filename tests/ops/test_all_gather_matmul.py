@@ -325,8 +325,7 @@ def test_all_gather_matmul_hbm_buffer_kpf(dtype, atol, rtol, M, K_local, N, k_pe
 
     max_diff = (output - ref_output).abs().max().item()
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol), (
-        f"Rank {rank}: Max diff {max_diff}, expected < {atol} "
-        f"(kpf={k_per_flag}, M={M}, K_local={K_local}, N={N})"
+        f"Rank {rank}: Max diff {max_diff}, expected < {atol} (kpf={k_per_flag}, M={M}, K_local={K_local}, N={N})"
     )
 
 
@@ -369,9 +368,7 @@ def test_all_gather_matmul_hbm_buffer_production(dtype, atol, rtol):
 
     config = FusedConfig()
 
-    workspace = all_gather_matmul_hbm_buffer_preamble(
-        ctx, A_sharded_shmem, B_shmem, config=config
-    )
+    workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded_shmem, B_shmem, config=config)
 
     all_gather_matmul_hbm_buffer(
         ctx,
@@ -388,8 +385,7 @@ def test_all_gather_matmul_hbm_buffer_production(dtype, atol, rtol):
 
     max_diff = (output - ref_output).abs().max().item()
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol), (
-        f"Rank {rank}: Max diff {max_diff}, expected < {atol} "
-        f"(production shape M={M}, K={K}, N={N}, ws={world_size})"
+        f"Rank {rank}: Max diff {max_diff}, expected < {atol} (production shape M={M}, K={K}, N={N}, ws={world_size})"
     )
 
 
@@ -439,9 +435,7 @@ def test_all_gather_matmul_hbm_buffer_ws4(dtype, atol, rtol, M, K_local, N):
 
     config = _select_config(M, K_local, N)
 
-    workspace = all_gather_matmul_hbm_buffer_preamble(
-        ctx, A_sharded_shmem, B_shmem, config=config
-    )
+    workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded_shmem, B_shmem, config=config)
 
     all_gather_matmul_hbm_buffer(
         ctx,
@@ -458,8 +452,7 @@ def test_all_gather_matmul_hbm_buffer_ws4(dtype, atol, rtol, M, K_local, N):
 
     max_diff = (output - ref_output).abs().max().item()
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol), (
-        f"Rank {rank}: Max diff {max_diff}, expected < {atol} "
-        f"(ws4, M={M}, K_local={K_local}, N={N})"
+        f"Rank {rank}: Max diff {max_diff}, expected < {atol} (ws4, M={M}, K_local={K_local}, N={N})"
     )
 
 
@@ -529,8 +522,7 @@ def test_all_gather_matmul_hbm_buffer_bias_m_contiguous(dtype, atol, rtol):
 
     max_diff = (output - ref_output).abs().max().item()
     assert torch.allclose(output, ref_output, atol=atol, rtol=rtol), (
-        f"Rank {rank}: Max diff {max_diff}, expected < {atol} "
-        f"(bias + m_contiguous)"
+        f"Rank {rank}: Max diff {max_diff}, expected < {atol} (bias + m_contiguous)"
     )
 
 
@@ -567,14 +559,17 @@ def test_all_gather_matmul_hbm_buffer_workspace_reuse():
 
     config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
-    workspace = all_gather_matmul_hbm_buffer_preamble(
-        ctx, A_sharded_shmem, B_shmem, config=config
-    )
+    workspace = all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded_shmem, B_shmem, config=config)
 
     # First call
     all_gather_matmul_hbm_buffer(
-        ctx, output, A_sharded_shmem, B_shmem,
-        config=config, workspace=workspace, trace=False,
+        ctx,
+        output,
+        A_sharded_shmem,
+        B_shmem,
+        config=config,
+        workspace=workspace,
+        trace=False,
     )
     torch.cuda.synchronize()
     ctx.barrier()
@@ -589,8 +584,13 @@ def test_all_gather_matmul_hbm_buffer_workspace_reuse():
     ctx.barrier()
 
     all_gather_matmul_hbm_buffer(
-        ctx, output, A_sharded_shmem, B_shmem,
-        config=config, workspace=workspace, trace=False,
+        ctx,
+        output,
+        A_sharded_shmem,
+        B_shmem,
+        config=config,
+        workspace=workspace,
+        trace=False,
     )
     torch.cuda.synchronize()
     ctx.barrier()
@@ -636,9 +636,7 @@ def test_all_gather_matmul_hbm_buffer_error_m_alignment():
     config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
     with pytest.raises(AssertionError):
-        all_gather_matmul_hbm_buffer_preamble(
-            ctx, A_sharded_shmem, B_shmem, config=config
-        )
+        all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded_shmem, B_shmem, config=config)
 
 
 def test_all_gather_matmul_hbm_buffer_error_kpf_divisibility():
@@ -671,9 +669,7 @@ def test_all_gather_matmul_hbm_buffer_error_kpf_divisibility():
     config = FusedConfig(block_size_m=64, block_size_n=64, block_size_k=32)
 
     with pytest.raises(AssertionError):
-        all_gather_matmul_hbm_buffer_preamble(
-            ctx, A_sharded_shmem, B_shmem, config=config, k_per_flag=3
-        )
+        all_gather_matmul_hbm_buffer_preamble(ctx, A_sharded_shmem, B_shmem, config=config, k_per_flag=3)
 
 
 if __name__ == "__main__":
