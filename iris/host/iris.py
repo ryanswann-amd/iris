@@ -1166,9 +1166,9 @@ class Iris:
                 >>> # Async operation (no barrier)
                 >>> ctx.ccl.all_to_all(output_tensor, input_tensor, async_op=True)
             """
-            from iris.ccl.all_to_all import all_to_all as _all_to_all
+            from iris.ccl.all_to_all import all_to_all
 
-            _all_to_all(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
+            all_to_all(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
 
         def all_gather(self, output_tensor, input_tensor, group=None, async_op=False, config=None):
             """
@@ -1201,9 +1201,9 @@ class Iris:
                 >>> # Async operation (no barrier)
                 >>> ctx.ccl.all_gather(output_tensor, input_tensor, async_op=True)
             """
-            from iris.ccl.all_gather import all_gather as _all_gather
+            from iris.ccl.all_gather import all_gather
 
-            _all_gather(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
+            all_gather(output_tensor, input_tensor, self._iris, group=group, async_op=async_op, config=config)
 
         def all_reduce_preamble(self, output_tensor, input_tensor, config=None, workspace=None):
             """
@@ -1218,15 +1218,9 @@ class Iris:
             Returns:
                 Workspace object that can be passed to ``all_reduce``.
             """
-            from iris.ccl.all_reduce import all_reduce_preamble as _all_reduce_preamble
+            from iris.ccl.all_reduce import all_reduce_preamble
 
-            return _all_reduce_preamble(
-                output_tensor,
-                input_tensor,
-                self._iris,
-                config=config,
-                workspace=workspace,
-            )
+            return all_reduce_preamble(output_tensor, input_tensor, self._iris, config=config, workspace=workspace)
 
         def all_reduce(
             self, output_tensor, input_tensor, op=None, group=None, async_op=False, config=None, workspace=None
@@ -1268,14 +1262,9 @@ class Iris:
                 >>> # Async operation (no barrier)
                 >>> ctx.ccl.all_reduce(output_tensor, input_tensor, async_op=True)
             """
-            from iris.ccl.all_reduce import all_reduce as _all_reduce
-            from iris.ccl import ReduceOp
+            from iris.ccl.all_reduce import all_reduce
 
-            # Default to SUM if not specified
-            if op is None:
-                op = ReduceOp.SUM
-
-            return _all_reduce(
+            return all_reduce(
                 output_tensor,
                 input_tensor,
                 self._iris,
@@ -1316,15 +1305,16 @@ class Iris:
                 >>> config = Config(reduce_scatter_variant="two_shot", all_reduce_distribution=1)
                 >>> ctx.ccl.reduce_scatter(output_tensor, input_tensor, config=config)
             """
-            from iris.ccl.reduce_scatter import reduce_scatter as _reduce_scatter
-            from iris.ccl import ReduceOp
+            from iris.ccl.reduce_scatter import reduce_scatter
 
-            # Default to SUM if not specified
-            if op is None:
-                op = ReduceOp.SUM
-
-            _reduce_scatter(
-                output_tensor, input_tensor, self._iris, op=op, group=group, async_op=async_op, config=config
+            reduce_scatter(
+                output_tensor,
+                input_tensor,
+                self._iris,
+                op=op,
+                group=group,
+                async_op=async_op,
+                config=config,
             )
 
 
