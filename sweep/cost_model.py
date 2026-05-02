@@ -372,12 +372,17 @@ def main():
     parser.add_argument("--pass-rate", type=float, default=0.80, help="Required fraction of points within threshold")
     args = parser.parse_args()
 
-    # Default paths
+    # Default paths — resolve relative paths against iris root so the script
+    # works regardless of CWD (verification runs from the orchestrator root)
     iris_root = str(Path(__file__).resolve().parent.parent)
     if args.csv is None:
         args.csv = os.path.join(iris_root, "sweep", "results", "ccl_sweep_results.csv")
+    elif not os.path.isabs(args.csv):
+        args.csv = os.path.join(iris_root, args.csv)
     if args.model_path is None:
         args.model_path = os.path.join(iris_root, "sweep", "results", "ccl_cost_model.json")
+    elif not os.path.isabs(args.model_path):
+        args.model_path = os.path.join(iris_root, args.model_path)
 
     if args.fit:
         if not os.path.exists(args.csv):

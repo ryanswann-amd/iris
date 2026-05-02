@@ -102,10 +102,10 @@ class SweepPoint:
     def to_csv_row(self, latency_ms: float, bandwidth_gbps: float, success: bool = True) -> dict:
         return {
             "op": self.op,
-            "m": self.m,
-            "n": self.n,
             "msg_bytes": self.msg_bytes,
             "num_gpus": self.num_gpus,
+            "m": self.m,
+            "n": self.n,
             "comm_sms": self.comm_sms,
             "block_size_m": self.block_size_m,
             "block_size_n": self.block_size_n,
@@ -224,10 +224,10 @@ def load_completed_keys(csv_path: str) -> set[str]:
 
 CSV_FIELDS = [
     "op",
-    "m",
-    "n",
     "msg_bytes",
     "num_gpus",
+    "m",
+    "n",
     "comm_sms",
     "block_size_m",
     "block_size_n",
