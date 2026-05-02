@@ -49,20 +49,22 @@ def load_sweep_data(csv_path: str) -> list[dict]:
             if row.get("success", "True") == "True":
                 latency = float(row["latency_ms"])
                 if latency > 0:
-                    rows.append({
-                        "op": row["op"],
-                        "m": int(row["m"]),
-                        "n": int(row["n"]),
-                        "msg_bytes": int(row["msg_bytes"]),
-                        "num_gpus": int(row["num_gpus"]),
-                        "comm_sms": int(row["comm_sms"]),
-                        "block_size_m": int(row["block_size_m"]),
-                        "block_size_n": int(row["block_size_n"]),
-                        "variant": row.get("variant", ""),
-                        "distribution": row.get("distribution", ""),
-                        "latency_ms": latency,
-                        "bandwidth_gbps": float(row["bandwidth_gbps"]),
-                    })
+                    rows.append(
+                        {
+                            "op": row["op"],
+                            "m": int(row["m"]),
+                            "n": int(row["n"]),
+                            "msg_bytes": int(row["msg_bytes"]),
+                            "num_gpus": int(row["num_gpus"]),
+                            "comm_sms": int(row["comm_sms"]),
+                            "block_size_m": int(row["block_size_m"]),
+                            "block_size_n": int(row["block_size_n"]),
+                            "variant": row.get("variant", ""),
+                            "distribution": row.get("distribution", ""),
+                            "latency_ms": latency,
+                            "bandwidth_gbps": float(row["bandwidth_gbps"]),
+                        }
+                    )
     return rows
 
 
@@ -149,34 +151,46 @@ def build_features(row: dict) -> list[float]:
     gpu_8 = 1.0 if gpus == 8 else 0.0
 
     return [
-        1.0,                        # intercept
-        log_msg,                    # primary size driver
-        log_msg * log_msg,          # quadratic in log-space
-        log_msg ** 3 / 1000.0,      # cubic (scaled)
-        log_sms,                    # SM parallelism
-        log_sms * log_sms,          # quadratic SMS
-        log_msg * log_sms,          # size-SMS interaction
-        log_gpus,                   # GPU count
-        log_msg * log_gpus,         # size-GPU interaction
-        log_sms * log_gpus,         # SMS-GPU interaction
-        log_bsn,                    # block size
-        log_msg * log_bsn,          # size-block interaction
-        gpu_2,                      # GPU count indicators
+        1.0,  # intercept
+        log_msg,  # primary size driver
+        log_msg * log_msg,  # quadratic in log-space
+        log_msg**3 / 1000.0,  # cubic (scaled)
+        log_sms,  # SM parallelism
+        log_sms * log_sms,  # quadratic SMS
+        log_msg * log_sms,  # size-SMS interaction
+        log_gpus,  # GPU count
+        log_msg * log_gpus,  # size-GPU interaction
+        log_sms * log_gpus,  # SMS-GPU interaction
+        log_bsn,  # block size
+        log_msg * log_bsn,  # size-block interaction
+        gpu_2,  # GPU count indicators
         gpu_4,
         gpu_8,
-        gpu_2 * log_msg,            # per-GPU-count size slopes
+        gpu_2 * log_msg,  # per-GPU-count size slopes
         gpu_4 * log_msg,
         gpu_8 * log_msg,
     ]
 
 
 FEATURE_NAMES = [
-    "intercept", "log2_msg", "log2_msg_sq", "log2_msg_cub_scaled",
-    "log2_sms", "log2_sms_sq", "log2_msg_x_sms",
-    "log2_gpus", "log2_msg_x_gpus", "log2_sms_x_gpus",
-    "log2_bsn", "log2_msg_x_bsn",
-    "gpu_2_ind", "gpu_4_ind", "gpu_8_ind",
-    "gpu_2_x_log_msg", "gpu_4_x_log_msg", "gpu_8_x_log_msg",
+    "intercept",
+    "log2_msg",
+    "log2_msg_sq",
+    "log2_msg_cub_scaled",
+    "log2_sms",
+    "log2_sms_sq",
+    "log2_msg_x_sms",
+    "log2_gpus",
+    "log2_msg_x_gpus",
+    "log2_sms_x_gpus",
+    "log2_bsn",
+    "log2_msg_x_bsn",
+    "gpu_2_ind",
+    "gpu_4_ind",
+    "gpu_8_ind",
+    "gpu_2_x_log_msg",
+    "gpu_4_x_log_msg",
+    "gpu_8_x_log_msg",
 ]
 
 
@@ -190,9 +204,8 @@ def _fit_submodel(group_data: list[dict]) -> tuple[list[float], dict]:
 
     # Evaluate in original space
     predictions_log = [sum(c * x for c, x in zip(coeffs, xi)) for xi in X]
-    predictions = [2.0 ** p for p in predictions_log]
-    errors = [abs(p - actual) / actual if actual > 0 else 0
-              for p, actual in zip(predictions, y_raw)]
+    predictions = [2.0**p for p in predictions_log]
+    errors = [abs(p - actual) / actual if actual > 0 else 0 for p, actual in zip(predictions, y_raw)]
     mape = sum(errors) / len(errors) if errors else 0
     within_15 = sum(1 for e in errors if e <= 0.15) / len(errors) if errors else 0
 
@@ -260,8 +273,7 @@ def fit_cost_model(data: list[dict]) -> dict:
     return model
 
 
-def predict(model_entry: dict, row: dict,
-            lookup: Optional[dict] = None) -> float:
+def predict(model_entry: dict, row: dict, lookup: Optional[dict] = None) -> float:
     """Predict latency using lookup table (exact) or regression model (interpolation).
 
     Args:
@@ -278,9 +290,8 @@ def predict(model_entry: dict, row: dict,
     # Fall back to regression model
     features = build_features(row)
     coeffs = model_entry["coefficients"]
-    pred_log = sum(coeffs[name] * feat
-                   for name, feat in zip(FEATURE_NAMES, features))
-    return max(2.0 ** pred_log, 0.0)
+    pred_log = sum(coeffs[name] * feat for name, feat in zip(FEATURE_NAMES, features))
+    return max(2.0**pred_log, 0.0)
 
 
 def _find_model_key(model: dict, row: dict) -> Optional[str]:
@@ -302,8 +313,7 @@ def _find_model_key(model: dict, row: dict) -> Optional[str]:
     return None
 
 
-def evaluate_model(model: dict, data: list[dict],
-                   threshold: float = 0.15, pass_rate: float = 0.80) -> dict:
+def evaluate_model(model: dict, data: list[dict], threshold: float = 0.15, pass_rate: float = 0.80) -> dict:
     """Evaluate model accuracy against data."""
     total = 0
     within_threshold = 0
@@ -353,20 +363,13 @@ def main():
         description="CCL cost model: fit, validate, and evaluate",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--fit", action="store_true",
-                        help="Fit model from sweep data")
-    parser.add_argument("--validate", action="store_true",
-                        help="Validate model JSON artifact structure")
-    parser.add_argument("--eval", action="store_true",
-                        help="Evaluate model accuracy against data")
-    parser.add_argument("--csv", type=str, default=None,
-                        help="Path to sweep CSV")
-    parser.add_argument("--model-path", type=str, default=None,
-                        help="Path to model JSON")
-    parser.add_argument("--threshold", type=float, default=0.15,
-                        help="Relative error threshold for accuracy check")
-    parser.add_argument("--pass-rate", type=float, default=0.80,
-                        help="Required fraction of points within threshold")
+    parser.add_argument("--fit", action="store_true", help="Fit model from sweep data")
+    parser.add_argument("--validate", action="store_true", help="Validate model JSON artifact structure")
+    parser.add_argument("--eval", action="store_true", help="Evaluate model accuracy against data")
+    parser.add_argument("--csv", type=str, default=None, help="Path to sweep CSV")
+    parser.add_argument("--model-path", type=str, default=None, help="Path to model JSON")
+    parser.add_argument("--threshold", type=float, default=0.15, help="Relative error threshold for accuracy check")
+    parser.add_argument("--pass-rate", type=float, default=0.80, help="Required fraction of points within threshold")
     args = parser.parse_args()
 
     # Default paths
@@ -394,9 +397,9 @@ def main():
         print(f"Models fitted: {len(model['models'])}")
         for key, m in model["models"].items():
             stats = m["training_stats"]
-            print(f"  {key}: {stats['n_points']} points, "
-                  f"MAPE={stats['mape']:.2%}, "
-                  f"within_15%={stats['within_15pct']:.1%}")
+            print(
+                f"  {key}: {stats['n_points']} points, MAPE={stats['mape']:.2%}, within_15%={stats['within_15pct']:.1%}"
+            )
 
     if args.validate:
         if not os.path.exists(args.model_path):
@@ -431,7 +434,7 @@ def main():
                 print(f"  - {e}")
             sys.exit(1)
 
-        print(f"VALIDATION PASSED")
+        print("VALIDATION PASSED")
         print(f"  Version: {model['version']}")
         print(f"  Models: {len(model['models'])}")
         print(f"  Features: {model['feature_names']}")
@@ -453,16 +456,15 @@ def main():
         data = load_sweep_data(args.csv)
         result = evaluate_model(model, data, args.threshold, args.pass_rate)
 
-        print(f"Model Evaluation")
-        print(f"{'='*50}")
+        print("Model Evaluation")
+        print(f"{'=' * 50}")
         print(f"Total evaluable points:  {result['total_points']}")
-        print(f"Within {args.threshold:.0%} threshold:  "
-              f"{result['within_threshold']} ({result['actual_rate']:.1%})")
+        print(f"Within {args.threshold:.0%} threshold:  {result['within_threshold']} ({result['actual_rate']:.1%})")
         print(f"Required pass rate:      {args.pass_rate:.0%}")
         print(f"MAPE:                    {result['mape']:.2%}")
         print(f"Median relative error:   {result['median_relative_error']:.2%}")
         print(f"P90 error:               {result['p90_error']:.2%}")
-        print(f"")
+        print("")
 
         if result["pass"]:
             print(f"PASS: {result['actual_rate']:.1%} >= {args.pass_rate:.0%}")

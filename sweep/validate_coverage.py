@@ -19,10 +19,10 @@ def main():
         description="Validate CCL sweep coverage",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--min-combos", type=int, default=500,
-                        help="Minimum number of unique parameter combinations")
-    parser.add_argument("--csv", type=str, default=None,
-                        help="Path to sweep CSV (default: sweep/results/ccl_sweep_results.csv)")
+    parser.add_argument("--min-combos", type=int, default=500, help="Minimum number of unique parameter combinations")
+    parser.add_argument(
+        "--csv", type=str, default=None, help="Path to sweep CSV (default: sweep/results/ccl_sweep_results.csv)"
+    )
     args = parser.parse_args()
 
     # Default CSV path
@@ -73,19 +73,19 @@ def main():
     bsn_vals = set(int(row.get("block_size_n", 0)) for row in rows)
     successful = sum(1 for row in rows if row.get("success", "True") == "True")
 
-    print(f"CCL Sweep Coverage Report")
-    print(f"{'='*50}")
+    print("CCL Sweep Coverage Report")
+    print(f"{'=' * 50}")
     print(f"Total rows:              {len(rows)}")
     print(f"Unique combinations:     {n_combos}")
     print(f"Successful benchmarks:   {successful}")
     print(f"Failed benchmarks:       {len(rows) - successful}")
-    print(f"")
+    print("")
     print(f"Operations:              {sorted(ops)}")
     print(f"Message sizes:           {len(msg_sizes)} unique")
     print(f"GPU counts:              {sorted(gpu_counts)}")
     print(f"comm_sms values:         {sorted(comm_sms_vals)}")
     print(f"block_size_n values:     {sorted(bsn_vals)}")
-    print(f"")
+    print("")
 
     if n_combos >= args.min_combos:
         print(f"PASS: {n_combos} >= {args.min_combos} unique combinations")
