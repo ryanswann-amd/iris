@@ -34,6 +34,7 @@ import sys
 import time
 from pathlib import Path
 
+
 # ---------------------------------------------------------------------------
 # Message sizes: powers of 2 from 1KB to 1GB + midpoints
 # ---------------------------------------------------------------------------
@@ -45,12 +46,20 @@ def _build_message_sizes() -> list[int]:
         sizes.add(1 << exp)
     # Midpoints at ~1.5x each decade boundary
     midpoints = [
-        3 * 1024, 6 * 1024, 12 * 1024,
-        48 * 1024, 96 * 1024,
-        384 * 1024, 768 * 1024,
-        int(1.5 * 1024**2), 3 * 1024**2, 6 * 1024**2,
-        48 * 1024**2, 96 * 1024**2,
-        384 * 1024**2, 768 * 1024**2,
+        3 * 1024,
+        6 * 1024,
+        12 * 1024,
+        48 * 1024,
+        96 * 1024,
+        384 * 1024,
+        768 * 1024,
+        int(1.5 * 1024**2),
+        3 * 1024**2,
+        6 * 1024**2,
+        48 * 1024**2,
+        96 * 1024**2,
+        384 * 1024**2,
+        768 * 1024**2,
     ]
     sizes.update(midpoints)
     return sorted(sizes)
@@ -98,9 +107,9 @@ def _actual_bytes(M: int, N: int) -> int:
 
 
 def _fmt_bytes(n: int) -> str:
-    if n >= 1024 ** 3:
+    if n >= 1024**3:
         return f"{n / (1024**3):.1f} GB"
-    elif n >= 1024 ** 2:
+    elif n >= 1024**2:
         return f"{n / (1024**2):.1f} MB"
     elif n >= 1024:
         return f"{n / 1024:.1f} KB"
@@ -220,19 +229,19 @@ def run_worker(args):
             bw_gbps = (bus_bytes / 1e9) / (mean_ms * 1e-3) if mean_ms > 0 else 0.0
 
             if rank == 0:
-                results.append({
-                    "collective": collective,
-                    "num_gpus": world_size,
-                    "msg_bytes": msg_bytes,
-                    "latency_us_min": round(lat_min, 2),
-                    "latency_us_median": round(lat_median, 2),
-                    "latency_us_p99": round(lat_p99, 2),
-                    "bandwidth_GBps": round(bw_gbps, 2),
-                    "algorithm": ALGORITHMS.get(collective, "default"),
-                })
-                print(f"  {_fmt_bytes(msg_bytes):>10s} | "
-                      f"lat_med={lat_median:.1f}us | "
-                      f"bw={bw_gbps:.1f} GB/s")
+                results.append(
+                    {
+                        "collective": collective,
+                        "num_gpus": world_size,
+                        "msg_bytes": msg_bytes,
+                        "latency_us_min": round(lat_min, 2),
+                        "latency_us_median": round(lat_median, 2),
+                        "latency_us_p99": round(lat_p99, 2),
+                        "bandwidth_GBps": round(bw_gbps, 2),
+                        "algorithm": ALGORITHMS.get(collective, "default"),
+                    }
+                )
+                print(f"  {_fmt_bytes(msg_bytes):>10s} | lat_med={lat_median:.1f}us | bw={bw_gbps:.1f} GB/s")
 
         except Exception as e:
             if rank == 0:
@@ -242,10 +251,10 @@ def run_worker(args):
             except Exception:
                 pass
             # Clean up whatever was allocated
-            for name in ['inp', 'out', 'workspace']:
+            for name in ["inp", "out", "workspace"]:
                 if name in dir():
                     try:
-                        exec(f'del {name}')
+                        exec(f"del {name}")
                     except Exception:
                         pass
             gc.collect()
@@ -304,9 +313,9 @@ def run_driver(args):
                     print(f"\n[cached] {collective} {ngpu}GPU: {len(partial)} results")
                     continue
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Running {collective} with {ngpu} GPUs")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             env = os.environ.copy()
             env["PYTHONPATH"] = os.environ.get("PYTHONPATH", "")
@@ -316,13 +325,18 @@ def run_driver(args):
             env["NCCL_NTHREADS"] = "64"
 
             cmd = [
-                sys.executable, "-m", "torch.distributed.run",
+                sys.executable,
+                "-m",
+                "torch.distributed.run",
                 "--standalone",
-                "--nproc_per_node", str(ngpu),
+                "--nproc_per_node",
+                str(ngpu),
                 script_path,
                 "--worker",
-                "--collective", collective,
-                "--output", str(part_file),
+                "--collective",
+                collective,
+                "--output",
+                str(part_file),
             ]
 
             # Try up to 2 attempts
@@ -357,9 +371,14 @@ def run_driver(args):
 
     # Write CSV
     fieldnames = [
-        "collective", "num_gpus", "msg_bytes",
-        "latency_us_min", "latency_us_median", "latency_us_p99",
-        "bandwidth_GBps", "algorithm",
+        "collective",
+        "num_gpus",
+        "msg_bytes",
+        "latency_us_min",
+        "latency_us_median",
+        "latency_us_p99",
+        "bandwidth_GBps",
+        "algorithm",
     ]
     with open(final_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -374,9 +393,9 @@ def run_driver(args):
     # Generate summary
     _generate_summary(all_results, str(summary_md))
 
-    print(f"\n{'='*60}")
-    print(f"SWEEP COMPLETE")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("SWEEP COMPLETE")
+    print(f"{'=' * 60}")
     print(f"Total data points: {len(all_results)}")
     print(f"CSV: {final_csv}")
     print(f"JSON: {final_json}")
@@ -386,7 +405,7 @@ def run_driver(args):
     collectives = set(r["collective"] for r in all_results)
     gpu_counts = set(r["num_gpus"] for r in all_results)
     msg_sizes = set(r["msg_bytes"] for r in all_results)
-    print(f"\nCoverage:")
+    print("\nCoverage:")
     print(f"  Collectives: {sorted(collectives)}")
     print(f"  GPU counts: {sorted(gpu_counts)}")
     print(f"  Message sizes: {len(msg_sizes)} unique")
@@ -406,8 +425,8 @@ def _generate_summary(rows: list[dict], summary_path: str) -> None:
         "# CCL Sweep Results Summary",
         "",
         f"**Date**: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"**GPU**: MI300X",
-        f"**Dtype**: bfloat16",
+        "**GPU**: MI300X",
+        "**Dtype**: bfloat16",
         "",
         "## Coverage",
         "",
@@ -471,7 +490,7 @@ def _dry_run():
 
     total = len(COLLECTIVES) * len(GPU_COUNTS) * len(MSG_SIZES)
     print(f"\nTotal configurations: {total}")
-    print(f"Minimum required: 270")
+    print("Minimum required: 270")
     print(f"Coverage: {'PASS' if total >= 270 else 'FAIL'} ({total} >= 270)")
     print(f"\nDtype: {DTYPE_NAME}")
     print(f"Warmup: {N_WARMUP} iterations")
@@ -487,14 +506,10 @@ def _dry_run():
 def main():
     parser = argparse.ArgumentParser(description="CCL latency/bandwidth sweep")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--worker", action="store_true",
-                        help="Worker mode (launched via torchrun)")
-    parser.add_argument("--collective", type=str,
-                        choices=COLLECTIVES)
-    parser.add_argument("--output", type=str,
-                        help="Output JSON file (worker mode)")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory for results (driver mode)")
+    parser.add_argument("--worker", action="store_true", help="Worker mode (launched via torchrun)")
+    parser.add_argument("--collective", type=str, choices=COLLECTIVES)
+    parser.add_argument("--output", type=str, help="Output JSON file (worker mode)")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for results (driver mode)")
     args = parser.parse_args()
 
     if args.dry_run:

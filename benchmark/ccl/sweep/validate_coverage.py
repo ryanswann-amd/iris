@@ -25,16 +25,18 @@ def load_results(csv_path: str) -> list[dict]:
     with open(csv_path) as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows.append({
-                "collective": row["collective"],
-                "num_gpus": int(row["num_gpus"]),
-                "msg_bytes": int(row["msg_bytes"]),
-                "latency_us_min": float(row["latency_us_min"]),
-                "latency_us_median": float(row["latency_us_median"]),
-                "latency_us_p99": float(row["latency_us_p99"]),
-                "bandwidth_GBps": float(row["bandwidth_GBps"]),
-                "algorithm": row["algorithm"],
-            })
+            rows.append(
+                {
+                    "collective": row["collective"],
+                    "num_gpus": int(row["num_gpus"]),
+                    "msg_bytes": int(row["msg_bytes"]),
+                    "latency_us_min": float(row["latency_us_min"]),
+                    "latency_us_median": float(row["latency_us_median"]),
+                    "latency_us_p99": float(row["latency_us_p99"]),
+                    "bandwidth_GBps": float(row["bandwidth_GBps"]),
+                    "algorithm": row["algorithm"],
+                }
+            )
     return rows
 
 
@@ -47,9 +49,7 @@ def validate_coverage(rows: list[dict], min_configs: int) -> tuple[bool, list[st
     n_configs = len(configs)
 
     if n_configs < min_configs:
-        errors.append(
-            f"FAIL: Only {n_configs} unique configs, need >= {min_configs}"
-        )
+        errors.append(f"FAIL: Only {n_configs} unique configs, need >= {min_configs}")
     else:
         print(f"PASS: {n_configs} unique configs >= {min_configs}")
 
@@ -84,9 +84,7 @@ def validate_coverage(rows: list[dict], min_configs: int) -> tuple[bool, list[st
         coll_rows = [r for r in rows if r["collective"] == coll]
         coll_gpus = set(r["num_gpus"] for r in coll_rows)
         coll_sizes = set(r["msg_bytes"] for r in coll_rows)
-        print(f"  {coll}: {len(coll_rows)} configs, "
-              f"gpus={sorted(coll_gpus)}, "
-              f"sizes={len(coll_sizes)}")
+        print(f"  {coll}: {len(coll_rows)} configs, gpus={sorted(coll_gpus)}, sizes={len(coll_sizes)}")
 
     return len(errors) == 0, errors
 
@@ -103,23 +101,16 @@ def validate_bandwidth(rows: list[dict]) -> tuple[bool, list[str]]:
 
     zero_bw = [r for r in large_rows if r["bandwidth_GBps"] <= 0.0]
     if zero_bw:
-        errors.append(
-            f"FAIL: {len(zero_bw)} rows with msg_bytes >= 64KB have zero bandwidth"
-        )
+        errors.append(f"FAIL: {len(zero_bw)} rows with msg_bytes >= 64KB have zero bandwidth")
         for r in zero_bw[:5]:
-            errors.append(
-                f"  {r['collective']} gpus={r['num_gpus']} "
-                f"msg={r['msg_bytes']} bw={r['bandwidth_GBps']}"
-            )
+            errors.append(f"  {r['collective']} gpus={r['num_gpus']} msg={r['msg_bytes']} bw={r['bandwidth_GBps']}")
     else:
-        print(f"PASS: All {len(large_rows)} rows with msg_bytes >= 64KB "
-              f"have positive bandwidth")
+        print(f"PASS: All {len(large_rows)} rows with msg_bytes >= 64KB have positive bandwidth")
 
     # Sanity check: bandwidth should be <= 1000 GB/s (MI300X theoretical max ~800 GB/s per link)
     insane_bw = [r for r in large_rows if r["bandwidth_GBps"] > 1000]
     if insane_bw:
-        print(f"WARNING: {len(insane_bw)} rows have bandwidth > 1000 GB/s "
-              f"(may indicate measurement error)")
+        print(f"WARNING: {len(insane_bw)} rows have bandwidth > 1000 GB/s (may indicate measurement error)")
 
     return len(errors) == 0, errors
 
@@ -131,22 +122,16 @@ def validate_latency(rows: list[dict]) -> tuple[bool, list[str]]:
     for field_name in ["latency_us_min", "latency_us_median", "latency_us_p99"]:
         negative = [r for r in rows if r[field_name] <= 0]
         if negative:
-            errors.append(
-                f"FAIL: {len(negative)} rows have non-positive {field_name}"
-            )
+            errors.append(f"FAIL: {len(negative)} rows have non-positive {field_name}")
         else:
             print(f"PASS: All {field_name} values are positive")
 
     # Check ordering: min <= median <= p99
     ordering_violations = [
-        r for r in rows
-        if not (r["latency_us_min"] <= r["latency_us_median"] <= r["latency_us_p99"])
+        r for r in rows if not (r["latency_us_min"] <= r["latency_us_median"] <= r["latency_us_p99"])
     ]
     if ordering_violations:
-        errors.append(
-            f"FAIL: {len(ordering_violations)} rows violate "
-            f"min <= median <= p99 ordering"
-        )
+        errors.append(f"FAIL: {len(ordering_violations)} rows violate min <= median <= p99 ordering")
     else:
         print("PASS: All rows satisfy min <= median <= p99")
 
@@ -154,9 +139,7 @@ def validate_latency(rows: list[dict]) -> tuple[bool, list[str]]:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Validate CCL sweep results coverage and data quality"
-    )
+    parser = argparse.ArgumentParser(description="Validate CCL sweep results coverage and data quality")
     parser.add_argument(
         "--csv",
         type=str,
