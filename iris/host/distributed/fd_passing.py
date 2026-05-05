@@ -61,10 +61,19 @@ def recv_fd(sock: socket.socket, payload_size: int = 1) -> Tuple[int, bytes]:
     raise RuntimeError("No file descriptor received (missing SCM_RIGHTS)")
 
 
-def make_rank_sock_path(prefix: str, rank: int) -> str:
-    """Create a unique socket path for a rank."""
-    # Keep paths short (AF_UNIX has a small path limit)
-    return os.path.join("/tmp", f"{prefix}-{os.getpid()}-{rank}.sock")
+def make_rank_sock_path(prefix: str, rank: int, instance_id: int = 0) -> str:
+    """Create a unique socket path for a rank.
+
+    Args:
+        prefix: Socket path prefix.
+        rank: Rank of the current process.
+        instance_id: Per-process monotonic counter that disambiguates
+            repeated iris.iris() constructions within the same process.
+            Without this, a fast rank can unlink/rebind the socket while a
+            slow rank's previous fd_conns still reference the old path.
+    """
+    # Keep paths short (AF_UNIX has a small path limit ≈ 108 bytes)
+    return os.path.join("/tmp", f"{prefix}-{os.getpid()}-{rank}-{instance_id}.sock")
 
 
 def recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -212,9 +221,17 @@ def setup_fd_infrastructure(cur_rank: int, num_ranks: int):
 
     from iris.host.distributed.helpers import distributed_barrier
 
-    # Setup socket mesh for FD passing
+    # Setup socket mesh for FD passing.
+    # Use a per-process monotonic counter so that each iris.iris() construction
+    # gets a unique socket path.  Without this, a fast rank can unlink/rebind
+    # the socket at the shared path while a slow rank's old fd_conns still
+    # point at the previous listener, causing stale-connection hangs on the
+    # next setup_fd_mesh call.
+    setup_fd_infrastructure._instance_count = getattr(setup_fd_infrastructure, "_instance_count", 0) + 1
+    instance_id = setup_fd_infrastructure._instance_count
+
     prefix = "iris-dmabuf"
-    my_path = make_rank_sock_path(prefix, cur_rank)
+    my_path = make_rank_sock_path(prefix, cur_rank, instance_id)
 
     # Use the distributed Store (TCPStore/FileStore) for path exchange instead
     # of dist.all_gather_object or dist.all_gather, which inject NCCL

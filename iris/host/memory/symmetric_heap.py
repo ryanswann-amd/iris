@@ -92,6 +92,22 @@ class SymmetricHeap:
 
         self.refresh_peer_access()
 
+    def close_fd_conns(self):
+        """Close FD-passing sockets so they don't leak across iris instances.
+
+        When parametrized tests create/destroy iris.iris() repeatedly within the
+        same process group, lingering sockets on the old path can interfere with
+        the next ``setup_fd_mesh`` call (socket reuse race).  Closing them eagerly
+        prevents this.
+        """
+        if self.fd_conns is not None:
+            for peer, sock in self.fd_conns.items():
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            self.fd_conns = None
+
     def allocate(self, num_elements: int, dtype: torch.dtype, alignment: int = 1024) -> torch.Tensor:
         """
         Allocate a tensor on the symmetric heap.
