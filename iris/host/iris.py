@@ -153,8 +153,11 @@ class Iris:
     def __del__(self):
         """Cleanup resources on deletion."""
         try:
-            if hasattr(self, "heap") and hasattr(self.heap, "allocator"):
-                if hasattr(self.heap.allocator, "close"):
+            if hasattr(self, "heap"):
+                # Close FD-passing sockets before they leak to the next instance.
+                if hasattr(self.heap, "close_fd_conns"):
+                    self.heap.close_fd_conns()
+                if hasattr(self.heap, "allocator") and hasattr(self.heap.allocator, "close"):
                     self.heap.allocator.close()
         except Exception:
             pass  # Best effort cleanup in destructor (GC context)
