@@ -68,7 +68,7 @@ def main():
         "num_stages": args["num_stages"],
         "num_warps": args["num_warps"],
         "waves_per_eu": args["waves_per_eu"],
-        "all_reduce_distribution": 1,
+        "all_reduce_distribution": 0,
     }
     config = Config(**config_kwargs)
 

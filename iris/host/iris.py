@@ -1255,8 +1255,8 @@ class Iris:
                 >>> config = Config(all_reduce_variant="ring")
                 >>> ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
 
-                >>> # Two-shot variant with block distribution
-                >>> config = Config(all_reduce_variant="two_shot", all_reduce_distribution=1)
+                >>> # Two-shot variant with strided distribution
+                >>> config = Config(all_reduce_variant="two_shot", all_reduce_distribution=0)
                 >>> ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
 
                 >>> # Async operation (no barrier)
@@ -1302,7 +1302,7 @@ class Iris:
 
                 >>> # Custom configuration
                 >>> from iris.ccl import Config
-                >>> config = Config(reduce_scatter_variant="two_shot", all_reduce_distribution=1)
+                >>> config = Config(reduce_scatter_variant="two_shot", all_reduce_distribution=0)
                 >>> ctx.ccl.reduce_scatter(output_tensor, input_tensor, config=config)
             """
             from iris.ccl.reduce_scatter import reduce_scatter
