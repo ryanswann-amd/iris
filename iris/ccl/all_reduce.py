@@ -42,7 +42,7 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
             "Support for other operations will be added in a future release."
         )
     if config is None:
-        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=1)
+        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=0)
     if config.use_gluon:
         raise ValueError(
             "all_reduce does not support use_gluon=True. "
