@@ -34,7 +34,7 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
             "Support for other operations will be added in a future release."
         )
     if config is None:
-        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=1)
+        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=0)
     if config.use_gluon:
         raise ValueError(
             "reduce_scatter does not support use_gluon=True. "
