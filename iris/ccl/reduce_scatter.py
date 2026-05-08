@@ -17,10 +17,7 @@ from iris.ccl.triton.reduce_scatter import (
     launch as _triton_launch,
     capture_reduce_scatter_descriptor as _capture_descriptor,
 )
-from iris.ccl.triton._fused_launch_cache import (
-    fused_launch_enabled,
-    get_or_build_cache,
-)
+from iris.ccl.triton._fused_launch_cache import try_fused_fastpath
 
 
 def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_op=False, config=None):
@@ -44,37 +41,22 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
         heap_bases lookup, kwargs construction). Targets the top-2 launch
         sub-phases identified by K-786 v2.
     """
-    # ---- Fastpath: two_shot + fused_launch enabled --------------------
-    if (
-        config is not None
-        and (getattr(config, "fused_launch", False) or fused_launch_enabled())
-        and getattr(config, "reduce_scatter_variant", "two_shot") == "two_shot"
-        and group is None  # group != None case rarely benchmarked; falls back
-    ):
-        cache = get_or_build_cache(config)
-        shape = input_tensor.shape
-        key = ("reduce_scatter", shape[0], shape[1], input_tensor.dtype)
-        desc = cache.get(key)
-        if desc is not None:
-            desc.invoke(input_tensor, output_tensor)
-            if not async_op:
-                ctx.barrier()
-            return
-
-        # Cold path: full slow path AND descriptor capture.
-        _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config)
-        rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
-        cache[key] = _capture_descriptor(
-            output_tensor,
-            input_tensor,
-            ctx,
-            rank_in_group,
-            rank_global,
-            world_size,
-            rank_start,
-            rank_stride,
+    if try_fused_fastpath(
+        collective_name="reduce_scatter",
+        config=config,
+        input_tensor=input_tensor,
+        output_tensor=output_tensor,
+        ctx=ctx,
+        group=group,
+        async_op=async_op,
+        slow_path=lambda: _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config),
+        capture=lambda: _capture_descriptor(
+            output_tensor, input_tensor, ctx,
+            *extract_group_info(group, ctx),
             config,
-        )
+        ),
+        extra_guard=(config is not None and getattr(config, "reduce_scatter_variant", "two_shot") == "two_shot"),
+    ):
         return
 
     _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config)

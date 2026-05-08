@@ -10,7 +10,7 @@ import triton.language as tl
 import iris
 from iris.host.tracing.kernel_artifacts import iris_launch
 from ..utils import chiplet_transform_chunked
-from ._fused_launch_cache import _LaunchDescriptor
+from ._fused_launch_cache import make_descriptor
 
 
 @triton.jit()
@@ -189,49 +189,25 @@ def capture_all_to_all_descriptor(
     rank_stride,
     config,
 ):
-    """Capture a fused-launch descriptor for the all-to-all warm path.
+    """Capture a fused-launch descriptor for the all-to-all warm path (K-871).
 
-    K-871: Called from ``iris.ccl.all_to_all`` once per (M, total_N, dtype)
-    cell after the cold call has populated the Triton compile cache.
-    Records the resolved (kernel_fn, grid, args_after_io, kwargs) tuple
-    so subsequent calls bypass iris-side dispatch.
+    Thin wrapper over :func:`make_descriptor`. Distinct from all_gather only
+    in computing per-rank ``N = total_N // world_size``.
     """
     M, total_N = input_tensor.shape[:2]
     N = total_N // world_size
-
-    stride_in_m, stride_in_n = input_tensor.stride(0), input_tensor.stride(1)
-    stride_out_m, stride_out_n = output_tensor.stride(0), output_tensor.stride(1)
-
-    args_after_io = (
-        M,
-        N,
-        stride_in_m,
-        stride_in_n,
-        stride_out_m,
-        stride_out_n,
-        ctx.get_heap_bases(),
-        rank_in_group,
-        rank_global,
-        world_size,
-        rank_start,
-        rank_stride,
-        config.block_size_m,
-        config.block_size_n,
-        config.swizzle_size,
-        config.comm_sms,
-        config.num_xcds,
-        config.chunk_size,
-    )
-    kwargs = {
-        "num_stages": config.num_stages,
-        "num_warps": config.num_warps,
-        "waves_per_eu": config.waves_per_eu,
-    }
-    return _LaunchDescriptor(
+    return make_descriptor(
         kernel_fn=persistent_all_to_all,
-        grid=(config.comm_sms,),
-        args_after_io=args_after_io,
-        kwargs=kwargs,
+        config=config,
+        args_after_io=(
+            M, N,
+            input_tensor.stride(0), input_tensor.stride(1),
+            output_tensor.stride(0), output_tensor.stride(1),
+            ctx.get_heap_bases(),
+            rank_in_group, rank_global, world_size, rank_start, rank_stride,
+            config.block_size_m, config.block_size_n, config.swizzle_size,
+            config.comm_sms, config.num_xcds, config.chunk_size,
+        ),
     )
 
 
