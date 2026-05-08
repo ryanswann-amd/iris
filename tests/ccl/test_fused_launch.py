@@ -9,8 +9,6 @@ These tests run under torchrun (distributed pytest harness in
 ``tests/run_tests_distributed.py``).
 """
 
-import os
-
 import pytest
 import torch
 import torch.distributed as dist
@@ -242,7 +240,7 @@ def test_fused_launch_distinct_shapes_distinct_entries():
 
     config = Config(block_size_m=32, block_size_n=64, fused_launch=True)
 
-    for (M, N) in [(128, 64), (256, 64), (512, 64)]:
+    for M, N in [(128, 64), (256, 64), (512, 64)]:
         iris_in = shmem.zeros((M, N), dtype=dtype)
         iris_in.copy_(torch.full((M, N), float(rank + 1), dtype=dtype, device=f"cuda:{rank}"))
         iris_out = shmem.zeros((world_size * M, N), dtype=dtype)
