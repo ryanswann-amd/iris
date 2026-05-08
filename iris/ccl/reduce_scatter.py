@@ -7,7 +7,20 @@ Reduce-scatter collective operation — public API.
 Triton only (no gluon support).
 """
 
-from iris.ccl.utils import extract_group_info
+# Hoist imports out of the per-call hot path. These previously sat inside
+# ``reduce_scatter()`` and were re-resolved every iteration -- contributing
+# to the per-call Python wrapper overhead that K-786 v2 measured at
+# ~17.5us mean across non-AR-one_shot collectives.
+from iris.ccl.utils import extract_group_info, ReduceOp
+from iris.ccl.config import Config
+from iris.ccl.triton.reduce_scatter import (
+    launch as _triton_launch,
+    capture_reduce_scatter_descriptor as _capture_descriptor,
+)
+from iris.ccl.triton._fused_launch_cache import (
+    fused_launch_enabled,
+    get_or_build_cache,
+)
 
 
 def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_op=False, config=None):
@@ -22,20 +35,64 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
         group: ProcessGroup or None
         async_op: If True, skip trailing barrier
         config: Config with kernel parameters
-    """
-    from iris.ccl.config import Config
-    from iris.ccl.utils import ReduceOp
 
+    Notes:
+        K-871 fused-launch fastpath: when ``config.fused_launch=True``
+        (or env ``IRIS_CCL_FUSED_LAUNCH=1``) and variant is ``two_shot``
+        (the only supported variant), steady-state calls bypass iris-side
+        dispatch (op validation, extract_group_info, output-shape check,
+        heap_bases lookup, kwargs construction). Targets the top-2 launch
+        sub-phases identified by K-786 v2.
+    """
+    # ---- Fastpath: two_shot + fused_launch enabled --------------------
+    if (
+        config is not None
+        and (getattr(config, "fused_launch", False) or fused_launch_enabled())
+        and getattr(config, "reduce_scatter_variant", "two_shot") == "two_shot"
+        and group is None  # group != None case rarely benchmarked; falls back
+    ):
+        cache = get_or_build_cache(config)
+        shape = input_tensor.shape
+        key = ("reduce_scatter", shape[0], shape[1], input_tensor.dtype)
+        desc = cache.get(key)
+        if desc is not None:
+            desc.invoke(input_tensor, output_tensor)
+            if not async_op:
+                ctx.barrier()
+            return
+
+        # Cold path: full slow path AND descriptor capture.
+        _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config)
+        rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
+        cache[key] = _capture_descriptor(
+            output_tensor,
+            input_tensor,
+            ctx,
+            rank_in_group,
+            rank_global,
+            world_size,
+            rank_start,
+            rank_stride,
+            config,
+        )
+        return
+
+    _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config)
+
+
+def _slow_path_reduce_scatter(output_tensor, input_tensor, ctx, op, group, async_op, config):
+    """The original reduce_scatter implementation, factored out so the
+    fastpath stanza in ``reduce_scatter`` can stay tight."""
     if op is None:
         op = ReduceOp.SUM
-    if op != ReduceOp.SUM:
+    elif op != ReduceOp.SUM:
         raise ValueError(
             f"Only ReduceOp.SUM is currently supported, got {op}. "
             "Support for other operations will be added in a future release."
         )
     if config is None:
         config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=1)
-    if config.use_gluon:
+    elif config.use_gluon:
         raise ValueError(
             "reduce_scatter does not support use_gluon=True. "
             "Gluon implementation is not available for reduce_scatter. "
@@ -55,9 +112,7 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
             f"For reduce-scatter, output should have the same shape as input."
         )
 
-    from iris.ccl.triton.reduce_scatter import launch
-
-    launch(
+    _triton_launch(
         output_tensor,
         input_tensor,
         ctx,
