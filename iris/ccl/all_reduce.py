@@ -75,11 +75,7 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
 
         # Cold-path capture: only when user opted in AND variant is two_shot
         # (and the (M, N, dtype) cell was a miss above, or cache didn't exist).
-        if (
-            group is None
-            and config.fused_launch
-            and config.all_reduce_variant == "two_shot"
-        ):
+        if group is None and config.fused_launch and config.all_reduce_variant == "two_shot":
             ws = _slow_path(output_tensor, input_tensor, ctx, op, group, async_op, config, workspace)
             if cache is None:
                 cache = {}
@@ -136,10 +132,7 @@ def _slow_path(output_tensor, input_tensor, ctx, op, group, async_op, config, wo
 
     variant = config.all_reduce_variant.lower()
     if variant not in _VALID_AR_VARIANTS:
-        raise ValueError(
-            f"Invalid all_reduce_variant: {variant}. Must be one of: "
-            f"{', '.join(_VALID_AR_VARIANTS)}"
-        )
+        raise ValueError(f"Invalid all_reduce_variant: {variant}. Must be one of: {', '.join(_VALID_AR_VARIANTS)}")
 
     rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
 

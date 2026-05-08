@@ -84,15 +84,13 @@ def test_fused_launch_matches_reference(M, N, block_size_m, block_size_n):
         # First call populates the cache (cold/slow path).
         out_cold = _iris_all_reduce(shmem, M, N, dtype, rank, cfg)
         assert torch.equal(out_cold, ref), (
-            f"cold-path mismatch (M={M}, N={N}): "
-            f"max diff={(out_cold - ref).abs().max().item()}"
+            f"cold-path mismatch (M={M}, N={N}): max diff={(out_cold - ref).abs().max().item()}"
         )
 
         # Second call hits the cache (warm/fast path).
         out_warm = _iris_all_reduce(shmem, M, N, dtype, rank, cfg)
         assert torch.equal(out_warm, ref), (
-            f"warm-path mismatch (M={M}, N={N}): "
-            f"max diff={(out_warm - ref).abs().max().item()}"
+            f"warm-path mismatch (M={M}, N={N}): max diff={(out_warm - ref).abs().max().item()}"
         )
 
         # Cache should have exactly one entry for this (M, N, dtype).
@@ -240,6 +238,4 @@ def test_fused_launch_gated_off_for_non_two_shot_variant():
 def test_fused_launch_default_off_in_config():
     """The Config default must be fused_launch=False (opt-in only)."""
     cfg = Config()
-    assert cfg.fused_launch is False, (
-        "fused_launch must default to False so existing callers see no behavior change"
-    )
+    assert cfg.fused_launch is False, "fused_launch must default to False so existing callers see no behavior change"
