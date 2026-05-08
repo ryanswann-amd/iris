@@ -87,22 +87,14 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
 
         # Cold path: run the full slow path AND capture a descriptor for
         # subsequent warm-path calls.
-        ws = _slow_path_all_reduce(
-            output_tensor, input_tensor, ctx, op, group, async_op, config, workspace
-        )
-        cache[key] = _capture_two_shot_descriptor(
-            output_tensor, input_tensor, ctx, config, ctx.barrier
-        )
+        ws = _slow_path_all_reduce(output_tensor, input_tensor, ctx, op, group, async_op, config, workspace)
+        cache[key] = _capture_two_shot_descriptor(output_tensor, input_tensor, ctx, config, ctx.barrier)
         return ws
 
-    return _slow_path_all_reduce(
-        output_tensor, input_tensor, ctx, op, group, async_op, config, workspace
-    )
+    return _slow_path_all_reduce(output_tensor, input_tensor, ctx, op, group, async_op, config, workspace)
 
 
-def _slow_path_all_reduce(
-    output_tensor, input_tensor, ctx, op, group, async_op, config, workspace
-):
+def _slow_path_all_reduce(output_tensor, input_tensor, ctx, op, group, async_op, config, workspace):
     """The original (HEAD) all_reduce implementation, factored out so the
     fastpath stanza in ``all_reduce`` can stay tight."""
     if op is None:
@@ -125,8 +117,7 @@ def _slow_path_all_reduce(
     variant = config.all_reduce_variant.lower()
     if variant not in _VALID_AR_VARIANTS:
         raise ValueError(
-            f"Invalid all_reduce_variant: {variant}. Must be one of: "
-            f"{', '.join(sorted(_VALID_AR_VARIANTS))}"
+            f"Invalid all_reduce_variant: {variant}. Must be one of: {', '.join(sorted(_VALID_AR_VARIANTS))}"
         )
 
     rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
