@@ -649,6 +649,17 @@ def persistent_all_reduce_two_shot(
         base_ptr = input_ptr + input_offset
         out_ptr = output_ptr + output_offset
 
+        # Rotate the starting peer per workgroup so the unrolled
+        # `tl.static_range(1, world_size)` reduce/broadcast loop visits each
+        # remote peer in a different order on different WGs. With COMM_SMS=64
+        # and world_size=8 this produces all 8 starting offsets across the
+        # in-flight WGs, so the first iteration of the static_range hits a
+        # uniformly distributed remote peer across the WG cohort.
+        # Hoisted out of the masked/unmasked branches below (it was previously
+        # computed identically inside both `if is_full:` and `else:`).
+        start_rank_idx = pid % world_size
+        start_rank_global = rank_start + start_rank_idx * rank_stride
+
         # Fast path: NO MASKS (full tiles)
         # The masking is problem size dependent, and the compiler does not recognize it can have two paths
         # (one with masks and one without). Separate unmasked paths allow the compiler to generate
@@ -656,8 +667,6 @@ def persistent_all_reduce_two_shot(
         if is_full:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            start_rank_idx = pid % world_size
-            start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases).to(acc_dtype)
             for i in tl.static_range(1, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
@@ -679,8 +688,6 @@ def persistent_all_reduce_two_shot(
         else:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            start_rank_idx = pid % world_size
-            start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases, mask=mask).to(acc_dtype)
             for i in tl.static_range(1, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
