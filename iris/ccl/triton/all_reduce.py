@@ -15,6 +15,7 @@ import torch
 import iris
 from iris.host.tracing.kernel_artifacts import iris_launch
 from ..utils import chiplet_transform_chunked
+from ._fused_launch_cache import TwoShotDescriptor
 
 # Variant types
 VARIANT_ATOMIC = "atomic"
@@ -704,6 +705,65 @@ def persistent_all_reduce_two_shot(
                         mask=mask,
                         hint=(1, BLOCK_SIZE_N),
                     )
+
+
+def capture_two_shot_descriptor(output_tensor, input_tensor, ctx, config, ctx_barrier):
+    """Capture a fused-launch ``TwoShotDescriptor`` after a cold call.
+
+    Called from ``iris.ccl.all_reduce`` once per (M, N, dtype) cell to record
+    the resolved (kernel, grid, args, kwargs) tuple needed by the warm-path
+    replay. The cold call MUST have already happened so Triton's compile
+    cache is hot for this specialization.
+
+    All Python work that depends only on (config, group, ctx) is precomputed
+    here and stored as a single positional-args tuple; the warm path then
+    spends only attribute-load + Triton-call cost per iteration.
+    """
+    M, N = input_tensor.shape[:2]
+    stride_in_m = input_tensor.stride(0)
+    stride_in_n = input_tensor.stride(1)
+    stride_out_m = output_tensor.stride(0)
+    stride_out_n = output_tensor.stride(1)
+
+    rank_global = ctx.get_rank()
+    world_size = ctx.get_num_ranks()
+    rank_in_group = rank_global  # group=None case (gated upstream in iris.ccl.all_reduce)
+    rank_start = 0
+    rank_stride = 1
+
+    heap_bases = ctx.get_heap_bases()
+
+    # All positional args after (input_tensor, output_tensor) for the kernel.
+    args_after_io = (
+        M,
+        N,
+        stride_in_m,
+        stride_in_n,
+        stride_out_m,
+        stride_out_n,
+        heap_bases,
+        rank_in_group,
+        rank_global,
+        world_size,
+        rank_start,
+        rank_stride,
+        config.block_size_m,
+        config.block_size_n,
+        config.swizzle_size,
+        config.comm_sms,
+        config.num_xcds,
+        config.chunk_size,
+        config.all_reduce_distribution,
+    )
+    kwargs = {"num_warps": 8, "num_stages": 1, "waves_per_eu": 1}
+
+    return TwoShotDescriptor(
+        kernel_fn=persistent_all_reduce_two_shot,
+        grid=(config.comm_sms,),
+        args_after_io=args_after_io,
+        kwargs=kwargs,
+        ctx_barrier=ctx_barrier,
+    )
 
 
 def launch(
