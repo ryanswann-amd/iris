@@ -73,8 +73,18 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
         group=group,
     )
 
-    if workspace is not None:
-        workspace.prepared = False
+    # K-482 fix: do NOT invalidate workspace.prepared after every call. Doing so
+    # forces all_reduce_preamble() to re-run on the next call, which for
+    # one_shot/atomic/spinlock variants performs a host-side ctx.barrier() in
+    # every iteration. That hidden barrier dominated small-message latency
+    # (e.g. one_shot @ 1KB went 21µs -> 555µs on 8x MI300X with the bug).
+    #
+    # The launch() path already re-invokes the preamble whenever the variant,
+    # shape, or dtype changes (see needs_prepare in iris/ccl/triton/all_reduce.py),
+    # so leaving prepared=True after a successful launch is safe — the next
+    # call with identical metadata reuses workspace and skips the host barrier.
+    # If the caller explicitly wants a fresh preamble, they can call
+    # all_reduce_preamble() again or pass workspace=None.
 
     if not async_op:
         ctx.barrier()
