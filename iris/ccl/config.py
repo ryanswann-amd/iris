@@ -86,7 +86,9 @@ class Config:
     use_gluon: bool = False
     all_gather_variant: str = "persistent"
     all_reduce_variant: str = "two_shot"
-    all_reduce_distribution: int = 1
+    # Default to strided distribution (0).  K-685/K-782/K-796 showed that
+    # block distribution (1) can introduce systematic skew at small sizes.
+    all_reduce_distribution: int = 0
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
     reduce_scatter_variant: str = "two_shot"

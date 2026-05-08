@@ -1275,6 +1275,74 @@ class Iris:
                 workspace=workspace,
             )
 
+        def all_reduce_persistent_burst(
+            self,
+            output_tensor,
+            input_tensor,
+            num_iters,
+            config=None,
+            workspace=None,
+            group=None,
+            async_op=False,
+            use_barrier=True,
+        ):
+            """Persistent-kernel fast-path for two-shot all-reduce.
+
+            Runs ``num_iters`` reductions in a SINGLE Triton launch instead of
+            one launch per call.  See K-810 for motivation and benchmarks.
+
+            Set ``use_barrier=False`` only when the input tensor is constant
+            across iterations (microbenchmarks, latency sweeps) — that turns
+            off the per-iter cross-rank flag barrier and exposes the raw
+            launch-overhead reduction.
+            """
+            from iris.ccl.all_reduce_persistent import all_reduce_persistent_burst
+
+            return all_reduce_persistent_burst(
+                output_tensor,
+                input_tensor,
+                self._iris,
+                num_iters=num_iters,
+                config=config,
+                workspace=workspace,
+                group=group,
+                async_op=async_op,
+                use_barrier=use_barrier,
+            )
+
+        def all_reduce_persistent_doorbell_start(
+            self, output_tensor, input_tensor, max_iters, config=None, workspace=None, group=None
+        ):
+            """Start the doorbell-driven persistent all-reduce kernel.
+
+            Returns the workspace; pace the kernel with
+            :meth:`all_reduce_persistent_doorbell_step` and stop it with
+            :meth:`all_reduce_persistent_doorbell_stop`.
+            """
+            from iris.ccl.all_reduce_persistent import all_reduce_persistent_doorbell_start
+
+            return all_reduce_persistent_doorbell_start(
+                output_tensor,
+                input_tensor,
+                self._iris,
+                max_iters=max_iters,
+                config=config,
+                workspace=workspace,
+                group=group,
+            )
+
+        def all_reduce_persistent_doorbell_step(self, workspace):
+            """Trigger one iteration of the doorbell-driven persistent kernel."""
+            from iris.ccl.all_reduce_persistent import all_reduce_persistent_doorbell_step
+
+            return all_reduce_persistent_doorbell_step(workspace)
+
+        def all_reduce_persistent_doorbell_stop(self, workspace):
+            """Tell the doorbell-driven persistent kernel to exit and sync."""
+            from iris.ccl.all_reduce_persistent import all_reduce_persistent_doorbell_stop
+
+            return all_reduce_persistent_doorbell_stop(workspace, self._iris)
+
         def reduce_scatter(self, output_tensor, input_tensor, op=None, group=None, async_op=False, config=None):
             """
             Reduce-scatter collective operation.
