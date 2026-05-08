@@ -664,15 +664,23 @@ def persistent_all_reduce_two_shot(
             # vectorization hint so the back-end can emit b128 (16-byte) loads on the
             # cross-die path — the dominant cost at 16-64 MB sweet spot.
             acc = iris.load(
-                base_ptr, iris_rank, start_rank_global, heap_bases,
-                cache_modifier=".cg", hint=(1, BLOCK_SIZE_N),
+                base_ptr,
+                iris_rank,
+                start_rank_global,
+                heap_bases,
+                cache_modifier=".cg",
+                hint=(1, BLOCK_SIZE_N),
             ).to(acc_dtype)
             for i in tl.static_range(1, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
                 remote_rank = rank_start + remote_rank_idx * rank_stride
                 acc += iris.load(
-                    base_ptr, iris_rank, remote_rank, heap_bases,
-                    cache_modifier=".cg", hint=(1, BLOCK_SIZE_N),
+                    base_ptr,
+                    iris_rank,
+                    remote_rank,
+                    heap_bases,
+                    cache_modifier=".cg",
+                    hint=(1, BLOCK_SIZE_N),
                 ).to(acc_dtype)
 
             reduced = acc.to(output_ptr.type.element_ty)
@@ -693,15 +701,25 @@ def persistent_all_reduce_two_shot(
             start_rank_idx = pid % world_size
             start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(
-                base_ptr, iris_rank, start_rank_global, heap_bases,
-                mask=mask, cache_modifier=".cg", hint=(1, BLOCK_SIZE_N),
+                base_ptr,
+                iris_rank,
+                start_rank_global,
+                heap_bases,
+                mask=mask,
+                cache_modifier=".cg",
+                hint=(1, BLOCK_SIZE_N),
             ).to(acc_dtype)
             for i in tl.static_range(1, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
                 remote_rank = rank_start + remote_rank_idx * rank_stride
                 acc += iris.load(
-                    base_ptr, iris_rank, remote_rank, heap_bases,
-                    mask=mask, cache_modifier=".cg", hint=(1, BLOCK_SIZE_N),
+                    base_ptr,
+                    iris_rank,
+                    remote_rank,
+                    heap_bases,
+                    mask=mask,
+                    cache_modifier=".cg",
+                    hint=(1, BLOCK_SIZE_N),
                 ).to(acc_dtype)
 
             reduced = acc.to(output_ptr.type.element_ty)
