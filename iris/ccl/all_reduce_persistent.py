@@ -10,9 +10,7 @@ See :mod:`iris.ccl.triton.all_reduce_persistent` for design notes.
 from iris.ccl.utils import extract_group_info
 
 
-def all_reduce_persistent_preamble(
-    output_tensor, input_tensor, ctx, max_iters, config=None, workspace=None
-):
+def all_reduce_persistent_preamble(output_tensor, input_tensor, ctx, max_iters, config=None, workspace=None):
     """Allocate the doorbell / done / iter-barrier workspace.
 
     Args:
@@ -167,9 +165,7 @@ def all_reduce_persistent_doorbell_step(workspace):
 
     assert isinstance(workspace, PersistentAllReduceWorkspace)
     if workspace.next_iter >= workspace.max_iters:
-        raise RuntimeError(
-            f"persistent doorbell exhausted ({workspace.next_iter} == max_iters)"
-        )
+        raise RuntimeError(f"persistent doorbell exhausted ({workspace.next_iter} == max_iters)")
     i = workspace.next_iter
     # Always issue host-side writes on the device default stream — using a
     # NCCL-tagged or test-wrapped current stream can deadlock against the

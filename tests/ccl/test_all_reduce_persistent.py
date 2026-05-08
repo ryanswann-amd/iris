@@ -39,9 +39,7 @@ def test_all_reduce_persistent_burst(M, N, dtype, num_iters):
 
     shmem.barrier()
     config = Config(all_reduce_variant="two_shot", block_size_m=32, block_size_n=64)
-    workspace = shmem.ccl.all_reduce_persistent_burst(
-        iris_output, iris_input, num_iters=num_iters, config=config
-    )
+    workspace = shmem.ccl.all_reduce_persistent_burst(iris_output, iris_input, num_iters=num_iters, config=config)
     torch.cuda.synchronize()
 
     atol = 1e-3 if dtype == torch.float16 else 1e-5

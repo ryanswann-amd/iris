@@ -34,7 +34,7 @@ from iris.ccl import Config
 
 
 SIZES = [
-    ("1KB", 256),       # 256 fp32 = 1KB
+    ("1KB", 256),  # 256 fp32 = 1KB
     ("4KB", 1024),
     ("16KB", 4096),
     ("64KB", 16384),
@@ -140,9 +140,7 @@ def measure_one_size(ctx, label, n_elems, world_size, warmup, iters):
     ctx.barrier()
 
     # warmup persistent burst (compile)
-    ctx.ccl.all_reduce_persistent_burst(
-        iris_out, iris_in, num_iters=min(8, warmup), config=config, async_op=True
-    )
+    ctx.ccl.all_reduce_persistent_burst(iris_out, iris_in, num_iters=min(8, warmup), config=config, async_op=True)
     torch.cuda.synchronize()
 
     # warmup rccl
@@ -152,12 +150,8 @@ def measure_one_size(ctx, label, n_elems, world_size, warmup, iters):
 
     # ---- measurements --------------------------------------------------
     iris_baseline_us = time_iris_baseline(ctx, iris_out, iris_in, config, iters)
-    iris_burst_nobar_us = time_iris_persistent_burst(
-        ctx, iris_out, iris_in, config, iters, use_barrier=False
-    )
-    iris_burst_bar_us = time_iris_persistent_burst(
-        ctx, iris_out, iris_in, config, iters, use_barrier=True
-    )
+    iris_burst_nobar_us = time_iris_persistent_burst(ctx, iris_out, iris_in, config, iters, use_barrier=False)
+    iris_burst_bar_us = time_iris_persistent_burst(ctx, iris_out, iris_in, config, iters, use_barrier=True)
     rccl_us = time_rccl(rccl_out, rccl_in, iters)
 
     bytes_per_elem = dtype.itemsize if hasattr(dtype, "itemsize") else 4
@@ -172,15 +166,11 @@ def measure_one_size(ctx, label, n_elems, world_size, warmup, iters):
         # safe-for-general-use variant (per-iter barrier inside kernel)
         "iris_persistent_burst_with_barrier_us": iris_burst_bar_us,
         "rccl_us": rccl_us,
-        "burst_speedup_vs_baseline": (
-            iris_baseline_us / iris_burst_nobar_us if iris_burst_nobar_us > 0 else 0
-        ),
+        "burst_speedup_vs_baseline": (iris_baseline_us / iris_burst_nobar_us if iris_burst_nobar_us > 0 else 0),
         "burst_gap_us_vs_rccl": iris_burst_nobar_us - rccl_us,
         "baseline_gap_us_vs_rccl": iris_baseline_us - rccl_us,
         "burst_gap_closure_pct": (
-            100.0
-            * (iris_baseline_us - iris_burst_nobar_us)
-            / max(iris_baseline_us - rccl_us, 1e-6)
+            100.0 * (iris_baseline_us - iris_burst_nobar_us) / max(iris_baseline_us - rccl_us, 1e-6)
             if iris_baseline_us > rccl_us
             else 0.0
         ),

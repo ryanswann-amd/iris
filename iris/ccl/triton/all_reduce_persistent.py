@@ -116,11 +116,7 @@ def persistent_all_reduce_preamble(
     if workspace is None:
         workspace = PersistentAllReduceWorkspace()
 
-    needs_alloc = (
-        workspace.doorbell is None
-        or workspace.max_iters < max_iters
-        or workspace.comm_sms != config.comm_sms
-    )
+    needs_alloc = workspace.doorbell is None or workspace.max_iters < max_iters or workspace.comm_sms != config.comm_sms
 
     if needs_alloc:
         workspace.doorbell = ctx.zeros((max_iters,), dtype=torch.int32)
@@ -345,13 +341,9 @@ def _cross_rank_iter_barrier(
     # cmp==val==EXPECTED pattern: when local count < EXPECTED, the CAS is a
     # no-op load returning the current value.  Once it hits EXPECTED the swap
     # is a no-op write of the same value.
-    seen = tl.atomic_cas(
-        iter_barrier_ptr + iter_id, EXPECTED, EXPECTED, sem="acquire", scope="sys"
-    )
+    seen = tl.atomic_cas(iter_barrier_ptr + iter_id, EXPECTED, EXPECTED, sem="acquire", scope="sys")
     while seen != EXPECTED:
-        seen = tl.atomic_cas(
-            iter_barrier_ptr + iter_id, EXPECTED, EXPECTED, sem="acquire", scope="sys"
-        )
+        seen = tl.atomic_cas(iter_barrier_ptr + iter_id, EXPECTED, EXPECTED, sem="acquire", scope="sys")
 
 
 # ---------------------------------------------------------------------------
@@ -584,9 +576,7 @@ def launch_persistent_burst(
     if num_iters <= 0:
         raise ValueError(f"num_iters must be positive, got {num_iters}")
     if num_iters > workspace.max_iters:
-        raise ValueError(
-            f"num_iters={num_iters} exceeds workspace.max_iters={workspace.max_iters}"
-        )
+        raise ValueError(f"num_iters={num_iters} exceeds workspace.max_iters={workspace.max_iters}")
     M, N = input_tensor.shape[:2]
     stride_in_m, stride_in_n = input_tensor.stride(0), input_tensor.stride(1)
     stride_out_m, stride_out_n = output_tensor.stride(0), output_tensor.stride(1)
