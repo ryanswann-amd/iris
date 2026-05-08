@@ -11,22 +11,12 @@ showed that ~50 µs of every ``all_reduce`` call is host-side launch overhead
 (~18 µs Triton wrapper + ~20 µs MES dispatch + ~3 µs HIP submit + plumbing).
 RCCL's persistent-kernel model amortises most of that cost across iterations.
 
-This module prototypes the equivalent for iris by launching the two-shot
-all-reduce kernel **once** for a window of ``N`` iterations.  Two flavours are
-provided:
-
-1.  ``persistent_all_reduce_two_shot_burst`` — a single launch that performs
-    ``NUM_ITERS`` back-to-back reductions on the *same* input/output buffers
-    and uses a symmetric counter-based barrier between iterations.  This is
-    the natural microbench analogue to RCCL's persistent kernel: per-iter cost
-    becomes (kernel body + cross-rank flag barrier) with the host-side
-    launch envelope amortised across all iterations.
-
-2.  ``persistent_all_reduce_two_shot_doorbell`` — a single launch that polls a
-    per-iter symmetric doorbell, runs the two-shot body, then signals
-    completion via a per-iter "done" flag.  The host paces iterations by
-    writing the doorbell from CPU/GPU, which proves the doorbell-driven
-    long-lived kernel pattern from the ticket spec.
+This module prototypes the equivalent for iris with
+``persistent_all_reduce_two_shot_burst`` — a single launch that performs
+``NUM_ITERS`` back-to-back reductions on the *same* input/output buffers and
+uses a symmetric counter-based barrier between iterations.  Per-iter cost
+becomes (kernel body + cross-rank flag barrier) with the host-side launch
+envelope amortised across all iterations.
 
 Only the ``two_shot`` variant is exposed because K-685/K-782 showed it has
 the largest absolute launch_us gap vs RCCL.
@@ -61,36 +51,22 @@ class PersistentAllReduceWorkspace:
                             specialised for.
         dtype:              torch dtype used for the kernel body.
         max_iters:          number of iteration slots provisioned in the
-                            doorbell / done / iter-barrier arrays.
+                            ``iter_barrier`` array.
         comm_sms:           number of CTAs the persistent kernel was launched
                             with (used to size the per-iter barrier counter).
-        doorbell:           symmetric int32 array of shape (max_iters,) — host
-                            writes 1 to ``doorbell[i]`` to release iter ``i``
-                            (doorbell mode) or all ones up-front (burst mode).
-                            A negative sentinel (-1) signals shutdown.
-        done:               symmetric int32 array of shape (max_iters,) — the
-                            kernel writes 1 to ``done[i]`` after iter ``i``
-                            completes.  Polled by host in doorbell mode.
         iter_barrier:       symmetric int32 array of shape (max_iters,) — CTAs
                             atomically count themselves at the end of each iter
                             so the next iter can wait until all peer ranks
                             finished writing the previous result.
         prepared:           true once the workspace flags are zeroed and ready.
-        next_iter:          host-side next iteration slot to fire (doorbell mode).
-        persistent_stream:  CUDA stream the doorbell kernel was launched on.
-                            Held so we can ``wait_stream`` on it during shutdown.
     """
 
     shape: Tuple[int, int] = ()
     dtype: Optional[torch.dtype] = None
     max_iters: int = 0
     comm_sms: int = 0
-    doorbell: Optional[torch.Tensor] = None
-    done: Optional[torch.Tensor] = None
     iter_barrier: Optional[torch.Tensor] = None
     prepared: bool = False
-    next_iter: int = 0
-    persistent_stream: Optional["torch.cuda.Stream"] = None
 
 
 def persistent_all_reduce_preamble(
@@ -101,9 +77,9 @@ def persistent_all_reduce_preamble(
     max_iters: int,
     workspace: Optional[PersistentAllReduceWorkspace] = None,
 ):
-    """Allocate / re-zero the doorbell, done, and per-iter barrier flags.
+    """Allocate / re-zero the per-iter barrier flag array.
 
-    The flag arrays are placed in the iris symmetric heap so any rank can
+    The flag array is placed in the iris symmetric heap so any rank can
     atomically read or write any peer's slot via ``iris.atomic_add`` /
     ``iris.atomic_cas``.
     """
@@ -116,22 +92,21 @@ def persistent_all_reduce_preamble(
     if workspace is None:
         workspace = PersistentAllReduceWorkspace()
 
-    needs_alloc = workspace.doorbell is None or workspace.max_iters < max_iters or workspace.comm_sms != config.comm_sms
+    needs_alloc = (
+        workspace.iter_barrier is None
+        or workspace.max_iters < max_iters
+        or workspace.comm_sms != config.comm_sms
+    )
 
     if needs_alloc:
-        workspace.doorbell = ctx.zeros((max_iters,), dtype=torch.int32)
-        workspace.done = ctx.zeros((max_iters,), dtype=torch.int32)
         workspace.iter_barrier = ctx.zeros((max_iters,), dtype=torch.int32)
     else:
-        workspace.doorbell.zero_()
-        workspace.done.zero_()
         workspace.iter_barrier.zero_()
 
     workspace.shape = (M, N)
     workspace.dtype = dtype
     workspace.max_iters = max_iters
     workspace.comm_sms = config.comm_sms
-    workspace.next_iter = 0
 
     # Cross-rank barrier so all ranks see freshly-zeroed flags before the
     # persistent kernel is launched.
@@ -168,7 +143,7 @@ def _two_shot_iter_body(
     COMM_SMS: tl.constexpr,
     DISTRIBUTION: tl.constexpr,
 ):
-    """Inlined two-shot iteration body shared between burst and doorbell kernels.
+    """Inlined two-shot iteration body for the persistent burst kernel.
 
     Mirrors ``persistent_all_reduce_two_shot`` in ``all_reduce.py`` but
     annotates remote loads with ``cache_modifier='.cg'`` so successive
@@ -427,133 +402,6 @@ def persistent_all_reduce_two_shot_burst(
 
 
 # ---------------------------------------------------------------------------
-# Doorbell kernel: kernel polls per-iter doorbell, signals done after each iter.
-# ---------------------------------------------------------------------------
-
-
-@triton.jit
-def persistent_all_reduce_two_shot_doorbell(
-    input_ptr,
-    output_ptr,
-    doorbell_ptr,
-    done_ptr,
-    iter_barrier_ptr,
-    M,
-    N,
-    stride_in_m,
-    stride_in_n,
-    stride_out_m,
-    stride_out_n,
-    heap_bases,
-    group_rank: tl.constexpr,
-    iris_rank: tl.constexpr,
-    world_size: tl.constexpr,
-    rank_start: tl.constexpr,
-    rank_stride: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    COMM_SMS: tl.constexpr,
-    NUM_XCDS: tl.constexpr,  # parity
-    CHUNK_SIZE: tl.constexpr,
-    DISTRIBUTION: tl.constexpr,
-    MAX_ITERS: tl.constexpr,
-):
-    """Long-lived kernel that polls a doorbell flag for each iteration.
-
-    Wire protocol (per iteration ``i``):
-
-    1. Host writes ``doorbell[i] = 1`` (or any non-zero value) to release the
-       kernel.  A negative value signals shutdown — the kernel exits early.
-    2. The kernel runs the two-shot body, then a cross-rank counter barrier.
-    3. CTA ``pid == 0`` writes ``done[i] = 1`` (release).  Host polls.
-    """
-    pid = tl.program_id(0)
-    expected = COMM_SMS * world_size
-    # Triton has no `break` / early `return` — use a sticky flag and gate
-    # the remaining iterations behind it once the host writes the sentinel.
-    dead = False
-
-    for iter_id in range(MAX_ITERS):
-        # Poll the local doorbell.  Use a volatile load with cache_modifier
-        # ".cv" so each spin iteration bypasses the per-XCD L2 cache and
-        # fetches the doorbell line directly from HBM/system memory.  This
-        # is critical on MI300X where each XCD has its own L2 — a plain
-        # atomic_cas with sem="acquire" does not always invalidate stale
-        # L2 lines on remote XCDs, so half of the CTAs would never see the
-        # host's write (observed empirically: barrier counter stuck at ~23
-        # out of comm_sms*world_size).
-        v = 0
-        if not dead:
-            v = tl.load(doorbell_ptr + iter_id, cache_modifier=".cv", volatile=True)
-            while v == 0:
-                v = tl.load(doorbell_ptr + iter_id, cache_modifier=".cv", volatile=True)
-            if v < 0:
-                dead = True
-
-        if not dead:
-            _two_shot_iter_body(
-                input_ptr,
-                output_ptr,
-                M,
-                N,
-                stride_in_m,
-                stride_in_n,
-                stride_out_m,
-                stride_out_n,
-                heap_bases,
-                pid,
-                group_rank,
-                iris_rank,
-                world_size,
-                rank_start,
-                rank_stride,
-                BLOCK_SIZE_M,
-                BLOCK_SIZE_N,
-                GROUP_SIZE_M,
-                COMM_SMS,
-                DISTRIBUTION,
-            )
-
-            # Cross-rank barrier so done[i] only fires once every rank has
-            # finished writing its tiles for iter i.
-            #
-            # Each CTA increments iter_barrier[i] on every peer rank
-            # (release).  When local counter reaches comm_sms*world_size
-            # (acquire), every CTA on every rank has finished iter i.
-            for r in range(world_size):
-                target = rank_start + r * rank_stride
-                iris.atomic_add(
-                    iter_barrier_ptr + iter_id,
-                    1,
-                    iris_rank,
-                    target,
-                    heap_bases,
-                    sem="release",
-                    scope="sys",
-                )
-            local_count = tl.atomic_cas(
-                iter_barrier_ptr + iter_id,
-                expected,
-                expected,
-                sem="acquire",
-                scope="sys",
-            )
-            while local_count != expected:
-                local_count = tl.atomic_cas(
-                    iter_barrier_ptr + iter_id,
-                    expected,
-                    expected,
-                    sem="acquire",
-                    scope="sys",
-                )
-
-            # CTA 0 publishes completion (release) so the host can advance.
-            if pid == 0:
-                tl.atomic_xchg(done_ptr + iter_id, 1, sem="release", scope="sys")
-
-
-# ---------------------------------------------------------------------------
 # Host-side launch wrappers.
 # ---------------------------------------------------------------------------
 
@@ -619,86 +467,3 @@ def launch_persistent_burst(
     return workspace
 
 
-def launch_persistent_doorbell(
-    output_tensor,
-    input_tensor,
-    ctx,
-    rank_in_group,
-    rank_global,
-    world_size,
-    rank_start,
-    rank_stride,
-    config,
-    workspace: PersistentAllReduceWorkspace,
-):
-    """Launch the doorbell-polling persistent kernel.
-
-    Returns immediately — the kernel runs in the background until either the
-    host writes ``-1`` to one of the doorbell slots or all ``max_iters`` slots
-    have been processed.  Use :func:`shutdown_doorbell` to terminate cleanly.
-
-    The kernel is launched on a *dedicated* CUDA stream so that host-side
-    doorbell writes (which use the default torch stream) can run concurrently
-    with the polling kernel rather than queuing behind it.  Without this the
-    fill -> kernel ordering on a single stream would deadlock: the fill is
-    serialized after the still-running persistent kernel.
-    """
-    M, N = input_tensor.shape[:2]
-    stride_in_m, stride_in_n = input_tensor.stride(0), input_tensor.stride(1)
-    stride_out_m, stride_out_n = output_tensor.stride(0), output_tensor.stride(1)
-    heap_bases = ctx.get_heap_bases()
-
-    persistent_stream = torch.cuda.Stream()
-    workspace.persistent_stream = persistent_stream
-    # Make sure heap allocations / preamble writes that ran on the default
-    # stream are visible to the persistent kernel.
-    persistent_stream.wait_stream(torch.cuda.current_stream())
-
-    with torch.cuda.stream(persistent_stream):
-        iris_launch(
-            persistent_all_reduce_two_shot_doorbell,
-            (config.comm_sms,),
-            input_tensor,
-            output_tensor,
-            workspace.doorbell,
-            workspace.done,
-            workspace.iter_barrier,
-            M,
-            N,
-            stride_in_m,
-            stride_in_n,
-            stride_out_m,
-            stride_out_n,
-            heap_bases,
-            rank_in_group,
-            rank_global,
-            world_size,
-            rank_start,
-            rank_stride,
-            config.block_size_m,
-            config.block_size_n,
-            config.swizzle_size,
-            config.comm_sms,
-            config.num_xcds,
-            config.chunk_size,
-            config.all_reduce_distribution,
-            workspace.max_iters,
-            num_warps=8,
-            num_stages=1,
-            waves_per_eu=1,
-            algorithm="all_reduce",
-            rank=rank_global,
-            dtype=input_tensor.dtype,
-        )
-    return workspace
-
-
-def shutdown_doorbell(workspace: PersistentAllReduceWorkspace):
-    """Write the negative sentinel into the next free doorbell slot.
-
-    The persistent kernel observes the sentinel on its next ``acquire`` poll
-    and returns.  Caller is responsible for the trailing ``cuda.synchronize``.
-    """
-    if workspace.doorbell is None or workspace.next_iter >= workspace.max_iters:
-        return
-    workspace.doorbell[workspace.next_iter].fill_(-1)

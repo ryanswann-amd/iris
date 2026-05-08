@@ -58,24 +58,16 @@ def test_all_reduce_persistent_burst(M, N, dtype, num_iters):
         gc.collect()
 
 
-@pytest.mark.skip(
-    reason=(
-        "Doorbell mode is an experimental fast-path.  It works correctly when "
-        "the persistent kernel is the only kernel running on the device (see "
-        "scripts/repro_doorbell.py), but co-scheduling against NCCL collectives "
-        "and other torch tensor ops on the same GPU triggers an HSA-level "
-        "stream serialization deadlock on MI300X — the host-side fill kernel "
-        "queues but never executes while the persistent kernel is running.  "
-        "Burst mode (test_all_reduce_persistent_burst) provides the same "
-        "launch-overhead amortisation without this hazard and is the primary "
-        "fast-path used by the benchmark.  Tracked as a follow-up — fix is "
-        "likely a HIP-graph capture wrapping the doorbell write."
-    )
-)
 @pytest.mark.parametrize("M, N", [(128, 64), (1024, 256)])
-@pytest.mark.parametrize("num_iters", [4, 8])
-def test_all_reduce_persistent_doorbell(M, N, num_iters):
-    """Doorbell-driven persistent kernel: host paces N iterations, all match."""
+@pytest.mark.parametrize("num_iters", [4, 16])
+def test_all_reduce_persistent_burst_with_barrier(M, N, num_iters):
+    """Burst persistent kernel with the per-iter cross-rank barrier enabled.
+
+    This is the only configuration safe for general use (i.e. when peer
+    inputs may change between iterations).  The barrier-disabled fast-path
+    is exercised by ``test_all_reduce_persistent_burst`` above with
+    constant inputs.
+    """
     if not dist.is_initialized():
         pytest.skip("torch.distributed not initialized")
 
@@ -98,28 +90,24 @@ def test_all_reduce_persistent_doorbell(M, N, num_iters):
 
     shmem.barrier()
     config = Config(all_reduce_variant="two_shot", block_size_m=32, block_size_n=64)
-
-    # NB: we provision max_iters = num_iters + 1 so the kernel is still
-    # waiting on doorbell[num_iters] when we stop it, allowing the sentinel
-    # write to actually be observed.
-    workspace = shmem.ccl.all_reduce_persistent_doorbell_start(
-        iris_output, iris_input, max_iters=num_iters + 1, config=config
+    workspace = shmem.ccl.all_reduce_persistent_burst(
+        iris_output,
+        iris_input,
+        num_iters=num_iters,
+        config=config,
+        use_barrier=True,
     )
-    # Do NOT call shmem.barrier() here — that calls torch.cuda.synchronize()
-    # which would wait for the persistent kernel and deadlock.
+    torch.cuda.synchronize()
+
     try:
-        for _ in range(num_iters):
-            shmem.ccl.all_reduce_persistent_doorbell_step(workspace)
-        # After the last step's done-signal, the kernel's per-iter cross-rank
-        # barrier guarantees iris_output is the fully-reduced result on every
-        # rank.  We can read it directly.
         atol = 1e-5
         max_diff = torch.abs(iris_output - pytorch_output).max().item()
         assert torch.allclose(iris_output, pytorch_output, atol=atol), (
-            f"Max diff {max_diff} exceeds tol {atol} on rank {rank} (M={M}, N={N})"
+            f"Max diff {max_diff} exceeds tol {atol} on rank {rank} "
+            f"(M={M}, N={N}, num_iters={num_iters})"
         )
+        assert workspace.prepared
     finally:
-        shmem.ccl.all_reduce_persistent_doorbell_stop(workspace)
         shmem.barrier()
         del shmem
         gc.collect()

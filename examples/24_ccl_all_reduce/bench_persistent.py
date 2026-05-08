@@ -5,16 +5,26 @@
 """K-810 phase-decomposition benchmark.
 
 Compares per-iter latency of:
-    * iris baseline two-shot all-reduce  (one launch per call)
-    * iris persistent burst two-shot     (one launch for ``iters`` calls)
-    * iris persistent doorbell two-shot  (one launch + per-iter doorbell)
-    * RCCL all-reduce                    (torch.distributed)
+    * iris baseline two-shot all-reduce              (one launch per call)
+    * iris persistent burst two-shot, no barrier     (one launch for ``iters``
+                                                      calls; CONSTANT-INPUT
+                                                      MICROBENCH ONLY)
+    * iris persistent burst two-shot, with barrier   (correct general-purpose
+                                                      configuration — pays a
+                                                      per-iter cross-rank
+                                                      counter barrier)
+    * RCCL all-reduce                                (torch.distributed)
 
-across several payload sizes and reports launch_us reduction + small-message
-latency closure.  Mirrors the K-782 harness contract:
+across several payload sizes.  Mirrors the K-782 harness contract:
     * 200 warmup iters
     * 1000 timed iters
     * outputs JSON to ``output/persistent_bench_ws<W>_<RUN>.json``
+
+The ``no-barrier`` variant exposes the raw launch-overhead amortisation but is
+ONLY correct when the peer inputs are constant across iterations (this
+benchmark fills the input once and reuses it).  Production callers should use
+the with-barrier variant; both numbers are reported so the trade-off is
+explicit.
 
 Run with:
     torchrun --nproc_per_node=<W> --standalone bench_persistent.py \
@@ -89,16 +99,6 @@ def time_iris_persistent_burst(ctx, output, input, config, iters, use_barrier):
     return (t1 - t0) / iters
 
 
-def time_iris_persistent_doorbell(ctx, output, input, config, iters):
-    """Doorbell-paced persistent kernel — DISABLED in this benchmark.
-
-    See ``tests/ccl/test_all_reduce_persistent.py::test_all_reduce_persistent_doorbell``
-    for the hazard description.  Returns NaN so downstream consumers can tell
-    the cell wasn't measured.
-    """
-    return float("nan")
-
-
 def time_rccl(output, input, iters):
     dist.barrier()
     torch.cuda.synchronize()
@@ -161,16 +161,25 @@ def measure_one_size(ctx, label, n_elems, world_size, warmup, iters):
         "bytes": n_elems * bytes_per_elem,
         "world_size": world_size,
         "iris_baseline_us": iris_baseline_us,
-        # apples-to-apples vs baseline (both skip per-iter cross-rank barrier)
-        "iris_persistent_burst_us": iris_burst_nobar_us,
-        # safe-for-general-use variant (per-iter barrier inside kernel)
+        # CONSTANT-INPUT MICROBENCH ONLY — exposes the raw launch-overhead
+        # amortisation by skipping the per-iter cross-rank barrier.  Not
+        # safe when peer inputs change between iters.
+        "iris_persistent_burst_no_barrier_us": iris_burst_nobar_us,
+        # General-purpose configuration — per-iter cross-rank barrier inside
+        # the kernel.  Use this number to compare against RCCL for the
+        # "shippable" persistent fast-path.
         "iris_persistent_burst_with_barrier_us": iris_burst_bar_us,
         "rccl_us": rccl_us,
-        "burst_speedup_vs_baseline": (iris_baseline_us / iris_burst_nobar_us if iris_burst_nobar_us > 0 else 0),
-        "burst_gap_us_vs_rccl": iris_burst_nobar_us - rccl_us,
+        # Headline speedup uses the with-barrier (general-purpose) variant.
+        "burst_speedup_vs_baseline": (iris_baseline_us / iris_burst_bar_us if iris_burst_bar_us > 0 else 0),
+        # Microbench-only speedup, included for completeness.
+        "burst_no_barrier_speedup_vs_baseline": (
+            iris_baseline_us / iris_burst_nobar_us if iris_burst_nobar_us > 0 else 0
+        ),
+        "burst_gap_us_vs_rccl": iris_burst_bar_us - rccl_us,
         "baseline_gap_us_vs_rccl": iris_baseline_us - rccl_us,
         "burst_gap_closure_pct": (
-            100.0 * (iris_baseline_us - iris_burst_nobar_us) / max(iris_baseline_us - rccl_us, 1e-6)
+            100.0 * (iris_baseline_us - iris_burst_bar_us) / max(iris_baseline_us - rccl_us, 1e-6)
             if iris_baseline_us > rccl_us
             else 0.0
         ),

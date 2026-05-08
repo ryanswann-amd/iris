@@ -11,7 +11,7 @@ from iris.ccl.utils import extract_group_info
 
 
 def all_reduce_persistent_preamble(output_tensor, input_tensor, ctx, max_iters, config=None, workspace=None):
-    """Allocate the doorbell / done / iter-barrier workspace.
+    """Allocate the iter-barrier workspace for the persistent burst kernel.
 
     Args:
         output_tensor:  Symmetric output tensor (M, N) — will receive the sum.
@@ -74,10 +74,15 @@ def all_reduce_persistent_burst(
         group:          Optional process group.
         async_op:       If True, skip the trailing ``ctx.barrier()``.
         use_barrier:    If True (default), insert a counter-based cross-rank
-                        barrier between iterations.  Disable ONLY if the
-                        input is constant across iterations (eg microbench
-                        sweep) — otherwise iter K+1 may see iter K's
-                        partially-written tiles on peer ranks.
+                        barrier between iterations.  This is the only safe
+                        setting for general use — the barrier guarantees
+                        iter K+1 only starts reading peer outputs after every
+                        rank has finished writing iter K.  Disable ONLY if
+                        the input is provably constant across iterations
+                        (e.g. a latency microbenchmark that reuses the same
+                        input buffer); the resulting numbers expose the raw
+                        launch-overhead reduction but are not safe when peer
+                        inputs change between iters.
 
     Returns:
         The persistent workspace (reusable across calls with identical
@@ -116,87 +121,3 @@ def all_reduce_persistent_burst(
     if not async_op:
         ctx.barrier()
     return workspace
-
-
-def all_reduce_persistent_doorbell_start(
-    output_tensor, input_tensor, ctx, max_iters, config=None, workspace=None, group=None
-):
-    """Launch the doorbell-driven persistent kernel.
-
-    Returns *immediately* — the kernel keeps running in the background.
-    Drive it with :func:`all_reduce_persistent_doorbell_step` and shut it
-    down with :func:`all_reduce_persistent_doorbell_stop`.
-    """
-    from iris.ccl.config import Config
-    from iris.ccl.triton.all_reduce_persistent import launch_persistent_doorbell
-
-    if config is None:
-        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=0)
-
-    rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
-    workspace = all_reduce_persistent_preamble(
-        output_tensor, input_tensor, ctx, max_iters=max_iters, config=config, workspace=workspace
-    )
-    return launch_persistent_doorbell(
-        output_tensor,
-        input_tensor,
-        ctx,
-        rank_in_group,
-        rank_global,
-        world_size,
-        rank_start,
-        rank_stride,
-        config,
-        workspace,
-    )
-
-
-def all_reduce_persistent_doorbell_step(workspace):
-    """Trigger one doorbell-driven iteration and wait for completion.
-
-    Writes ``1`` into the next doorbell slot (releasing the kernel for one
-    iter) and busy-waits on the corresponding ``done`` slot.
-
-    Returns the iteration index that was just consumed.
-    """
-    import torch
-
-    from iris.ccl.triton.all_reduce_persistent import PersistentAllReduceWorkspace
-
-    assert isinstance(workspace, PersistentAllReduceWorkspace)
-    if workspace.next_iter >= workspace.max_iters:
-        raise RuntimeError(f"persistent doorbell exhausted ({workspace.next_iter} == max_iters)")
-    i = workspace.next_iter
-    # Always issue host-side writes on the device default stream — using a
-    # NCCL-tagged or test-wrapped current stream can deadlock against the
-    # persistent kernel's tight polling loop on AMD hardware (observed
-    # empirically: fill_ never completes when there's a concurrent .cv-load
-    # spin from the persistent kernel and NCCL had previously bound a
-    # different stream).
-    default = torch.cuda.default_stream()
-    with torch.cuda.stream(default):
-        workspace.doorbell[i].fill_(1)
-        # Spin on the done slot.  ``.item()`` forces a host-side read each
-        # loop and only synchronizes the current (default) stream — it does
-        # NOT wait on the persistent stream.
-        done = workspace.done
-        while int(done[i].item()) != 1:
-            pass
-    workspace.next_iter = i + 1
-    return i
-
-
-def all_reduce_persistent_doorbell_stop(workspace, ctx):
-    """Tell the persistent kernel to exit and join the launch."""
-    import torch
-
-    from iris.ccl.triton.all_reduce_persistent import shutdown_doorbell
-
-    shutdown_doorbell(workspace)
-    # Make sure the sentinel write has hit the device, then wait for the
-    # persistent kernel's stream to drain.
-    torch.cuda.current_stream().synchronize()
-    if workspace.persistent_stream is not None:
-        workspace.persistent_stream.synchronize()
-        workspace.persistent_stream = None
-    ctx.barrier()
