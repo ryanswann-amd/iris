@@ -13,6 +13,17 @@ from iris.host.tracing.kernel_artifacts import iris_launch
 from ..utils import chiplet_transform_chunked
 
 
+# Number of parallel reduction accumulators used inside the per-tile remote-load
+# loop. Splitting the single `acc` chain into N independent chains breaks the
+# serial `flat_load -> s_waitcnt vmcnt(0) -> v_add_f32 acc, acc, v` dependency
+# the original kernel produced and lets the AMD backend issue all `flat_load`s
+# before any wait, then drain them with a single trailing `s_waitcnt`. This is
+# the K-630 RS sync-bucket fix (R-RS-WAITCNT-FUSION) — same shape as K-370 /
+# K-371 propose for all_gather / all_to_all RC-2'. 4 chains is chosen to match
+# the typical world_size=8 single-node MI300X configuration (depth-2 per chain).
+_NUM_PARALLEL_ACC: tl.constexpr = 4
+
+
 @triton.jit()
 def persistent_reduce_scatter_two_shot(
     input_ptr,
@@ -99,18 +110,51 @@ def persistent_reduce_scatter_two_shot(
         base_ptr = input_ptr + input_offset
         out_ptr = output_ptr + output_offset
 
+        # Per-PID rotation (already applied — K-630 verified per-link is balanced).
+        start_rank_idx = pid % world_size
+
         # Fast path: NO MASKS (full tiles)
         # The masking is problem size dependent, and the compiler does not recognize it can have two paths
         # (one with masks and one without). Separate unmasked paths allow the compiler to generate
         # more efficient vectorized instructions.
         if is_full:
-            start_rank_idx = pid % world_size
-            start_rank_global = rank_start + start_rank_idx * rank_stride
-            acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases, hint=(1, BLOCK_SIZE_N)).to(acc_dtype)
-            for i in tl.static_range(1, world_size):
+            # K-642 / R-RS-WAITCNT-FUSION: split the single accumulator into 4
+            # independent chains so the AMD backend can issue all world_size
+            # `flat_load` instructions before any `s_waitcnt`, instead of
+            # serialising them as `flat_load -> s_waitcnt -> v_add` per peer.
+            # `cache_modifier=".cg"` on remote loads bypasses the L1 (project
+            # rule for iris CCL kernels — remote data is single-use, L1 caching
+            # only adds eviction pressure).
+            acc0 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc1 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc2 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc3 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+
+            for i in tl.static_range(0, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
                 remote_rank = rank_start + remote_rank_idx * rank_stride
-                acc += iris.load(base_ptr, iris_rank, remote_rank, heap_bases, hint=(1, BLOCK_SIZE_N)).to(acc_dtype)
+                v = iris.load(
+                    base_ptr,
+                    iris_rank,
+                    remote_rank,
+                    heap_bases,
+                    hint=(1, BLOCK_SIZE_N),
+                    cache_modifier=".cg",
+                ).to(acc_dtype)
+                # Distribute across 4 parallel chains (constexpr branch — i is
+                # constexpr from tl.static_range, so this is selected at compile
+                # time without runtime divergence).
+                if i % 4 == 0:
+                    acc0 += v
+                elif i % 4 == 1:
+                    acc1 += v
+                elif i % 4 == 2:
+                    acc2 += v
+                else:
+                    acc3 += v
+
+            # Tree fan-in (depth = log2(4) = 2) instead of linear chain.
+            acc = (acc0 + acc1) + (acc2 + acc3)
 
             reduced = acc.to(output_ptr.type.element_ty)
 
@@ -122,17 +166,33 @@ def persistent_reduce_scatter_two_shot(
         else:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            start_rank_idx = pid % world_size
-            start_rank_global = rank_start + start_rank_idx * rank_stride
-            acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases, mask=mask, hint=(1, BLOCK_SIZE_N)).to(
-                acc_dtype
-            )
-            for i in tl.static_range(1, world_size):
+            acc0 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc1 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc2 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+            acc3 = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), acc_dtype)
+
+            for i in tl.static_range(0, world_size):
                 remote_rank_idx = (start_rank_idx + i) % world_size
                 remote_rank = rank_start + remote_rank_idx * rank_stride
-                acc += iris.load(base_ptr, iris_rank, remote_rank, heap_bases, mask=mask, hint=(1, BLOCK_SIZE_N)).to(
-                    acc_dtype
-                )
+                v = iris.load(
+                    base_ptr,
+                    iris_rank,
+                    remote_rank,
+                    heap_bases,
+                    mask=mask,
+                    hint=(1, BLOCK_SIZE_N),
+                    cache_modifier=".cg",
+                ).to(acc_dtype)
+                if i % 4 == 0:
+                    acc0 += v
+                elif i % 4 == 1:
+                    acc1 += v
+                elif i % 4 == 2:
+                    acc2 += v
+                else:
+                    acc3 += v
+
+            acc = (acc0 + acc1) + (acc2 + acc3)
 
             reduced = acc.to(output_ptr.type.element_ty)
 

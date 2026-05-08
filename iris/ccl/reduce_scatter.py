@@ -70,4 +70,9 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
     )
 
     if not async_op:
-        ctx.barrier()
+        # K-642 / K-402: replace host-side gloo TCP barrier (hundreds of us
+        # per call, dominant in the iris vs RCCL gap at ≤256 MB per K-630)
+        # with on-GPU device_barrier (atomic_cas spin, ~10–50 us). This is
+        # the same swap applied to all_reduce / all_gather / all_to_all by
+        # K-390 / K-402; reduce_scatter completes the set.
+        ctx.device_barrier(group=group)
