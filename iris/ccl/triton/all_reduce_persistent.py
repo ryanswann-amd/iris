@@ -93,9 +93,7 @@ def persistent_all_reduce_preamble(
         workspace = PersistentAllReduceWorkspace()
 
     needs_alloc = (
-        workspace.iter_barrier is None
-        or workspace.max_iters < max_iters
-        or workspace.comm_sms != config.comm_sms
+        workspace.iter_barrier is None or workspace.max_iters < max_iters or workspace.comm_sms != config.comm_sms
     )
 
     if needs_alloc:
@@ -465,5 +463,3 @@ def launch_persistent_burst(
         dtype=input_tensor.dtype,
     )
     return workspace
-
-

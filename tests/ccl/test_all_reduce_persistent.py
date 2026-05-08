@@ -103,8 +103,7 @@ def test_all_reduce_persistent_burst_with_barrier(M, N, num_iters):
         atol = 1e-5
         max_diff = torch.abs(iris_output - pytorch_output).max().item()
         assert torch.allclose(iris_output, pytorch_output, atol=atol), (
-            f"Max diff {max_diff} exceeds tol {atol} on rank {rank} "
-            f"(M={M}, N={N}, num_iters={num_iters})"
+            f"Max diff {max_diff} exceeds tol {atol} on rank {rank} (M={M}, N={N}, num_iters={num_iters})"
         )
         assert workspace.prepared
     finally:
