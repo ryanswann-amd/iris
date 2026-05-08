@@ -276,9 +276,7 @@ def test_all_reduce_atomic_does_not_use_fastpath():
     s = launch_cache.get_stats()
     assert s["hits"] == 0, f"atomic variant must not use fastpath cache: {s}"
     # Either no cache attribute was ever attached, or it stayed empty.
-    assert getattr(cfg, "_iris_launch_cache", None) in (None, {}), (
-        "atomic variant must not populate cache"
-    )
+    assert getattr(cfg, "_iris_launch_cache", None) in (None, {}), "atomic variant must not populate cache"
 
     shmem.barrier()
     del shmem
