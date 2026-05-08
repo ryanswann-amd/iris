@@ -41,6 +41,23 @@ def persistent_all_gather(
     and concatenate all input tensors along dimension 0 (rows), matching
     torch.distributed.all_gather_into_tensor behavior.
 
+    Two correctness/perf fixes vs the original kernel:
+
+    1. **int64 output offsets** — the original `rm_output * stride_out_m`
+       evaluated as int32 and overflowed at >=1 GB per-rank bf16
+       (last written byte offset = (W-1)*M_per_rank*stride ≈ 7*2^29 ~ 2^32),
+       wrapping negative and SIGABRTing on `iris.store()` with
+       hipErrorIllegalAddress. Cast `rm_output`/`rn` to int64 before the
+       multiplication. Sibling of the K-195 A2A int32 overflow fix.
+
+    2. **Per-PID rank-loop rotation** — the original iterated destination
+       ranks `i = 0..world_size-1` in the same order on every PID, so at any
+       wall-clock instant ALL PIDs were pushing into the same outgoing xGMI
+       link first. We rotate the iteration order by `pid + group_rank` so
+       distinct PIDs hit distinct destinations first; at any instant the
+       COMM_SMS PIDs are spread across all 7 peer links rather than queued
+       behind one. K-387 methodology adapted to all_gather.
+
     Args:
         input_ptr: Pointer to input tensor (local rank's data to send) of shape (M, N)
         output_ptr: Pointer to output tensor (will receive from all ranks) of shape (world_size * M, N)
@@ -64,6 +81,13 @@ def persistent_all_gather(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
     tl.assume(total_tiles > 0)
+
+    # Per-PID rotation offset: distinct PIDs start the destination-rank loop
+    # at distinct ranks so the 7 outgoing peer links are exercised
+    # simultaneously rather than serially. Local destination (== group_rank)
+    # is still handled with tl.store; only the order changes.
+    rotation_base = pid + group_rank
+
     for tile_id in range(pid, total_tiles, COMM_SMS):
         num_pid_in_group = GROUP_SIZE_M * num_pid_n
         group_id = tile_id // num_pid_in_group
@@ -101,26 +125,28 @@ def persistent_all_gather(
         # Load local input data once for this tile
         data = tl.load(input_ptr_source, mask=input_mask, other=0.0)
 
-        # Send local shard data to all destination ranks
-        # Each rank's input goes to output[group_rank * M : (group_rank + 1) * M, :] on all ranks
-        for i in tl.static_range(world_size):
+        # int64-safe global output indices (survives 1 GB+ heaps where
+        # output stride > 2^32 bytes).
+        rm_output = (rm_input + group_rank * M).to(tl.int64)
+        rn_64 = rn.to(tl.int64)
+
+        # Output mask: only write where input was valid
+        output_mask = (rm_output[:, None] < (group_rank + 1) * M) & (rn_64[None, :] < N)
+        combined_mask = input_mask & output_mask
+
+        # int64 output offset
+        output_base_m = rm_output[:, None] * tl.full((), stride_out_m, tl.int64)
+        output_base_n = rn_64[None, :] * tl.full((), stride_out_n, tl.int64)
+        output_offset = output_base_m + output_base_n
+        output_ptr_target = output_ptr + output_offset
+        output_ptr_target = tl.multiple_of(output_ptr_target, (BLOCK_SIZE_M, BLOCK_SIZE_N))
+
+        # Send local shard data to all destination ranks. Per-PID rotated
+        # iteration order spreads instantaneous traffic across all 7 peer links.
+        # Each rank's input goes to output[group_rank * M : (group_rank + 1) * M, :] on all ranks.
+        for ii in tl.static_range(world_size):
+            i = (rotation_base + ii) % world_size
             target_rank = rank_start + i * rank_stride
-
-            # Compute global output row indices: offset by group_rank * M
-            rm_output = rm_input + group_rank * M
-
-            # Output mask: only write where input was valid
-            output_mask = (rm_output[:, None] < (group_rank + 1) * M) & (rn[None, :] < N)
-
-            # Combine masks: must be valid in both input and output
-            combined_mask = input_mask & output_mask
-
-            # Compute output offset
-            output_base_m = rm_output[:, None] * stride_out_m
-            output_base_n = rn[None, :] * stride_out_n
-            output_offset = output_base_m + output_base_n
-            output_ptr_target = output_ptr + output_offset
-            output_ptr_target = tl.multiple_of(output_ptr_target, (BLOCK_SIZE_M, BLOCK_SIZE_N))
 
             if i == group_rank:
                 # Local destination (i == group_rank): use direct store
@@ -167,6 +193,11 @@ def persistent_all_gather_partitioned(
 
     Each PID is assigned to work on a specific destination rank, and multiple PIDs
     partition the tiles for that rank. This avoids the inner loop over world_size.
+
+    The dest-rank partitioning already statically balances per-link traffic
+    (each destination rank has its own dedicated PID slice), so no rotation
+    is needed. The int64 fix for >=1 GB transfers is applied in the same
+    place as in `persistent_all_gather`.
 
     Work distribution:
     - PIDs are partitioned across destination ranks
@@ -244,18 +275,20 @@ def persistent_all_gather_partitioned(
         # Load local input data once for this tile
         data = tl.load(input_ptr_source, mask=input_mask, other=0.0)
 
-        # Compute global output row indices: offset by group_rank * M
-        rm_output = rm_input + group_rank * M
+        # int64-safe global output indices (survives 1 GB+ heaps where
+        # output stride > 2^32 bytes).
+        rm_output = (rm_input + group_rank * M).to(tl.int64)
+        rn_64 = rn.to(tl.int64)
 
         # Output mask: only write where input was valid
-        output_mask = (rm_output[:, None] < (group_rank + 1) * M) & (rn[None, :] < N)
+        output_mask = (rm_output[:, None] < (group_rank + 1) * M) & (rn_64[None, :] < N)
 
         # Combine masks: must be valid in both input and output
         combined_mask = input_mask & output_mask
 
-        # Compute output offset
-        output_base_m = rm_output[:, None] * stride_out_m
-        output_base_n = rn[None, :] * stride_out_n
+        # int64 output offset
+        output_base_m = rm_output[:, None] * tl.full((), stride_out_m, tl.int64)
+        output_base_n = rn_64[None, :] * tl.full((), stride_out_n, tl.int64)
         output_offset = output_base_m + output_base_n
         output_ptr_target = output_ptr + output_offset
         output_ptr_target = tl.multiple_of(output_ptr_target, (BLOCK_SIZE_M, BLOCK_SIZE_N))
