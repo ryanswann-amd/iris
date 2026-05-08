@@ -94,6 +94,15 @@ class Config:
     num_warps: int = 4
     threads_per_warp: int = 64
     waves_per_eu: int = 0
+    # K-820: Opt-in fused-launch fastpath for two_shot all_reduce. When True,
+    # the first call captures (kernel, grid, args) keyed on (M, N, dtype) into
+    # ``self._fused_cache``; subsequent calls skip the iris-side dispatch
+    # chain (extract_group_info, variant if/elif, heap_bases lookup, kwargs
+    # construction) and replay the cached call directly. Targets the top-2
+    # launch sub-phases identified by K-786 v2 (~63% of two_shot launch_us).
+    # Only safe for ``all_reduce_variant="two_shot"`` with ``group=None``;
+    # other paths fall through to the slow path automatically.
+    fused_launch: bool = False
 
     def __post_init__(self):
         """Validate and auto-detect num_xcds if not set."""
