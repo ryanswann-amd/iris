@@ -94,6 +94,16 @@ class Config:
     num_warps: int = 4
     threads_per_warp: int = 64
     waves_per_eu: int = 0
+    # K-871: Opt-in fused-launch fastpath. Caches the resolved
+    # (kernel, grid, args, kwargs) tuple per (M, N, dtype) on the user's
+    # Config so steady-state calls bypass iris-side dispatch overhead
+    # (extract_group_info, variant if/elif, heap_bases lookup, kwargs build).
+    # Targets the top-2 launch sub-phases identified by K-786 v2
+    # (py_wrapper ~19.7us + cache_lookup ~14.6us = ~63 % of launch_us).
+    # Equivalent env var: IRIS_CCL_FUSED_LAUNCH=1.
+    # Ports the K-820 pattern (all_reduce two_shot) to all_gather,
+    # reduce_scatter (two_shot), and all_to_all collectives.
+    fused_launch: bool = False
 
     def __post_init__(self):
         """Validate and auto-detect num_xcds if not set."""
