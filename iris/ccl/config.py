@@ -86,7 +86,12 @@ class Config:
     use_gluon: bool = False
     all_gather_variant: str = "persistent"
     all_reduce_variant: str = "two_shot"
-    all_reduce_distribution: int = 1
+    # Strided distribution (0) interleaves tile assignments across CUs by world_size
+    # rather than handing each rank a contiguous block. This dramatically improves
+    # xGMI link parallelism for two_shot at medium-to-large message sizes (16 MB+):
+    # every active CU contributes a load to every peer in the same time window
+    # instead of hot-spotting one peer at a time.
+    all_reduce_distribution: int = 0
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
     reduce_scatter_variant: str = "two_shot"
