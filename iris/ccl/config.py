@@ -9,6 +9,48 @@ from dataclasses import dataclass
 import iris
 
 
+def resolve_num_channels(requested, world_size=None):
+    """Single source of truth for the ``all_reduce_num_channels`` knob.
+
+    Validates (and optionally resolves) the requested channel count for the
+    persistent two-shot all-reduce. The same rules apply at Config-construction
+    time (no world_size known yet) and at ``launch()`` time (world_size known).
+
+    Rules — kept in ONE place to avoid drift between Config and launch():
+
+    1. Must be a positive integer (rejects 0, negatives, non-int).
+    2. Must be a power of two — the per-channel ring start offset is
+       ``channel_id * (world_size // N)`` and is only uniform across channels
+       when ``N`` divides ``world_size`` evenly. Restricting to powers of two
+       (and clamping to ``world_size`` at launch) makes the divisibility
+       condition automatic for the canonical ``world_size`` (1, 2, 4, 8…).
+    3. When ``world_size`` is provided, clamps to ``world_size``. Without the
+       clamp, ``world_size // N == 0`` collapses every channel back onto the
+       single-channel ring (silent degeneration).
+
+    Args:
+        requested: User-requested channel count (e.g. ``Config.all_reduce_num_channels``).
+        world_size: Optional. Number of ranks participating in the collective.
+            When provided, the result is clamped to ``min(requested, world_size)``.
+
+    Returns:
+        Resolved channel count (after validation, plus optional world_size clamp).
+
+    Raises:
+        TypeError: ``requested`` is not an int.
+        ValueError: ``requested`` is non-positive or not a power of two.
+    """
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        raise TypeError(f"all_reduce_num_channels must be int, got {type(requested).__name__}")
+    if requested <= 0:
+        raise ValueError(f"all_reduce_num_channels must be positive, got {requested}")
+    if requested & (requested - 1):
+        raise ValueError(f"all_reduce_num_channels must be a power of two, got {requested}")
+    if world_size is None:
+        return requested
+    return min(requested, int(world_size))
+
+
 @dataclass
 class Config:
     """
@@ -135,10 +177,10 @@ class Config:
             )
         if self.all_reduce_num_rings <= 0:
             raise ValueError(f"all_reduce_num_rings must be positive, got {self.all_reduce_num_rings}")
-        if self.all_reduce_num_channels <= 0:
-            raise ValueError(f"all_reduce_num_channels must be positive, got {self.all_reduce_num_channels}")
-        if self.all_reduce_num_channels & (self.all_reduce_num_channels - 1):
-            raise ValueError(f"all_reduce_num_channels must be a power of two, got {self.all_reduce_num_channels}")
+        # Single source of truth for the channel knob — see resolve_num_channels()
+        # above. Config validates positive + pow2 here (early failure); launch()
+        # passes world_size to clamp at runtime. Both call the same helper.
+        self.all_reduce_num_channels = resolve_num_channels(self.all_reduce_num_channels)
         if self.all_reduce_ring_slice_n is None:
             self.all_reduce_ring_slice_n = self.block_size_n
         if self.all_reduce_ring_slice_n <= 0:

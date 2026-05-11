@@ -572,6 +572,42 @@ def persistent_all_reduce_ring(
 
 
 @triton.jit
+def _two_shot_channel_schedule(
+    pid,
+    world_size: tl.constexpr,
+    NUM_CHANNELS: tl.constexpr,
+):
+    """Map ``program_id`` to ``(cta_in_channel, start_rank_idx)`` for the
+    persistent two-shot multi-channel ring.
+
+    This is the *only* place the (channel_id, cta_in_channel, start_rank_idx)
+    arithmetic lives — both the unmasked fast path and the masked slow path
+    of ``persistent_all_reduce_two_shot`` (and any future algorithm that
+    wants the same NCCL_MAX_NCHANNELS-style fan-out, e.g. one-shot or
+    reduce-scatter) call this helper rather than re-deriving the formula.
+
+    The CTAs are partitioned into ``NUM_CHANNELS`` equal groups. Each
+    channel's ring starts at a peer offset by ``world_size // NUM_CHANNELS``
+    in the world ring, so concurrent channels saturate distinct xGMI links.
+
+    At ``NUM_CHANNELS=1`` the formula collapses algebraically to::
+
+        cta_in_channel = pid
+        start_rank_idx = pid % world_size
+
+    which is the legacy single-channel start formula bit-for-bit.
+
+    Returns:
+        (cta_in_channel, start_rank_idx)
+    """
+    channel_id = pid % NUM_CHANNELS
+    cta_in_channel = pid // NUM_CHANNELS
+    channel_offset = channel_id * (world_size // NUM_CHANNELS)
+    start_rank_idx = (cta_in_channel + channel_offset) % world_size
+    return cta_in_channel, start_rank_idx
+
+
+@triton.jit
 def persistent_all_reduce_two_shot(
     input_ptr,
     output_ptr,
@@ -608,11 +644,9 @@ def persistent_all_reduce_two_shot(
     tl.static_assert(NUM_CHANNELS > 0, "NUM_CHANNELS must be >= 1")
     pid = tl.program_id(0)
 
-    # Channel partitioning: split COMM_SMS CTAs into NUM_CHANNELS equal groups.
-    # Each channel's start_rank is offset by `channel_id * world_size / NUM_CHANNELS`
-    # in the world ring so that distinct channels concurrently target distinct peers.
-    channel_id = pid % NUM_CHANNELS
-    cta_in_channel = pid // NUM_CHANNELS
+    # All channel-related arithmetic lives in _two_shot_channel_schedule().
+    # See its docstring for the legacy-collapse argument at NUM_CHANNELS=1.
+    _, start_rank_idx = _two_shot_channel_schedule(pid, world_size, NUM_CHANNELS)
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -670,12 +704,8 @@ def persistent_all_reduce_two_shot(
         if is_full:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            # NCCL_MAX_NCHANNELS-style fan-out: shift each channel's ring start by
-            # (world_size / NUM_CHANNELS) so concurrent channels saturate distinct
-            # xGMI links. For NUM_CHANNELS=1 this collapses to `pid % world_size`,
-            # matching the legacy single-channel formula bit-for-bit.
-            channel_offset = channel_id * (world_size // NUM_CHANNELS)
-            start_rank_idx = (cta_in_channel + channel_offset) % world_size
+            # start_rank_idx was computed once per CTA above by
+            # _two_shot_channel_schedule(); both fast/slow paths share it.
             start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases).to(acc_dtype)
             for i in tl.static_range(1, world_size):
@@ -698,12 +728,8 @@ def persistent_all_reduce_two_shot(
         else:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            # NCCL_MAX_NCHANNELS-style fan-out: shift each channel's ring start by
-            # (world_size / NUM_CHANNELS) so concurrent channels saturate distinct
-            # xGMI links. For NUM_CHANNELS=1 this collapses to `pid % world_size`,
-            # matching the legacy single-channel formula bit-for-bit.
-            channel_offset = channel_id * (world_size // NUM_CHANNELS)
-            start_rank_idx = (cta_in_channel + channel_offset) % world_size
+            # start_rank_idx was computed once per CTA above by
+            # _two_shot_channel_schedule(); both fast/slow paths share it.
             start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases, mask=mask).to(acc_dtype)
             for i in tl.static_range(1, world_size):
@@ -920,11 +946,15 @@ def launch(
         )
 
     elif variant == VARIANT_TWO_SHOT:
-        # Clamp NUM_CHANNELS to world_size: when NUM_CHANNELS > world_size, the
-        # per-channel offset (world_size // NUM_CHANNELS) becomes 0, collapsing
-        # every channel back onto the single-channel ring. Clamping prevents that
-        # silent degeneration. NUM_CHANNELS=1 always reproduces legacy behavior.
-        num_channels = max(1, min(int(config.all_reduce_num_channels), int(world_size)))
+        # Single source of truth for NUM_CHANNELS validation + clamp lives in
+        # iris.ccl.config.resolve_num_channels(). Config.__post_init__ called
+        # the same helper at construction time (no world_size). Here we pass
+        # world_size so the value is also clamped to world_size — without the
+        # clamp, world_size // N == 0 would collapse every channel onto the
+        # single-channel ring (silent degeneration).
+        from ..config import resolve_num_channels as _resolve_nch
+
+        num_channels = _resolve_nch(int(config.all_reduce_num_channels), int(world_size))
         iris_launch(
             persistent_all_reduce_two_shot,
             (config.comm_sms,),
