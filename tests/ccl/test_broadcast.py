@@ -96,8 +96,8 @@ def _run_broadcast(M, N, dtype, variant, src):
 @pytest.mark.parametrize(
     "M, N",
     [
-        (128, 64),     # ~16 KiB (fp16) — sub-threshold; auto picks direct.
-        (1024, 256),   # ~512 KiB (fp16) — sub-threshold.
+        (128, 64),  # ~16 KiB (fp16) — sub-threshold; auto picks direct.
+        (1024, 256),  # ~512 KiB (fp16) — sub-threshold.
         (1024, 1024),  # 2 MiB (fp16) / 4 MiB (fp32) — over-threshold; auto picks tree.
         (4096, 4096),  # 32 MiB (fp16) / 64 MiB (fp32) — large, tree is the win.
     ],
@@ -126,11 +126,11 @@ def test_auto_threshold_is_one_mib():
 @pytest.mark.parametrize(
     "M, N, dtype, expected",
     [
-        (128, 64, torch.float16, "direct"),    # 16 KiB
-        (256, 256, torch.float16, "direct"),   # 128 KiB
-        (1024, 512, torch.float16, "tree"),    # 1 MiB exactly — tree.
-        (1024, 1024, torch.float16, "tree"),   # 2 MiB — tree.
-        (1024, 1024, torch.float32, "tree"),   # 4 MiB — tree.
+        (128, 64, torch.float16, "direct"),  # 16 KiB
+        (256, 256, torch.float16, "direct"),  # 128 KiB
+        (1024, 512, torch.float16, "tree"),  # 1 MiB exactly — tree.
+        (1024, 1024, torch.float16, "tree"),  # 2 MiB — tree.
+        (1024, 1024, torch.float32, "tree"),  # 4 MiB — tree.
     ],
 )
 def test_auto_resolves_to_expected_variant(M, N, dtype, expected):

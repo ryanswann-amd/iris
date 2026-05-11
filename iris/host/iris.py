@@ -1317,9 +1317,7 @@ class Iris:
                 config=config,
             )
 
-        def broadcast_tensor(
-            self, output_tensor, input_tensor, src=0, group=None, async_op=False, config=None
-        ):
+        def broadcast_tensor(self, output_tensor, input_tensor, src=0, group=None, async_op=False, config=None):
             """
             Broadcast collective operation (GPU/RMA path).
 

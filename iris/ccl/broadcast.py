@@ -92,9 +92,7 @@ def broadcast(
             "Broadcast requires identically shaped input and output tensors."
         )
     if input_tensor.dtype != output_tensor.dtype:
-        raise ValueError(
-            f"Input dtype {input_tensor.dtype} does not match output dtype {output_tensor.dtype}."
-        )
+        raise ValueError(f"Input dtype {input_tensor.dtype} does not match output dtype {output_tensor.dtype}.")
 
     # Resolve auto variant before dispatch so the selected variant is recorded
     # by tracing under a stable name.
