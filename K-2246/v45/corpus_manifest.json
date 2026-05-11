@@ -1,0 +1,72 @@
+{
+  "corpus_version": "v45",
+  "predecessor_version": "v44",
+  "predecessor_task": "K-2243",
+  "task": "K-2246",
+  "gpu": "MI300X",
+  "gpu_arch": "gfx942",
+  "added_primitive": {
+    "id": "P3",
+    "name": "ATOMIC_CAS_ACQREL",
+    "cumulative_count": 46,
+    "family": "CAS",
+    "ordering": "acq_rel/acq_rel"
+  },
+  "lineage": [
+    {
+      "v": "v42",
+      "task": "K-2235/K-2240",
+      "primitive": "N3 ATOMIC_CAS_ACQUIRE",
+      "count": 44
+    },
+    {
+      "v": "v44",
+      "task": "K-2243",
+      "primitive": "O3 ATOMIC_CAS_RELEASE",
+      "count": 45
+    },
+    {
+      "v": "v45",
+      "task": "K-2246",
+      "primitive": "P3 ATOMIC_CAS_ACQREL",
+      "count": 46
+    }
+  ],
+  "files": [
+    {
+      "path": "v45_baseline.csv",
+      "size": 319985,
+      "sha256": "35363f360abac2b0120ceba441547c01c2e5990e7d5ccddc032483adc552e2a7"
+    },
+    {
+      "path": "v45_paired.csv",
+      "size": 5656925,
+      "sha256": "0bad001213ddb2c9b9db831a0a2650dc2117355a7467392b9d8d99ef23ce6e68"
+    },
+    {
+      "path": "v45_manifest.json",
+      "size": 5255,
+      "sha256": "75a9022170ae18152eb68299ff8e5d7f08aae5d18740c37cb5feeb0dbb1287b6"
+    },
+    {
+      "path": "v45_cas_ordering_ladder.png",
+      "size": 53891,
+      "sha256": "19e187e54756afa61304a4093803948f71eb9f02c81fff3057c4935d8f6a2709"
+    },
+    {
+      "path": "v45_xchg_vs_cas_ordering.png",
+      "size": 45765,
+      "sha256": "3dbc36559e3aa544812eff7039a9c4fd46e3afc17a2e3b5c4da778e1d5805ac0"
+    },
+    {
+      "path": "v45_paired_canonical.png",
+      "size": 54732,
+      "sha256": "19cd37c4103d81c70f2df31b590457cc0db39b0cebfd9a5975c34e660f82ce03"
+    },
+    {
+      "path": "v45_p3_scaling.png",
+      "size": 50577,
+      "sha256": "a3b7db6b0bbeeadeefa3a9437058fa20d5c8d8b208d2ff0c9a20741c71faacb1"
+    }
+  ]
+}

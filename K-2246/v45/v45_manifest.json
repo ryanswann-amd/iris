@@ -1,0 +1,227 @@
+{
+  "task": "K-2246",
+  "corpus_version": "v45",
+  "predecessor_corpus_version": "v44",
+  "predecessor_task": "K-2243",
+  "new_primitive": {
+    "id": "P3",
+    "name": "ATOMIC_CAS_ACQREL",
+    "cumulative_count": 46,
+    "kernel": "tl.atomic_add(addr, 0, sem=acq_rel) + tl.atomic_cas(addr, cur, cur+1, sem=acq_rel) sys-scope",
+    "family": "CAS",
+    "ordering": "acq_rel/acq_rel (load=acq_rel; CAS=acq_rel)",
+    "distinguishes_from_F3": "F3 has acquire-load + acq_rel-CAS; P3 has acq_rel-load + acq_rel-CAS (extra fence on the load side)"
+  },
+  "cell_grid": {
+    "K": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "N_PROD": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "N_OPS": [
+      8,
+      16,
+      32,
+      64,
+      128
+    ],
+    "cells_per_primitive": 175,
+    "reps_per_cell": 25
+  },
+  "canonical_cell": {
+    "K": 4,
+    "N_PROD": 4,
+    "N_OPS": 32
+  },
+  "baseline": {
+    "csv": "v45_baseline.csv",
+    "rows": 4375,
+    "sha256": "35363f360abac2b0120ceba441547c01c2e5990e7d5ccddc032483adc552e2a7",
+    "qc": {
+      "rows": 4375,
+      "primitives": [
+        "P3"
+      ],
+      "K_values": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "N_PROD_values": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "N_OPS_values": [
+        8,
+        16,
+        32,
+        64,
+        128
+      ],
+      "cells": 175,
+      "reps_per_cell_min": 25,
+      "reps_per_cell_max": 25,
+      "nodes": [
+        "b21u01"
+      ],
+      "gpu_archs": [
+        "gfx942"
+      ],
+      "null_rate": 0.0,
+      "zero_us_rate": 0.0,
+      "min_us": 27.8719,
+      "max_us": 563.038,
+      "median_us": 67.5139
+    },
+    "p3_canonical_us": 57.6251
+  },
+  "paired": {
+    "csv": "v45_paired.csv",
+    "rows": 74375,
+    "sha256": "0bad001213ddb2c9b9db831a0a2650dc2117355a7467392b9d8d99ef23ce6e68",
+    "qc": {
+      "rows": 74375,
+      "focal": [
+        "P3"
+      ],
+      "interferers": [
+        "D3",
+        "E3",
+        "F",
+        "G",
+        "G3",
+        "H",
+        "H3",
+        "I3",
+        "J3",
+        "K3",
+        "L3",
+        "M3",
+        "N3",
+        "O3",
+        "P",
+        "R2",
+        "Y"
+      ],
+      "n_interferers": 17,
+      "cells": 2975,
+      "reps_per_cell_min": 25,
+      "reps_per_cell_max": 25,
+      "nodes": [
+        "b21u01"
+      ],
+      "gpu_archs": [
+        "gfx942"
+      ],
+      "null_rate": 0.0,
+      "zero_us_rate": 0.0,
+      "min_us": 67.8019,
+      "max_us": 4076.5079,
+      "median_us": 107.243
+    },
+    "p3_canonical_per_interferer_us": {
+      "D3": {
+        "median_us": 74.063,
+        "delta_vs_baseline": 16.4379
+      },
+      "E3": {
+        "median_us": 82.803,
+        "delta_vs_baseline": 25.177899999999994
+      },
+      "F": {
+        "median_us": 97.455,
+        "delta_vs_baseline": 39.829899999999995
+      },
+      "G": {
+        "median_us": 96.197,
+        "delta_vs_baseline": 38.5719
+      },
+      "G3": {
+        "median_us": 135.845,
+        "delta_vs_baseline": 78.2199
+      },
+      "H": {
+        "median_us": 97.7889,
+        "delta_vs_baseline": 40.163799999999995
+      },
+      "H3": {
+        "median_us": 90.64,
+        "delta_vs_baseline": 33.0149
+      },
+      "I3": {
+        "median_us": 87.9809,
+        "delta_vs_baseline": 30.355800000000002
+      },
+      "J3": {
+        "median_us": 81.0139,
+        "delta_vs_baseline": 23.388800000000003
+      },
+      "K3": {
+        "median_us": 79.9629,
+        "delta_vs_baseline": 22.3378
+      },
+      "L3": {
+        "median_us": 73.482,
+        "delta_vs_baseline": 15.856899999999996
+      },
+      "M3": {
+        "median_us": 105.062,
+        "delta_vs_baseline": 47.436899999999994
+      },
+      "N3": {
+        "median_us": 99.1509,
+        "delta_vs_baseline": 41.52579999999999
+      },
+      "O3": {
+        "median_us": 105.849,
+        "delta_vs_baseline": 48.2239
+      },
+      "P": {
+        "median_us": 72.832,
+        "delta_vs_baseline": 15.20689999999999
+      },
+      "R2": {
+        "median_us": 148.4482,
+        "delta_vs_baseline": 90.82310000000001
+      },
+      "Y": {
+        "median_us": 73.6848,
+        "delta_vs_baseline": 16.059699999999992
+      }
+    }
+  },
+  "cas_ordering_ladder_canonical": {
+    "M3 (relaxed/relaxed)": 33.52,
+    "N3 (acquire-load/acquire-CAS)": 33.36,
+    "O3 (relaxed-load/release-CAS)": 43.68,
+    "F3 (acquire-load/acq_rel-CAS)": 34.36,
+    "P3 (acq_rel-load/acq_rel-CAS) NEW": 57.6251
+  },
+  "gpu_arch": "gfx942",
+  "gpu_model": "AMD Instinct MI300X",
+  "cluster": "c42 (mi300x partition)",
+  "node": "b21u01",
+  "container": "rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0",
+  "methodology": "single-rank multi-CTA emulation; focal P3 + interferer issued on separate CUDA streams; per-cell median over 25 reps",
+  "lineage": "K-2096 -> K-2113 -> K-2125 -> K-2137 -> K-2148 -> K-2167 -> K-2171 -> K-2176 -> K-2184 -> K-2188 -> K-2191 -> K-2204 -> K-2220 -> K-2240 -> K-2243 -> K-2246",
+  "comm_data_branch": "v45-p3-atomic-cas-acqrel-mi300x (NOT pushed: ryanswann-amd/comm_data repo returns 404; deploy key only authorized for ryanswann-amd/iris)",
+  "timestamp_utc": "2026-05-11T06:07:06.703203Z"
+}
