@@ -57,7 +57,7 @@ Sign of β: positive ⇒ more waves per CU → higher per-call latency (contenti
 
 ## Push location
 
-Corpus pushed to **`ryanswann-amd/iris`** branch **`k-2388-pc-imbalance`** at commit **`523034689ce43059a21bc119b15c0959d78a12a5`**, payload under `corpus/v82_pc_imbalance_pc1/mi300x/`. Verified with `git ls-remote`. (Note: `ryanswann-amd/comm_data` is not accessible to the deploy key available in this session; same fork-repo pattern used by K-2380 in `corpus/v80_duty_cycle_pc1/`.)
+Corpus pushed to **`ryanswann-amd/iris`** branch **`k-2388-pc-imbalance`** at commit **`60e01a7adfc588e2755490faa7f3aa69918ed186`**, payload under `corpus/v82_pc_imbalance_pc1/mi300x/`. Verified with `git ls-remote`. (Note: `ryanswann-amd/comm_data` is not accessible to the deploy key available in this session; same fork-repo pattern used by K-2380 in `corpus/v80_duty_cycle_pc1/`.)
 
 ## Data quality
 
