@@ -57,7 +57,7 @@ Sign of β: positive ⇒ more waves per CU → higher per-call latency (contenti
 
 ## Push location
 
-Corpus pushed to `ryanswann-amd/iris-workbench` branch `k-2388-pc-imbalance` at `k-2388/`. (Note: `ryanswann-amd/comm_data` is documented BLOCKED at this cluster session per `/tmp/PUSH_BLOCKED.md` from K-2271 — the `iris-workbench-deploy` key is the only credential available and it authenticates as `ryanswann-amd/iris-workbench`. Same pattern used by K-2380 today.)
+Corpus pushed to **`ryanswann-amd/iris`** branch **`k-2388-pc-imbalance`** at commit **`523034689ce43059a21bc119b15c0959d78a12a5`**, payload under `corpus/v82_pc_imbalance_pc1/mi300x/`. Verified with `git ls-remote`. (Note: `ryanswann-amd/comm_data` is not accessible to the deploy key available in this session; same fork-repo pattern used by K-2380 in `corpus/v80_duty_cycle_pc1/`.)
 
 ## Data quality
 
