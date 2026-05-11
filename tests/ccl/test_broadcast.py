@@ -58,14 +58,13 @@ def _run_broadcast(M, N, dtype, variant, src):
         dist.broadcast(pytorch_input, src=src)
         torch.cuda.synchronize()
 
-        # Iris path.
+        # Iris path. ``shmem.zeros`` is a collective — every rank must allocate
+        # both buffers in lock-step. Only the source rank populates ``iris_input``;
+        # other ranks pass the (zero-filled) buffer purely as a same-shape stub.
         iris_output = shmem.zeros((M, N), dtype=dtype)
+        iris_input = shmem.zeros((M, N), dtype=dtype)
         if rank == src:
-            iris_input = shmem.zeros((M, N), dtype=dtype)
             iris_input.copy_(pytorch_input)
-        else:
-            # Non-source ranks supply a same-shape buffer; its contents are unused.
-            iris_input = iris_output
 
         shmem.barrier()
         config = Config(block_size_m=32, block_size_n=64, broadcast_variant=variant)
