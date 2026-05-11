@@ -175,6 +175,13 @@ def persistent_all_to_all(
                         mask=mask,
                         hint=(1, BLOCK_SIZE_N),
                     )
+        # Ensure all per-rank stores for this tile complete before moving to the
+        # next tile. Without this barrier the per-iteration sequencing chain is
+        # materialized as an atomic_cas spin between consecutive tiles
+        # (R-PERSISTENT-SYNC-COLLAPSE-A2A, K-242 sync-collapse pattern). On AMD
+        # this codegens to a wave-level s_barrier which collapses the chain and
+        # recovers ~30 ms/iter at A2A-256MB (15.93x sync ratio).
+        tl.debug_barrier()
 
 
 def launch(
