@@ -594,11 +594,25 @@ def persistent_all_reduce_two_shot(
     NUM_XCDS: tl.constexpr,  # unused here but kept for signature compatibility
     CHUNK_SIZE: tl.constexpr,  # unused here but kept for signature compatibility
     DISTRIBUTION: tl.constexpr,
+    NUM_CHANNELS: tl.constexpr,
 ):
     """Reduce assigned tiles for a rank and broadcast the result to all peers.
     Single kernel: unmasked fast path for full tiles, masked slow path for tails.
+
+    NUM_CHANNELS partitions the COMM_SMS CTAs into independent ring channels;
+    each channel starts its read-from-peers and write-to-peers loop at a distinct
+    peer rank so the aggregate traffic saturates multiple xGMI links concurrently
+    (NCCL_MAX_NCHANNELS-style fan-out). NUM_CHANNELS=1 reproduces the legacy
+    single-channel behavior bit-for-bit.
     """
+    tl.static_assert(NUM_CHANNELS > 0, "NUM_CHANNELS must be >= 1")
     pid = tl.program_id(0)
+
+    # Channel partitioning: split COMM_SMS CTAs into NUM_CHANNELS equal groups.
+    # Each channel's start_rank is offset by `channel_id * world_size / NUM_CHANNELS`
+    # in the world ring so that distinct channels concurrently target distinct peers.
+    channel_id = pid % NUM_CHANNELS
+    cta_in_channel = pid // NUM_CHANNELS
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -656,7 +670,12 @@ def persistent_all_reduce_two_shot(
         if is_full:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            start_rank_idx = pid % world_size
+            # NCCL_MAX_NCHANNELS-style fan-out: shift each channel's ring start by
+            # (world_size / NUM_CHANNELS) so concurrent channels saturate distinct
+            # xGMI links. For NUM_CHANNELS=1 this collapses to `pid % world_size`,
+            # matching the legacy single-channel formula bit-for-bit.
+            channel_offset = channel_id * (world_size // NUM_CHANNELS)
+            start_rank_idx = (cta_in_channel + channel_offset) % world_size
             start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases).to(acc_dtype)
             for i in tl.static_range(1, world_size):
@@ -679,7 +698,12 @@ def persistent_all_reduce_two_shot(
         else:
             mask = (rm[:, None] < M) & (rn[None, :] < N)
 
-            start_rank_idx = pid % world_size
+            # NCCL_MAX_NCHANNELS-style fan-out: shift each channel's ring start by
+            # (world_size / NUM_CHANNELS) so concurrent channels saturate distinct
+            # xGMI links. For NUM_CHANNELS=1 this collapses to `pid % world_size`,
+            # matching the legacy single-channel formula bit-for-bit.
+            channel_offset = channel_id * (world_size // NUM_CHANNELS)
+            start_rank_idx = (cta_in_channel + channel_offset) % world_size
             start_rank_global = rank_start + start_rank_idx * rank_stride
             acc = iris.load(base_ptr, iris_rank, start_rank_global, heap_bases, mask=mask).to(acc_dtype)
             for i in tl.static_range(1, world_size):
@@ -920,6 +944,7 @@ def launch(
             config.num_xcds,
             config.chunk_size,
             config.all_reduce_distribution,
+            config.all_reduce_num_channels,
             num_warps=8,
             num_stages=1,
             waves_per_eu=1,

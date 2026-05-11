@@ -40,6 +40,12 @@ class Config:
         all_reduce_distribution: Distribution for two-shot all-reduce (default: 0)
                                0 for striding, 1 for block distribution
         all_reduce_num_rings: Number of concurrent rings to form in ring-based all-reduce (default: 1)
+        all_reduce_num_channels: Number of independent ring channels in two-shot all-reduce
+                                 (default: 1). Mirrors NCCL's NCCL_MAX_NCHANNELS knob: COMM_SMS
+                                 CTAs are partitioned into N equal channel groups, each starting
+                                 its read/write ring at a different peer rank so the channels
+                                 collectively saturate distinct xGMI links concurrently. Must be
+                                 a positive power of two; preserves prior behavior at 1.
         all_reduce_ring_slice_n: Column slice size for ring reduce-scatter/all-gather
                                  (default: auto-set to block_size_n // world_size at runtime)
         reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot")
@@ -88,6 +94,7 @@ class Config:
     all_reduce_variant: str = "two_shot"
     all_reduce_distribution: int = 1
     all_reduce_num_rings: int = 1
+    all_reduce_num_channels: int = 1
     all_reduce_ring_slice_n: int | None = None
     reduce_scatter_variant: str = "two_shot"
     num_stages: int = 1
@@ -128,6 +135,14 @@ class Config:
             )
         if self.all_reduce_num_rings <= 0:
             raise ValueError(f"all_reduce_num_rings must be positive, got {self.all_reduce_num_rings}")
+        if self.all_reduce_num_channels <= 0:
+            raise ValueError(
+                f"all_reduce_num_channels must be positive, got {self.all_reduce_num_channels}"
+            )
+        if self.all_reduce_num_channels & (self.all_reduce_num_channels - 1):
+            raise ValueError(
+                f"all_reduce_num_channels must be a power of two, got {self.all_reduce_num_channels}"
+            )
         if self.all_reduce_ring_slice_n is None:
             self.all_reduce_ring_slice_n = self.block_size_n
         if self.all_reduce_ring_slice_n <= 0:
