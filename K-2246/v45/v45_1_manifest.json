@@ -1,0 +1,165 @@
+{
+  "task": "K-2246",
+  "corpus_version": "v45.1",
+  "predecessor_corpus_version": "v45",
+  "fix_summary": [
+    "Adds in-corpus anchor: M3,N3,O3,F3,P3 re-measured at canonical cell on b21u01 (same host as v45 baseline)",
+    "Replaces wall-clock paired timing with focal-stream CUDA events (measures focal P3 latency under contention, not max(focal,interferer))",
+    "Reconciles the +23.27 vs +24.11 inconsistency: those numbers came from cross-host wall-clock; v45.1 reports event-timed in-corpus deltas"
+  ],
+  "reviewer_addresses": {
+    "Skeptic.paired_timing": "Replaced perf_counter() wall-clock with focal-stream cudaEventRecord/elapsed_time pair; interferer launches BEFORE focal but is timed only via the focal stream events.  Sample script bench_p3_paired_events.py.",
+    "Skeptic.cross_host_anchor": "New v45_anchor.csv re-measures the FULL ladder (M3,N3,O3,F3,P3) on the same b21u01 host that produced v45_baseline.csv, so the P3-vs-F3 delta is now a single-host single-version comparison.",
+    "UX.headline_consistency": "\u0394-vs-F3 and \u0394-vs-M3 now reported in the same table with explicit labels; no more ambiguity between the two."
+  },
+  "cluster": "c42 (mi300x partition)",
+  "node": "b21u01",
+  "gpu_arch": "gfx942",
+  "gpu_model": "AMD Instinct MI300X",
+  "container": "rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0",
+  "canonical_cell": {
+    "K": 4,
+    "N_PROD": 4,
+    "N_OPS": 32
+  },
+  "anchor": {
+    "csv": "v45_anchor.csv (200 reps) + v45_anchor_run2.csv (500 reps) = 700 reps/prim",
+    "sha256_v45_anchor": "35caea3c8626b806f9056a56fcba174c695060a64e7c1c79a5d7a9ccd5ceac9f",
+    "sha256_v45_anchor_run2": "b260d79e8186b17beaad7cc6f7519145302a5dca2f09a949923de0f2439677cf",
+    "timer": "cuda_event (start.elapsed_time(end))",
+    "medians_us": {
+      "M3": 37.6055,
+      "N3": 38.527,
+      "O3": 36.9435,
+      "F3": 38.568,
+      "P3": 39.851
+    },
+    "n_per_prim": {
+      "M3": 700,
+      "N3": 700,
+      "O3": 700,
+      "F3": 700,
+      "P3": 700
+    },
+    "p25_us": {
+      "M3": 36.282,
+      "N3": 37.566,
+      "O3": 36.122,
+      "F3": 37.565,
+      "P3": 39.529
+    },
+    "p75_us": {
+      "M3": 39.33,
+      "N3": 39.891,
+      "O3": 38.087,
+      "F3": 40.051,
+      "P3": 40.251
+    }
+  },
+  "ladder_deltas_us": {
+    "P3 - F3": 1.283,
+    "P3 - M3": 2.2455,
+    "P3 - N3": 1.324,
+    "P3 - O3": 2.9075,
+    "F3 - M3": 0.9625,
+    "N3 - M3": 0.9215,
+    "O3 - M3": -0.662
+  },
+  "paired_canonical_event": {
+    "csv": "v45_paired_canonical_event.csv (200 reps) + v45_paired_canonical_event_run2.csv (500 reps) = 700 reps/cell",
+    "sha256_run1": "a0f0e39f2aae9e95ce7950d12bc87e4ebae11df8151bc7a0341fc7187e97c97e",
+    "sha256_run2": "699e6a0c1f07f0e2ad728b507768cc6d2cd351c20f2cdf93b344e6147debc315",
+    "timer": "focal_stream_cuda_event (interferer launched on stream B but timed only via focal stream A start/end events)",
+    "p3_focal_only_baseline_us": 39.65,
+    "per_interferer": {
+      "F": {
+        "median_us": 42.537,
+        "delta_vs_focal_only_us": 2.887,
+        "n": 700
+      },
+      "E3": {
+        "median_us": 48.791,
+        "delta_vs_focal_only_us": 9.141,
+        "n": 700
+      },
+      "P": {
+        "median_us": 48.831,
+        "delta_vs_focal_only_us": 9.181,
+        "n": 700
+      },
+      "I3": {
+        "median_us": 48.911,
+        "delta_vs_focal_only_us": 9.261,
+        "n": 700
+      },
+      "H3": {
+        "median_us": 48.951,
+        "delta_vs_focal_only_us": 9.301,
+        "n": 700
+      },
+      "D3": {
+        "median_us": 49.071,
+        "delta_vs_focal_only_us": 9.421,
+        "n": 700
+      },
+      "L3": {
+        "median_us": 49.071,
+        "delta_vs_focal_only_us": 9.421,
+        "n": 700
+      },
+      "G": {
+        "median_us": 49.072,
+        "delta_vs_focal_only_us": 9.422,
+        "n": 700
+      },
+      "J3": {
+        "median_us": 49.1115,
+        "delta_vs_focal_only_us": 9.4615,
+        "n": 700
+      },
+      "K3": {
+        "median_us": 49.112,
+        "delta_vs_focal_only_us": 9.462,
+        "n": 700
+      },
+      "Y": {
+        "median_us": 49.312,
+        "delta_vs_focal_only_us": 9.662,
+        "n": 700
+      },
+      "M3": {
+        "median_us": 50.355,
+        "delta_vs_focal_only_us": 10.705,
+        "n": 700
+      },
+      "O3": {
+        "median_us": 50.756,
+        "delta_vs_focal_only_us": 11.106,
+        "n": 700
+      },
+      "H": {
+        "median_us": 50.9755,
+        "delta_vs_focal_only_us": 11.3255,
+        "n": 700
+      },
+      "N3": {
+        "median_us": 51.116,
+        "delta_vs_focal_only_us": 11.466,
+        "n": 700
+      },
+      "G3": {
+        "median_us": 53.5615,
+        "delta_vs_focal_only_us": 13.9115,
+        "n": 700
+      },
+      "R2": {
+        "median_us": 54.443,
+        "delta_vs_focal_only_us": 14.793,
+        "n": 700
+      }
+    }
+  },
+  "prior_v45_wall_clock_canonical_us": 57.6251,
+  "measurement_method_correction_us": 17.7741,
+  "comm_data_branch": "K-2246-v45-p3-atomic-cas-acqrel (additive v45.1 commit; ryanswann-amd/iris fork)"
+}
