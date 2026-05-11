@@ -1,0 +1,81 @@
+task_id: K-2388
+type: DATA_COLLECTION
+priority: P1
+cluster: c42
+gpu: mi300x
+node: c09u13
+outcome: complete
+verified_via: git_ls_remote_to_pushed_branch
+
+deliverables:
+  local_dir: /workspace/output/k-2388/
+  remote:
+    repo: github.com/ryanswann-amd/iris
+    branch: k-2388-pc-imbalance
+    commit: 6e6c810bda3671187cd7033c1bb1bb3294999047
+    payload_path: corpus/v82_pc_imbalance_pc1/mi300x/
+
+artifacts:
+  summary: corpus/v82_pc_imbalance_pc1/mi300x/summary.md
+  per_cell_csv: corpus/v82_pc_imbalance_pc1/mi300x/k2388_pc_imbalance.csv     # 192 rows
+  per_rep_csv:  corpus/v82_pc_imbalance_pc1/mi300x/k2388_pc_imbalance_reps.csv # 4400 rows
+  parquet:
+    - corpus/v82_pc_imbalance_pc1/mi300x/k2388_pc_imbalance.parquet
+    - corpus/v82_pc_imbalance_pc1/mi300x/k2388_pc_imbalance_reps.parquet
+  analysis:
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/pc1_per_stratum.csv
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/pc1_per_stratum_loadings.json
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/global_pc1.json
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/residual_decomposition.csv
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/loading_cosine.csv
+  plots:
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/pc1_per_imbalance.png
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/pc1_loadings_drift.png
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/residual_pc_dominance.png
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/median_latency_per_imb.png
+    - corpus/v82_pc_imbalance_pc1/mi300x/analysis/latency_per_prim_imb.png
+  scripts:
+    - corpus/v82_pc_imbalance_pc1/k2388_pc_imbalance.py
+    - corpus/v82_pc_imbalance_pc1/k2388_fit_pc1.py
+    - corpus/v82_pc_imbalance_pc1/run_in_container.sh
+
+sweep:
+  ordering_classes: [XCHG_ACQREL, MAX_ACQUIRE, CAS_ACQREL, FADD_RELEASE]
+  imbalance_pairs:
+    - [1, 8]
+    - [2, 8]
+    - [4, 8]
+    - [8, 4]
+    - [8, 2]
+    - [8, 1]
+  workgroup_block: [[304, 256], [304, 1024], [1216, 256], [1216, 1024]]
+  buffer_classes:  [L2_2MiB, HBM_32MiB]
+  reps: 25
+  warmup: 4
+  cells_attempted: 192
+  cells_valid: 176        # 16 CAS-low-prod cells dropped (known triton-amd MLIR bug, K-2349)
+  reps_valid: 4400
+
+headline:
+  pc1_ve_per_stratum_min:  0.9960
+  pc1_ve_per_stratum_max:  0.9989
+  pc1_ve_global_pooled:    0.9915
+  cosine_to_global_pc1_min: 0.856
+  cas_acqrel_beta_log_prod: 0.480
+  cas_acqrel_beta_log_cons: 0.035
+  verdict: PC1_universality_holds_under_pc_imbalance
+
+success_criteria:
+  done:
+    status: pass
+    evidence:
+      - "/workspace/output/k-2388/summary.md present (under 200 lines)"
+      - "192-cell + 4400-rep CSV/parquet corpus present"
+      - "5 PNG plots present in analysis/"
+      - "remote branch verified: git ls-remote git@github.com:ryanswann-amd/iris.git k-2388-pc-imbalance -> 6e6c810bda3671187cd7033c1bb1bb3294999047"
+
+session_constraints:
+  cluster_ssh: refused-this-session
+  re_run_possible: false
+  data_origin: previous_attempt_outputs_kept_and_verified
+  push_credential: /tmp/deploy_key (claude-agent-iris, scoped to ryanswann-amd/iris)
