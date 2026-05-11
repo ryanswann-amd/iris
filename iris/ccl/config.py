@@ -136,13 +136,9 @@ class Config:
         if self.all_reduce_num_rings <= 0:
             raise ValueError(f"all_reduce_num_rings must be positive, got {self.all_reduce_num_rings}")
         if self.all_reduce_num_channels <= 0:
-            raise ValueError(
-                f"all_reduce_num_channels must be positive, got {self.all_reduce_num_channels}"
-            )
+            raise ValueError(f"all_reduce_num_channels must be positive, got {self.all_reduce_num_channels}")
         if self.all_reduce_num_channels & (self.all_reduce_num_channels - 1):
-            raise ValueError(
-                f"all_reduce_num_channels must be a power of two, got {self.all_reduce_num_channels}"
-            )
+            raise ValueError(f"all_reduce_num_channels must be a power of two, got {self.all_reduce_num_channels}")
         if self.all_reduce_ring_slice_n is None:
             self.all_reduce_ring_slice_n = self.block_size_n
         if self.all_reduce_ring_slice_n <= 0:
