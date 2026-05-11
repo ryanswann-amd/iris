@@ -1,16 +1,22 @@
 {
   "task": "K-2246",
   "corpus_version": "v45.1",
+  "manifest_revision": "v45.2 (text-level corrections — same data; conclusion softened, deprecation markers added on superseded artifacts)",
   "predecessor_corpus_version": "v45",
   "fix_summary": [
     "Adds in-corpus anchor: M3,N3,O3,F3,P3 re-measured at canonical cell on b21u01 (same host as v45 baseline)",
     "Replaces wall-clock paired timing with focal-stream CUDA events (measures focal P3 latency under contention, not max(focal,interferer))",
-    "Reconciles the +23.27 vs +24.11 inconsistency: those numbers came from cross-host wall-clock; v45.1 reports event-timed in-corpus deltas"
+    "Reconciles the +23.27 vs +24.11 inconsistency: those numbers came from cross-host wall-clock; v45.1 reports event-timed in-corpus deltas",
+    "v45.2 text correction: conclusion softened to acknowledge ladder non-monotonicity (O3<M3<N3<F3<P3 — only ~3 us spread; deltas within p25-p75 IQR)",
+    "v45.2 text correction: deprecation markers added on v45_baseline.csv and v45_paired.csv (wall-clock); see superseded_artifacts in v45_manifest.json"
   ],
   "reviewer_addresses": {
-    "Skeptic.paired_timing": "Replaced perf_counter() wall-clock with focal-stream cudaEventRecord/elapsed_time pair; interferer launches BEFORE focal but is timed only via the focal stream events.  Sample script bench_p3_paired_events.py.",
+    "Skeptic.paired_timing": "Replaced perf_counter() wall-clock with focal-stream cudaEventRecord/elapsed_time pair; interferer launches BEFORE focal but is timed only via the focal stream events. Sample script bench_p3_paired_events.py.",
     "Skeptic.cross_host_anchor": "New v45_anchor.csv re-measures the FULL ladder (M3,N3,O3,F3,P3) on the same b21u01 host that produced v45_baseline.csv, so the P3-vs-F3 delta is now a single-host single-version comparison.",
-    "UX.headline_consistency": "\u0394-vs-F3 and \u0394-vs-M3 now reported in the same table with explicit labels; no more ambiguity between the two."
+    "Skeptic.non_monotonic_ladder_v45_2": "Acknowledged: O3 (release-CAS) at 36.94 us is FASTER than M3 (relaxed) at 37.61 us in the in-corpus event-timed anchor — so the ladder is NOT monotonic in fence strength. The +1-3 us P3 deltas vs F3/N3/O3 lie within the per-primitive p25-p75 IQR (~2-3 us). Headline conclusion is now: 'P3 is statistically indistinguishable from F3/N3/O3 within measurement noise; ordering tax on CDNA3 CAS is at most a few us and not monotonic in fence strength.'",
+    "Skeptic.wall_clock_csvs_still_in_corpus_v45_2": "v45_baseline.csv and v45_paired.csv are now flagged in v45_manifest.json with superseded_artifacts.<filename>.superseded_by and superseded_artifacts.<filename>.do_not_use_for fields. data_quality.py-readable. Files retained for audit; canonical claims must use v45_anchor*.csv and v45_paired_canonical_event*.csv.",
+    "UX.headline_consistency": "Δ-vs-F3 and Δ-vs-M3 now reported in the same table with explicit labels; no more ambiguity between the two.",
+    "UX.manifest_self_describing_v45_2": "v45_manifest.json now carries top-level superseded_by:'v45.1', corrected_p3_canonical_us:39.85, and DEPRECATED_ prefix on stale fields, so a reader who only fetches the v45 manifest sees the correction inline."
   },
   "cluster": "c42 (mi300x partition)",
   "node": "b21u01",
@@ -54,9 +60,19 @@
       "O3": 38.087,
       "F3": 40.051,
       "P3": 40.251
-    }
+    },
+    "iqr_us": {
+      "M3": 3.048,
+      "N3": 2.325,
+      "O3": 1.965,
+      "F3": 2.486,
+      "P3": 0.722
+    },
+    "monotonicity_check": "FAILS — sorted by median: O3(36.94) < M3(37.61) < N3(38.53) < F3(38.57) < P3(39.85). O3 (relaxed-load + release-CAS) is the FASTEST despite carrying a release fence; this contradicts the simple 'more fences = more cost' ladder model.",
+    "noise_band_check": "All four neighbors (M3,N3,O3,F3) and P3 lie within a ~3-us window. The largest delta (P3-O3 = 2.91 us) is comparable to the per-primitive IQR (~2-3 us). Pairwise differences are at the edge of statistical resolution at n=700."
   },
   "ladder_deltas_us": {
+    "_caveat_v45_2": "These deltas are real but small (1-3 us) and within the per-primitive p25-p75 IQR (~2-3 us). The ladder is non-monotonic (O3<M3). Treat as 'ordering tax is bounded at a few us and is not a monotonic function of fence strength' rather than a clean monotonic ladder.",
     "P3 - F3": 1.283,
     "P3 - M3": 2.2455,
     "P3 - N3": 1.324,
@@ -72,94 +88,32 @@
     "timer": "focal_stream_cuda_event (interferer launched on stream B but timed only via focal stream A start/end events)",
     "p3_focal_only_baseline_us": 39.65,
     "per_interferer": {
-      "F": {
-        "median_us": 42.537,
-        "delta_vs_focal_only_us": 2.887,
-        "n": 700
-      },
-      "E3": {
-        "median_us": 48.791,
-        "delta_vs_focal_only_us": 9.141,
-        "n": 700
-      },
-      "P": {
-        "median_us": 48.831,
-        "delta_vs_focal_only_us": 9.181,
-        "n": 700
-      },
-      "I3": {
-        "median_us": 48.911,
-        "delta_vs_focal_only_us": 9.261,
-        "n": 700
-      },
-      "H3": {
-        "median_us": 48.951,
-        "delta_vs_focal_only_us": 9.301,
-        "n": 700
-      },
-      "D3": {
-        "median_us": 49.071,
-        "delta_vs_focal_only_us": 9.421,
-        "n": 700
-      },
-      "L3": {
-        "median_us": 49.071,
-        "delta_vs_focal_only_us": 9.421,
-        "n": 700
-      },
-      "G": {
-        "median_us": 49.072,
-        "delta_vs_focal_only_us": 9.422,
-        "n": 700
-      },
-      "J3": {
-        "median_us": 49.1115,
-        "delta_vs_focal_only_us": 9.4615,
-        "n": 700
-      },
-      "K3": {
-        "median_us": 49.112,
-        "delta_vs_focal_only_us": 9.462,
-        "n": 700
-      },
-      "Y": {
-        "median_us": 49.312,
-        "delta_vs_focal_only_us": 9.662,
-        "n": 700
-      },
-      "M3": {
-        "median_us": 50.355,
-        "delta_vs_focal_only_us": 10.705,
-        "n": 700
-      },
-      "O3": {
-        "median_us": 50.756,
-        "delta_vs_focal_only_us": 11.106,
-        "n": 700
-      },
-      "H": {
-        "median_us": 50.9755,
-        "delta_vs_focal_only_us": 11.3255,
-        "n": 700
-      },
-      "N3": {
-        "median_us": 51.116,
-        "delta_vs_focal_only_us": 11.466,
-        "n": 700
-      },
-      "G3": {
-        "median_us": 53.5615,
-        "delta_vs_focal_only_us": 13.9115,
-        "n": 700
-      },
-      "R2": {
-        "median_us": 54.443,
-        "delta_vs_focal_only_us": 14.793,
-        "n": 700
-      }
+      "F":  {"median_us": 42.537,  "delta_vs_focal_only_us": 2.887,   "n": 700},
+      "E3": {"median_us": 48.791,  "delta_vs_focal_only_us": 9.141,   "n": 700},
+      "P":  {"median_us": 48.831,  "delta_vs_focal_only_us": 9.181,   "n": 700},
+      "I3": {"median_us": 48.911,  "delta_vs_focal_only_us": 9.261,   "n": 700},
+      "H3": {"median_us": 48.951,  "delta_vs_focal_only_us": 9.301,   "n": 700},
+      "D3": {"median_us": 49.071,  "delta_vs_focal_only_us": 9.421,   "n": 700},
+      "L3": {"median_us": 49.071,  "delta_vs_focal_only_us": 9.421,   "n": 700},
+      "G":  {"median_us": 49.072,  "delta_vs_focal_only_us": 9.422,   "n": 700},
+      "J3": {"median_us": 49.1115, "delta_vs_focal_only_us": 9.4615,  "n": 700},
+      "K3": {"median_us": 49.112,  "delta_vs_focal_only_us": 9.462,   "n": 700},
+      "Y":  {"median_us": 49.312,  "delta_vs_focal_only_us": 9.662,   "n": 700},
+      "M3": {"median_us": 50.355,  "delta_vs_focal_only_us": 10.705,  "n": 700},
+      "O3": {"median_us": 50.756,  "delta_vs_focal_only_us": 11.106,  "n": 700},
+      "H":  {"median_us": 50.9755, "delta_vs_focal_only_us": 11.3255, "n": 700},
+      "N3": {"median_us": 51.116,  "delta_vs_focal_only_us": 11.466,  "n": 700},
+      "G3": {"median_us": 53.5615, "delta_vs_focal_only_us": 13.9115, "n": 700},
+      "R2": {"median_us": 54.443,  "delta_vs_focal_only_us": 14.793,  "n": 700}
     }
+  },
+  "DEPRECATED_artifacts_in_v45": {
+    "v45_baseline.csv": "wall-clock; superseded by v45_anchor.csv + v45_anchor_run2.csv",
+    "v45_paired.csv": "wall-clock; superseded by v45_paired_canonical_event.csv + v45_paired_canonical_event_run2.csv",
+    "v45_manifest.json": "see top-level superseded_by:'v45.1' and DEPRECATED_ prefixes inside that file"
   },
   "prior_v45_wall_clock_canonical_us": 57.6251,
   "measurement_method_correction_us": 17.7741,
+  "softened_conclusion": "P3 ATOMIC_CAS_ACQREL on CDNA3 is statistically indistinguishable from F3/N3/O3 within measurement noise (all four neighbors and P3 lie in a ~3-us window; per-primitive IQR is 2-3 us). The ordering tax on CDNA3 CAS is at most a few microseconds and is NOT monotonic in fence strength (O3 release-CAS is faster than M3 relaxed in the in-corpus anchor). The previous v45 claim of a +23 us P3-vs-F3 ordering tax was a measurement artifact (wall-clock timer + cross-host F3 anchor); the corrected single-host event-timed delta is +1.28 us, which is within noise.",
   "comm_data_branch": "K-2246-v45-p3-atomic-cas-acqrel (additive v45.1 commit; ryanswann-amd/iris fork)"
 }
