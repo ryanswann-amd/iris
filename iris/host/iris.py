@@ -1325,13 +1325,16 @@ class Iris:
             rank in the group. Supports two variants selected by
             ``config.broadcast_variant``:
 
-            - ``"direct"``: source rank pushes the entire tensor to every peer over
-              its single egress link. Best for small payloads (< 1 MiB).
-            - ``"tree"``: staged scatter + all-gather. Source scatters one shard
-              per rank; every rank then pushes its shard to every other rank,
-              saturating all 8 GPU egress links in parallel. Best for >= 1 MiB.
-            - ``"auto"`` (default): selects ``"tree"`` for payloads >= 1 MiB,
-              else ``"direct"``.
+            - ``"direct"``:            source rank pushes the entire tensor to every
+                                       peer over its single egress link. Best for
+                                       small payloads (< 1 MiB).
+            - ``"scatter_allgather"``: two-phase. Source scatters one ``1/world_size``
+                                       row-shard per rank; every rank then pushes
+                                       its shard to every other rank (an all-gather,
+                                       *not* a log-N tree), saturating all 8 GPU
+                                       egress links in parallel. Best for >= 1 MiB.
+            - ``"auto"`` (default):    selects ``"scatter_allgather"`` for payloads
+                                       >= 1 MiB, else ``"direct"``.
 
             Args:
                 output_tensor: Output tensor of shape (M, N) — receive buffer on every rank.
@@ -1351,11 +1354,11 @@ class Iris:
 
             Example:
                 >>> ctx = iris.iris()
-                >>> # Auto-selects "tree" for tensors >= 1 MiB
+                >>> # Auto-selects "scatter_allgather" for tensors >= 1 MiB
                 >>> ctx.ccl.broadcast_tensor(output_tensor, input_tensor, src=0)
 
                 >>> from iris.ccl import Config
-                >>> config = Config(broadcast_variant="tree")
+                >>> config = Config(broadcast_variant="scatter_allgather")
                 >>> ctx.ccl.broadcast_tensor(output_tensor, input_tensor, src=0, config=config)
             """
             from iris.ccl.broadcast import broadcast

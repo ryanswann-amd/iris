@@ -12,21 +12,34 @@ Two variants are available (selected via ``Config.broadcast_variant``):
 - ``direct`` — the source rank pushes the entire tensor to every peer over
   its own egress link.  Best for small payloads where setup cost dominates.
 
-- ``tree`` — staged scatter + all-gather.  Phase 1 has the source push a
-  ``1/world_size`` shard to every peer; phase 2 has every peer push its
-  shard to every other peer.  Phase 2 saturates all egress links in
-  parallel, closing the kernel-time gap observed at >=1 MiB sizes
+- ``scatter_allgather`` — two-phase pipeline.  Phase 1 has the source push a
+  ``1/world_size`` row-shard to every peer (a scatter).  Phase 2 has every
+  peer push its shard to every other peer (an all-gather), so all 8 GPU
+  egress links push concurrently instead of just the source's single link.
+  This closes the kernel-time gap observed at >=1 MiB sizes
   (see K-156 / K-357).  Auto-selected for payloads >=
-  ``BROADCAST_TREE_THRESHOLD_BYTES`` (default 1 MiB) when
+  ``BROADCAST_SCATTER_ALLGATHER_THRESHOLD_BYTES`` (default 1 MiB) when
   ``broadcast_variant="auto"``.
+
+Naming note:
+    The phase-2 step is structurally an all-gather (every rank sends its
+    shard to every other rank — O(N) sends per rank), *not* a logarithmic
+    tree.  We name the variant after its actual structure so future
+    contributors can add a true ``ring`` or ``tree`` (log-N) variant
+    without overloading the name.
 """
 
 from iris.ccl.utils import extract_group_info
 
 
-# Bytes threshold above which the auto policy chooses the ``tree`` variant.
-# Sourced from K-357 RC-3 / K-156 §key finding 4.
-BROADCAST_TREE_THRESHOLD_BYTES = 1 << 20  # 1 MiB
+# Bytes threshold above which the auto policy chooses the
+# ``scatter_allgather`` variant.  Sourced from K-357 RC-3 / K-156 §key
+# finding 4 — the link-saturation crossover on 8x MI300X.
+BROADCAST_SCATTER_ALLGATHER_THRESHOLD_BYTES = 1 << 20  # 1 MiB
+
+# Backwards-compat alias retained for any out-of-tree caller that imported
+# the previous (less-honest) name.  Do NOT add new uses.
+BROADCAST_TREE_THRESHOLD_BYTES = BROADCAST_SCATTER_ALLGATHER_THRESHOLD_BYTES
 
 
 def _tensor_nbytes(tensor) -> int:
@@ -34,10 +47,14 @@ def _tensor_nbytes(tensor) -> int:
 
 
 def _resolve_variant(variant: str, output_tensor) -> str:
-    """Resolve ``"auto"`` to either ``"direct"`` or ``"tree"`` based on size."""
+    """Resolve ``"auto"`` to either ``"direct"`` or ``"scatter_allgather"``."""
     if variant != "auto":
         return variant
-    return "tree" if _tensor_nbytes(output_tensor) >= BROADCAST_TREE_THRESHOLD_BYTES else "direct"
+    return (
+        "scatter_allgather"
+        if _tensor_nbytes(output_tensor) >= BROADCAST_SCATTER_ALLGATHER_THRESHOLD_BYTES
+        else "direct"
+    )
 
 
 def broadcast(
@@ -66,9 +83,9 @@ def broadcast(
 
     Notes:
         - The variant is selected by ``config.broadcast_variant``
-          (``"direct"``, ``"tree"``, or ``"auto"``).
-        - ``"auto"`` chooses ``"tree"`` for payloads >= 1 MiB and
-          ``"direct"`` otherwise.
+          (``"direct"``, ``"scatter_allgather"``, or ``"auto"``).
+        - ``"auto"`` chooses ``"scatter_allgather"`` for payloads >= 1 MiB
+          and ``"direct"`` otherwise.
     """
     from iris.ccl.config import Config
 

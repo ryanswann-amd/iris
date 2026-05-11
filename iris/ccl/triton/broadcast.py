@@ -6,16 +6,29 @@ Triton kernels for broadcast collective communication.
 
 Two variants:
 
-- ``direct``  : the source rank pushes the entire tensor to every other rank.
-                Best for small payloads (<1 MiB) where setup cost dominates.
+- ``direct``            : the source rank pushes the entire tensor to every
+                          other rank.  Best for small payloads (<1 MiB) where
+                          setup cost dominates.
 
-- ``tree``    : staged scatter + all-gather (a.k.a. relay/Rabenseifner-style
-                broadcast).  Phase 1 partitions the payload into ``world_size``
-                row-wise shards; the source pushes shard ``i`` to rank ``i`` only.
-                Phase 2 has every rank simultaneously push its shard to every
-                other rank.  Phase 2 keeps all 8 GPU egress links saturated
-                instead of just the source's single link, closing the kernel-time
-                gap observed at >=1 MiB sizes (see K-156, K-357).
+- ``scatter_allgather`` : two-phase pipeline.  Phase 1 (``_scatter``)
+                          partitions the payload into ``world_size`` row-wise
+                          shards; the source pushes shard ``i`` to rank ``i``
+                          only.  Phase 2 (``_allgather``) has every rank
+                          simultaneously push its shard to every other rank
+                          (an all-gather, *not* a log-N tree — every rank
+                          issues ``world_size - 1`` sends).  Phase 2 keeps
+                          all 8 GPU egress links saturated instead of just
+                          the source's single link, closing the kernel-time
+                          gap observed at >=1 MiB sizes (see K-156, K-357).
+
+Sharding for non-aligned sizes:
+    Phase 1 partitions the M dimension by ``rows_per_shard = cdiv(M,
+    world_size)``.  Shard ``i`` covers rows ``[i*rows_per_shard,
+    min((i+1)*rows_per_shard, M))``.  When ``M`` is not divisible by
+    ``world_size`` the last shard(s) are short or empty; the per-tile mask
+    ``rm < shard_row_end`` clamps both the load and the iris.store, so no
+    out-of-bounds writes ever land on a peer.  Phase 2 reads the same
+    ``shard_row_end`` so empty shards push no traffic.
 """
 
 import triton
@@ -116,12 +129,12 @@ def persistent_broadcast_direct(
 
 
 # ---------------------------------------------------------------------------
-# Tree / staged-relay broadcast — phase 1: scatter
+# scatter_allgather broadcast — phase 1: scatter
 # ---------------------------------------------------------------------------
 
 
 @triton.jit()
-def persistent_broadcast_tree_scatter(
+def persistent_broadcast_scatter_allgather_scatter(
     input_ptr,
     output_ptr,
     M,
@@ -144,12 +157,16 @@ def persistent_broadcast_tree_scatter(
     NUM_XCDS: tl.constexpr,  # unused
     CHUNK_SIZE: tl.constexpr,  # unused
 ):
-    """Tree broadcast — phase 1.
+    """scatter_allgather broadcast — phase 1 (scatter).
 
-    The source rank partitions the M dimension into ``world_size`` shards.
-    Shard ``i`` is pushed to rank ``i`` only (including a local copy for the
-    source's own shard).  After this kernel + a barrier, every rank holds its
-    own shard in ``output_tensor`` and can participate in phase 2.
+    The source rank partitions the M dimension into ``world_size`` shards
+    of ``rows_per_shard = cdiv(M, world_size)``.  Shard ``i`` is pushed to
+    rank ``i`` only (including a local copy for the source's own shard).
+    For ``M`` not divisible by ``world_size``, trailing shards may be short
+    or empty; ``shard_row_end = min(start + rows_per_shard, M)`` and the
+    per-tile mask handle the remainder rows safely.  After this kernel +
+    a barrier, every rank holds its own shard in ``output_tensor`` and can
+    participate in phase 2.
     """
     pid = tl.program_id(0)
 
@@ -160,60 +177,62 @@ def persistent_broadcast_tree_scatter(
     num_pid_m = tl.cdiv(rows_per_shard, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     tiles_per_shard = num_pid_m * num_pid_n
-    total_tiles = tiles_per_shard * world_size
-    tl.assume(total_tiles > 0)
+    tl.assume(tiles_per_shard > 0)
 
-    for tile_id in range(pid, total_tiles, COMM_SMS):
-        shard_idx = tile_id // tiles_per_shard
-        local_tile = tile_id % tiles_per_shard
-
-        num_pid_in_group = GROUP_SIZE_M * num_pid_n
-        gid = local_tile // num_pid_in_group
-        first_pid_m = gid * GROUP_SIZE_M
-        group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-        pid_m = first_pid_m + ((local_tile % num_pid_in_group) % group_size_m)
-        pid_n = (local_tile % num_pid_in_group) // group_size_m
-
+    # Iterate over destination shards in a static_range so ``target_rank`` is
+    # constexpr-resolvable inside ``iris.store`` — this matches the structure
+    # of ``persistent_all_gather`` in ``iris/ccl/triton/all_gather.py`` and is
+    # required for iris.store to compile correctly.
+    for shard_idx in tl.static_range(world_size):
         shard_row_start = shard_idx * rows_per_shard
-        rm_local = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-        rm = shard_row_start + rm_local
-        rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
-        rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
-
         shard_row_end = tl.minimum(shard_row_start + rows_per_shard, M)
-        mask = (rm[:, None] < shard_row_end) & (rn[None, :] < N) & (rm[:, None] < M)
-
-        in_off = rm[:, None] * stride_in_m + rn[None, :] * stride_in_n
-        out_off = rm[:, None] * stride_out_m + rn[None, :] * stride_out_n
-        in_p = input_ptr + in_off
-        out_p = output_ptr + out_off
-
-        data = tl.load(in_p, mask=mask, other=0.0)
-
         target_rank = rank_start + shard_idx * rank_stride
-        if shard_idx == src_rank_in_group:
-            # Local copy for the source's own shard.
-            tl.store(out_p, data, mask=mask, cache_modifier=".wt")
-        else:
-            iris.store(
-                out_p,
-                data,
-                iris_rank,
-                target_rank,
-                heap_bases,
-                mask=mask,
-                hint=(1, BLOCK_SIZE_N),
-            )
+
+        for tile_id in range(pid, tiles_per_shard, COMM_SMS):
+            num_pid_in_group = GROUP_SIZE_M * num_pid_n
+            gid = tile_id // num_pid_in_group
+            first_pid_m = gid * GROUP_SIZE_M
+            group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+            pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
+            pid_n = (tile_id % num_pid_in_group) // group_size_m
+
+            rm_local = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+            rm = shard_row_start + rm_local
+            rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+            rm = tl.max_contiguous(tl.multiple_of(rm, BLOCK_SIZE_M), BLOCK_SIZE_M)
+            rn = tl.max_contiguous(tl.multiple_of(rn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
+            mask = (rm[:, None] < shard_row_end) & (rn[None, :] < N) & (rm[:, None] < M)
+
+            in_off = rm[:, None] * stride_in_m + rn[None, :] * stride_in_n
+            out_off = rm[:, None] * stride_out_m + rn[None, :] * stride_out_n
+            in_p = input_ptr + in_off
+            out_p = output_ptr + out_off
+
+            data = tl.load(in_p, mask=mask, other=0.0)
+
+            if shard_idx == src_rank_in_group:
+                # Local copy for the source's own shard.
+                tl.store(out_p, data, mask=mask, cache_modifier=".wt")
+            else:
+                iris.store(
+                    out_p,
+                    data,
+                    iris_rank,
+                    target_rank,
+                    heap_bases,
+                    mask=mask,
+                    hint=(1, BLOCK_SIZE_N),
+                )
 
 
 # ---------------------------------------------------------------------------
-# Tree / staged-relay broadcast — phase 2: all-gather
+# scatter_allgather broadcast — phase 2: all-gather
 # ---------------------------------------------------------------------------
 
 
 @triton.jit()
-def persistent_broadcast_tree_gather(
+def persistent_broadcast_scatter_allgather_allgather(
     output_ptr,
     M,
     N,
@@ -233,12 +252,15 @@ def persistent_broadcast_tree_gather(
     NUM_XCDS: tl.constexpr,  # unused
     CHUNK_SIZE: tl.constexpr,  # unused
 ):
-    """Tree broadcast — phase 2.
+    """scatter_allgather broadcast — phase 2 (all-gather).
 
-    Every rank already holds its own shard (rows ``group_rank * R .. (group_rank+1)*R``)
-    in ``output_tensor`` from phase 1.  Each rank now reads its shard and
-    pushes it to every other rank in parallel — saturating all
-    ``world_size`` egress links simultaneously.
+    Every rank already holds its own shard (rows
+    ``group_rank * R .. min((group_rank + 1) * R, M)``, where
+    ``R = cdiv(M, world_size)``) in ``output_tensor`` from phase 1.  Each
+    rank now reads its shard and pushes it to every other rank in
+    parallel — saturating all ``world_size`` egress links simultaneously.
+    Each rank issues ``world_size - 1`` sends, so the per-rank send count
+    is O(N), not O(log N): this is structurally an all-gather, not a tree.
     """
     pid = tl.program_id(0)
 
@@ -273,13 +295,13 @@ def persistent_broadcast_tree_gather(
         data = tl.load(out_p, mask=mask, other=0.0)
 
         # Push our shard to every peer except ourselves; we already have it.
-        # Stagger the start rank by pid to avoid all PIDs hitting the same
-        # peer first — improves egress link utilization.
-        start_rank_idx = pid % world_size
+        # ``target_rank`` is computed inside ``tl.static_range`` so it is
+        # constexpr-resolvable (required by iris.store on AMDGPU).  Concurrency
+        # across the 8 GPU egress links comes from every rank running this
+        # kernel simultaneously, not from per-PID stagger of the loop order.
         for i in tl.static_range(world_size):
-            target_idx = (start_rank_idx + i) % world_size
-            if target_idx != group_rank:
-                target_rank = rank_start + target_idx * rank_stride
+            if i != group_rank:
+                target_rank = rank_start + i * rank_stride
                 iris.store(
                     out_p,
                     data,
@@ -310,9 +332,9 @@ def launch(
 ):
     """Dispatch to the chosen broadcast variant.
 
-    For the ``tree`` variant the launch is two kernels separated by a
-    ``ctx.barrier()`` — phase 1 (scatter) populates each rank's shard, and
-    phase 2 (all-gather) replicates shards to every peer.
+    For the ``scatter_allgather`` variant the launch is two kernels
+    separated by a ``ctx.barrier()`` — phase 1 (scatter) populates each
+    rank's shard, and phase 2 (all-gather) replicates shards to every peer.
     """
     M, N = output_tensor.shape[:2]
     stride_in_m, stride_in_n = input_tensor.stride(0), input_tensor.stride(1)
@@ -359,10 +381,10 @@ def launch(
         )
         return
 
-    if variant == "tree":
+    if variant == "scatter_allgather":
         # Phase 1: source scatters shards to every rank.
         iris_launch(
-            persistent_broadcast_tree_scatter,
+            persistent_broadcast_scatter_allgather_scatter,
             (config.comm_sms,),
             input_tensor,
             output_tensor,
@@ -392,7 +414,7 @@ def launch(
         ctx.barrier()
         # Phase 2: every rank pushes its shard to every other rank.
         iris_launch(
-            persistent_broadcast_tree_gather,
+            persistent_broadcast_scatter_allgather_allgather,
             (config.comm_sms,),
             output_tensor,
             M,
