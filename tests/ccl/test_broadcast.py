@@ -117,8 +117,8 @@ def _run_broadcast(M, N, dtype, variant, src):
 @pytest.mark.parametrize(
     "M, N",
     [
-        (128, 64),     # ~16 KiB (fp16) — sub-threshold; auto picks direct.
-        (1024, 256),   # ~512 KiB (fp16) — sub-threshold.
+        (128, 64),  # ~16 KiB (fp16) — sub-threshold; auto picks direct.
+        (1024, 256),  # ~512 KiB (fp16) — sub-threshold.
         (1024, 1024),  # 2 MiB (fp16) / 4 MiB (fp32) — over-threshold; auto picks scatter_allgather.
         (4096, 4096),  # 32 MiB (fp16) / 64 MiB (fp32) — large, scatter_allgather wins.
     ],
@@ -177,9 +177,9 @@ def test_auto_threshold_is_one_mib():
 @pytest.mark.parametrize(
     "M, N, dtype, expected",
     [
-        (128, 64, torch.float16, "direct"),                # 16 KiB
-        (256, 256, torch.float16, "direct"),               # 128 KiB
-        (1024, 512, torch.float16, "scatter_allgather"),   # 1 MiB exactly.
+        (128, 64, torch.float16, "direct"),  # 16 KiB
+        (256, 256, torch.float16, "direct"),  # 128 KiB
+        (1024, 512, torch.float16, "scatter_allgather"),  # 1 MiB exactly.
         (1024, 1024, torch.float16, "scatter_allgather"),  # 2 MiB.
         (1024, 1024, torch.float32, "scatter_allgather"),  # 4 MiB.
     ],
