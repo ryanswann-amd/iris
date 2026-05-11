@@ -921,7 +921,7 @@ def launch(
             config.chunk_size,
             config.all_reduce_distribution,
             num_warps=8,
-            num_stages=1,
+            num_stages=2,
             waves_per_eu=1,
             algorithm="all_reduce",
             rank=rank_global,
