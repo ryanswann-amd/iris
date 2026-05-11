@@ -74,7 +74,7 @@ The prior +23.27 µs / +24.11 µs deltas were **measurement artifacts** (host wa
 | All prior-retry reviewer feedback preserved (Skeptic.paired_timing, Skeptic.cross_host_anchor, UX.headline_consistency, UX.truncated_tables) | DONE |
 | In-corpus single-host event-timed deltas reported with explicit labels and IQR context | DONE |
 | Wall-clock CSVs flagged in JSON manifest (machine-readable) AND duplicated as `.SUPERSEDED.csv` (human-readable filename) | DONE |
-| Push to ryanswann-amd corpus host (v45.2 retry-7 commit on K-2246-v45-p3-atomic-cas-acqrel) | see commit SHA below |
+| Push to ryanswann-amd corpus host (v45.2 retry-7 commit on K-2246-v45-p3-atomic-cas-acqrel) | DONE — `5cf137c` |
 
 ## Push verification (v45.2 retry-7)
 
@@ -82,10 +82,20 @@ The prior +23.27 µs / +24.11 µs deltas were **measurement artifacts** (host wa
 |---|---|
 | repo            | `git@github.com:ryanswann-amd/iris.git` |
 | branch          | `K-2246-v45-p3-atomic-cas-acqrel` |
+| HEAD SHA        | `5cf137ccfca05878e4af1f3bf68ca8b4d508dbbd` |
 | dir-in-repo     | `K-2246/v45/` (text-only updates: 2 manifests, summary.md, STATUS.md, SUPERSEDED.md, two `.SUPERSEDED.csv` copies) |
-| browse          | https://github.com/ryanswann-amd/iris/tree/K-2246-v45-p3-atomic-cas-acqrel/K-2246/v45 |
+| browse          | https://github.com/ryanswann-amd/iris/tree/5cf137ccfca05878e4af1f3bf68ca8b4d508dbbd/K-2246/v45 |
+| raw v45_manifest.json | https://raw.githubusercontent.com/ryanswann-amd/iris/5cf137ccfca05878e4af1f3bf68ca8b4d508dbbd/K-2246/v45/v45_manifest.json (HTTP 200) |
+| raw SUPERSEDED.md     | https://raw.githubusercontent.com/ryanswann-amd/iris/5cf137ccfca05878e4af1f3bf68ca8b4d508dbbd/K-2246/v45/SUPERSEDED.md (HTTP 200) |
+| raw summary.md        | https://raw.githubusercontent.com/ryanswann-amd/iris/5cf137ccfca05878e4af1f3bf68ca8b4d508dbbd/K-2246/v45/summary.md (HTTP 200) |
 
-(See git log in the corpus repo for the retry-7 SHA — appended below after push.)
+Wire-verified manifest contents:
+```
+superseded_by: v45.1
+corrected_p3_canonical_us: 39.85
+DEPRECATED_NOTICE: present
+superseded_artifacts keys: ['v45_baseline.csv', 'v45_paired.csv']
+```
 
 ## Files in `/workspace/output/`
 
