@@ -1,158 +1,120 @@
-# K-2246 — v44→v45 P3 ATOMIC_CAS_ACQREL on MI300X (CDNA3 / gfx942)
+# K-2246 — v45 → v45.1 P3 ATOMIC_CAS_ACQREL on MI300X (CDNA3 / gfx942)
 
-## One-line result
+## Headline (v45.1, addresses retry-feedback)
 
-**P3 (acq_rel-load + acq_rel-CAS) canonical median = 57.63 µs at K=4 N_PROD=4 N_OPS=32 on MI300X gfx942 → P3 − F3 = +23.27 µs isolates the cost of upgrading the load-side from `acquire` to `acq_rel`. Fence-fusion (K-2243 R-2243.2) BREAKS when both sides are acq_rel: P3 stacks the load-side and store-side L2 invalidate/flush sequences instead of collapsing them.**
+**P3 (acq_rel-load + acq_rel-CAS) canonical median = 39.85 µs at K=4 N_PROD=4 N_OPS=32 on MI300X b21u01.**
 
-Cluster: c42 / mi300x partition / b21u01 / ROCm 7.2 / Triton 3.6.0+rocm7.2.0. Container `mc2-K-2246` based on `rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0`. Cluster IP-drift fix from K-2248 applied (10.245.136.207, not 143.43).
+| comparison (in-corpus, b21u01, n=700/prim, CUDA-event timer) | µs    |
+|---|---:|
+| **Δ P3 vs F3** *(load: acquire→acq_rel; CAS unchanged)*       | **+1.28** |
+| **Δ P3 vs M3** *(both sides: relaxed→acq_rel — full ordering tax)* | **+2.25** |
+| Δ P3 vs N3 *(load+CAS: acquire→acq_rel)*                      | +1.32 |
+| Δ P3 vs O3 *(load: relaxed→acq_rel; CAS: release→acq_rel)*    | +2.91 |
 
-## Corpus shape — v45 / CDNA3
+**Answer to the task question:** CAS_ACQREL on CDNA3 is **NOT free** (P3 > all four neighbors), but the cost is **modest** (+1-3 µs at canonical), nothing like the +23 µs claimed in the prior v45 summary. **The prior +23.27 / +24.11 numbers were measurement artifacts** (host wall-clock + cross-host F3) — corrected by this v45.1 anchor.
 
-| split    | rows   | shape                                | quality                              |
-|---|---:|---|---|
-| baseline | 4,375  | 1 prim (P3) × 175 cells × 25 reps    | 0 nulls / 0 zeros / 0 errors / 100% reps_per_cell=25 |
-| paired   | 74,375 | 17 interferers × 175 cells × 25 reps | 0 nulls / 0 zeros / single-host gfx942 |
-| **total** | **78,750** | both PASS quality gates (1 single-host WARN, expected single-node replay) |
+## Reviewer fixes applied (THIS retry)
 
-Cell grid (matches K-2248 published K-2240 lineage convention): K∈{1,2,4,8,16}, N_PROD∈{2..8}, N_OPS∈{8,16,32,64,128} = 175 cells. REPS=25, WARMUP=3.
+| feedback                                              | fix                                                      |
+|---|---|
+| **Skeptic — paired timing measured max(focal,inter)** | Replaced `time.perf_counter()` wall-clock with focal-stream `cudaEventRecord` start/end pair. Interferer launches on stream B BEFORE focal; focal is timed only by its own stream's start/end events. Script: `bench_p3_paired_events.py`. |
+| **Skeptic — F3 anchor was cross-host (v44 different node)** | New `v45_anchor.csv` re-measures M3/N3/O3/F3/P3 on b21u01 (same host as v45 baseline), n=700 reps each, CUDA-event timer. P3-vs-F3 delta is now a single-host single-version comparison. |
+| **UX — +23.27 vs +24.11 ambiguity in headline**       | Both deltas are now reported in the same table with explicit labels (Δ-vs-F3 vs Δ-vs-M3); old wall-clock numbers superseded. |
+| **UX — truncated tables in summary.md**               | This rewrite uses short tables only (≤17 rows) so they render fully in any markdown viewer. |
 
-## CAS memory-ordering ladder at canonical cell K=4, N_PROD=4, N_OPS=32
+## v45.1 in-corpus CAS-ordering ladder (CUDA-event timer, n=700 reps each, b21u01)
 
-| primitive | load sem | CAS sem  | µs       | Δ vs M3   | Source                  |
-|---|---|---|---:|---:|---|
-| M3        | relaxed  | relaxed  | 33.52    | 0.00      | K-2243 v44 within       |
-| N3        | acquire  | acquire  | 33.36    | −0.16     | K-2243 v44 within       |
-| O3        | relaxed  | release  | 43.68    | +10.16    | K-2243 v44 within       |
-| F3        | acquire  | acq_rel  | 34.36    | +0.84     | K-2243 v44 within       |
-| **P3**    | **acq_rel** | **acq_rel** | **57.63** | **+24.11** | **K-2246 v45 NEW**      |
+| primitive | load sem | CAS sem  | median µs | p25→p75       | n   |
+|---|---|---|---:|---|---:|
+| O3        | relaxed  | release  | 36.94     | 36.12 → 38.09 | 700 |
+| M3        | relaxed  | relaxed  | 37.61     | 36.28 → 39.33 | 700 |
+| N3        | acquire  | acquire  | 38.53     | 37.57 → 39.89 | 700 |
+| F3        | acquire  | acq_rel  | 38.57     | 37.57 → 40.05 | 700 |
+| **P3 NEW**| **acq_rel** | **acq_rel** | **39.85** | **39.53 → 40.25** | **700** |
 
-**Step-by-step ladder:**
+## Ordering-tax decomposition (single-host, in-corpus)
 
-| step           | promotion                                | Δ µs   |
+| step           | promotion                                       | Δ µs  |
 |---|---|---:|
-| M3 → N3        | relaxed-load → acquire-load              | −0.16  |
-| M3 → F3        | both → acq_rel-CAS (acq-load)            | +0.84  |
-| F3 → **P3**    | **acq-load → acq_rel-load (CAS already acq_rel)** | **+23.27** |
-| M3 → **P3**    | **full ordering tax (relaxed → acq_rel both sides)** | **+24.11** |
-| O3 → P3        | relaxed-load → acq_rel-load (release → acq_rel-CAS) | +13.95 |
+| M3 → N3        | relaxed-load → acquire-load (CAS also acq)      | +0.92 |
+| M3 → F3        | relaxed-load → acquire-load + relaxed → acq_rel-CAS | +0.96 |
+| F3 → P3        | **load: acquire → acq_rel** (CAS unchanged)     | **+1.28** |
+| M3 → P3        | both sides: relaxed → acq_rel (full tax)        | **+2.25** |
+| O3 → P3        | load: relaxed → acq_rel; CAS: release → acq_rel | +2.91 |
 
-**The fence-fusion observed in K-2243 (acquire-load + acq_rel-CAS share a single L2 invalidate/flush) BREAKS when the load is acq_rel.** The acq_rel-load issues its OWN L2 invalidate/flush BEFORE the CAS, and the acq_rel-CAS then issues its own pair AFTER. The two sequences cannot fuse because they are ordered (load completes before CAS dispatches). Net effect: P3 pays ≈2× the per-iteration fence cost of F3.
+The fence-fusion claim from the prior summary (+23.27 µs "load-side acq_rel-fence cost") **collapses** under proper measurement. CAS_ACQREL on CDNA3 is **lightly more expensive** than CAS_ACQUIRE — consistent with one extra acq fence on the load side, but not catastrophic.
 
-## P3 baseline scaling at K=4, N_PROD=4
+## v45.1 paired-event canonical sweep (focal P3 vs 17 interferers, n=700)
 
-| N_OPS | median µs | µs/op |
-|---:|---:|---:|
-| 8   | 29.38  | (baseline anchor) |
-| 16  | 38.79  | +1.18 |
-| 32  | 57.63  | +1.18 |
-| 64  | 96.25  | +1.21 |
-| 128 | 171.13 | +1.17 |
+Focal-only baseline: **39.65 µs** (matches the in-corpus anchor 39.85 µs, ±0.5%).
 
-**Linear fit: latency ≈ 1.18 µs/op + 19.6 µs launch baseline (R² ≈ 1.00).** Matches the expected serialization model for a fully-fenced atomic. Comparison to K-2248 Q3 (seq_cst CAS): Q3 is 1.5 µs/op + 12 µs baseline, so per-op P3 < Q3 by ~21% but P3 baseline launch is +7.6 µs higher (the load-side acq_rel fence on the WARMUP+first-iter path).
-
-## P3 vs K (contention multiplier) at N_PROD=4, N_OPS=32
-
-| K | median µs |
-|---:|---:|
-| 1  | 57.68 |
-| 2  | 57.33 |
-| 4  | 57.63 |
-| 8  | 69.99 |
-| 16 | 98.35 |
-
-**P3 saturates from K=1 to K=4** (single SE busy with sys-scope fences); CDNA3 contention regime kicks in at K≥8.
-
-## P3 paired-interference at canonical (sorted by impact)
-
-| interferer | family    | paired µs | Δ vs P3-baseline | regime |
+| interferer | family         | focal P3 (µs) | Δ vs focal-only | regime        |
 |---|---|---:|---:|---|
-| P  (PUT)   | comm      | 72.83     | +15.21          | LIGHT — P3 fences dominate |
-| L3 (xchg-relaxed) | XCHG | 73.48 | +15.86 | LIGHT |
-| Y  (atomic-add)   | INT-atomic | 73.68 | +16.06 | LIGHT |
-| D3 (atomic-dec)   | INT-atomic | 74.06 | +16.44 | LIGHT |
-| K3 (xchg-acquire) | XCHG    | 79.96 | +22.34 | LIGHT-MED |
-| J3 (xchg-release) | XCHG    | 81.01 | +23.39 | LIGHT-MED |
-| E3 (xchg-acqrel)  | XCHG    | 82.80 | +25.18 | LIGHT-MED |
-| I3 (fp-fmin)      | FP-atomic | 87.98 | +30.36 | MED |
-| H3 (fp-fmax)      | FP-atomic | 90.64 | +33.01 | MED |
-| G  (atomic-or)    | INT-atomic | 96.20 | +38.57 | MED |
-| F  (fence)        | sync    | 97.45 | +39.83 | MED |
-| H  (barrier-atomic)| sync   | 97.79 | +40.16 | MED |
-| **N3 (cas-acquire)** | **CAS** | **99.15** | **+41.53** | **CAS-on-CAS** |
-| **M3 (cas-relaxed)** | **CAS** | **105.06** | **+47.44** | **CAS-on-CAS** |
-| **O3 (cas-release)** | **CAS** | **105.85** | **+48.22** | **CAS-on-CAS** |
-| G3 (fp-fadd)      | FP-atomic | 135.84 | +78.22 | HEAVY |
-| R2 (barrier-all)  | sync    | 148.45 | +90.82 | HEAVY |
+| F  (FENCE)        | sync         | 42.54   | +2.89  | LIGHTEST    |
+| E3 (xchg-acqrel)  | XCHG         | 48.79   | +9.14  | LIGHT       |
+| P  (PUT)          | comm         | 48.83   | +9.18  | LIGHT       |
+| I3 (fp-fmin)      | FP-atomic    | 48.91   | +9.26  | LIGHT       |
+| H3 (fp-fmax)      | FP-atomic    | 48.95   | +9.30  | LIGHT       |
+| D3 (atomic-dec)   | INT-atomic   | 49.07   | +9.42  | LIGHT       |
+| L3 (xchg-relaxed) | XCHG         | 49.07   | +9.42  | LIGHT       |
+| G  (atomic-or)    | INT-atomic   | 49.07   | +9.42  | LIGHT       |
+| J3 (xchg-release) | XCHG         | 49.11   | +9.46  | LIGHT       |
+| K3 (xchg-acquire) | XCHG         | 49.11   | +9.46  | LIGHT       |
+| Y  (atomic-add)   | INT-atomic   | 49.31   | +9.66  | LIGHT       |
+| M3 (cas-relaxed)  | CAS          | 50.35   | +10.71 | LIGHT-MED   |
+| O3 (cas-release)  | CAS          | 50.76   | +11.11 | LIGHT-MED   |
+| H  (barrier-atomic)| sync        | 50.98   | +11.33 | LIGHT-MED   |
+| N3 (cas-acquire)  | CAS          | 51.12   | +11.47 | LIGHT-MED   |
+| G3 (fp-fadd)      | FP-atomic    | 53.56   | +13.91 | MED         |
+| R2 (barrier-all)  | sync         | 54.44   | +14.79 | MED-HEAVY   |
 
-**Key observations:**
+**Three regimes (corrected):**
+1. **F (fence) is uniquely cheap** at +2.89 µs — `tl.atomic_add(addr, 0, sem='acq_rel')` on stream B does not contend for the L2 atomic dispatcher; it just issues an L2 invalidate+flush.
+2. **Most interferers cluster at +9.2-9.7 µs** — concurrent atomic traffic to a different address class adds a single dispatcher-arbitration overhead.
+3. **CAS-on-CAS = +10.7-11.5 µs** — pairing P3 against M3/N3/O3 adds **only** ~+1 µs over the +9.2 µs baseline (NOT 2× as the prior summary claimed). The L2 atomic dispatcher serializes CAS RMWs but not by full doubling — the additional cost is small. The +47 µs CAS-on-CAS doubling reported in the prior summary was an artifact of the wall-clock timer capturing the longer-running interferer.
 
-1. **Floor of +15 µs** — light interferers can't push P3 below ~+15 µs because P3's own sys-scope fences serialize the address. This is consistent with K-2248 Q3 saturation (≤+2 µs floor) but with much more headroom because P3 is per-address acq_rel, not seq_cst.
-2. **CAS-on-CAS ≈ +47 µs** — pairing P3 against any of M3/N3/O3 roughly DOUBLES P3 latency. The L2 atomic dispatcher on gfx942 serializes CAS RMWs to the same address class even across streams. Confirms K-2243's "CAS-on-CAS doubles release tax" finding (carried via R-2220.1) extends to acq_rel both-sides.
-3. **R2 (BARRIER_ALL) and G3 (FP-atomic FADD) are heaviest.** R2's emulated atomic_xor + acq_rel atomic_add hits the same L2 dispatcher; G3's FP-atomic engine on gfx942 contends for the same L2 buffer.
+## Measurement-method correction (before vs after)
 
-## Question answered
+| metric                        | v45 prior (wall-clock, cross-host F3) | v45.1 fix (CUDA-event, in-corpus) |
+|---|---:|---:|
+| P3 canonical median µs        | 57.63   | **39.85**   |
+| F3 canonical median µs        | 34.36 (v44, different host) | **38.57** (v45 anchor, b21u01) |
+| Δ P3 − F3                     | +23.27  | **+1.28**   |
+| Δ P3 − M3                     | +24.11  | **+2.25**   |
 
-> Does CAS_ACQREL on CDNA3 show the same ordering-cost stacking observed in XCHG_ACQREL vs XCHG_RELAXED, or is CAS already serialized enough that ACQREL is free?
+The headline +23.27 µs claim was **94.5 % measurement noise** (cross-host + wall-clock-captures-interferer); only ~+1.3 µs is the actual single-host event-timed delta.
 
-**Neither.** CAS_ACQREL with `acq_rel` on the LOAD side (P3) shows **strong ordering-cost stacking** (+24 µs over relaxed, +23 µs over F3) — even bigger than the XCHG ladder (E3-L3 ≈ +14 µs from K-2243 priors). The K-2243 fence-fusion that made F3 nearly free **does not generalize**: it requires the load to be `acquire` (not `acq_rel`). P3 is the first measured CAS configuration where the per-iteration cost is dominated by load-side fencing rather than store-side. **Engine-class fence-additivity is a function of (load_sem, store_sem) jointly, not of either side alone.**
+## Key findings (v45.1, corrected)
 
-## Key findings
+- **P3 = 39.85 µs canonical** with CUDA-event timer on b21u01 (n=700). Prior 57.63 µs reading was inflated by host overhead included in `time.perf_counter()`.
+- **The +23.27 µs P3-vs-F3 ordering tax claim is FALSIFIED** by single-host event-timed remeasure. True delta is **+1.28 µs** — small but consistent, and reproducible across two independent runs.
+- **CAS-on-CAS does NOT double P3 latency under contention**. M3/N3/O3 paired against P3 raise the focal latency by only ~+10-11 µs (vs the +47 µs claimed in v45). The L2 atomic dispatcher serializes CAS RMWs but the contention overhead is bounded.
+- **F (FENCE) is the cheapest interferer** for P3 at +2.89 µs — fences don't compete for the dispatcher, only flush the L2.
+- **PROPOSED R-2246.1 (revised):** acq_rel-load adds ~+1.3 µs on top of acquire-load on a CDNA3 single-address CAS. This is consistent with one extra acq fence; no fence-fusion failure, just a real (small) cost.
+- **PROPOSED R-2246.2 (revised):** CCL design rule — for CAS handoff requiring acq_rel ordering on the load, the cost is +1.3 µs/iter; if you can use F3 (acquire-load) instead, you save +1.3 µs but get strictly weaker ordering on the LOAD side.
 
-- **P3 = 57.63 µs canonical.** First measured CAS configuration with `acq_rel` on the load side; mirrors the K-2243 O3-vs-M3 release-fence isolation but on the load side instead.
-- **+23.27 µs P3-F3 isolates the load-side acq_rel-fence cost on a CDNA3 CAS RMW** — far larger than the load-side acquire-fence cost (N3-M3 = −0.16 µs), confirming acq_rel ≠ acquire in fence-fusion behavior.
-- **Fence-fusion non-generalization (FALSIFIES naive extension of K-2243 R-2243.2):** acquire-load fuses with acq_rel-CAS into a single L2 invalidate/flush; acq_rel-load does NOT fuse with acq_rel-CAS. Promote to PROPOSED **R-2246.1**.
-- **CAS-on-CAS doubles P3** — M3/N3/O3 paired against P3 each add +41-48 µs, ~2× the baseline. Same L2 atomic dispatcher serialization as the K-2243 CAS-on-CAS finding.
-- **CCL design rule (PROPOSED R-2246.2):** for any CAS handoff requiring full acq_rel semantics, prefer `acquire-load + acq_rel-CAS` (F3 pattern) over `acq_rel-load + acq_rel-CAS` (P3 pattern). The F3 pattern is **23 µs cheaper per iteration** with identical effective ordering on a single address.
+## Methodology (event-timed)
 
-## Methodology
-
-Single-rank multi-CTA emulation (matches K-2240/K-2243 lineage). Focal P3 launched on stream A, interferer on stream B; per-cell median across 25 reps. Triton 3.6.0+rocm7.2.0 lowering. WARMUP=3 launches per cell to prime JIT and warmup the L2 atomic dispatcher. `torch.cuda.synchronize()` before/after each rep gate. Wall-clock via `time.perf_counter()`. P3 kernel: `tl.atomic_add(addr, 0, sem='acq_rel', scope='sys')` as no-op acq_rel-fenced load + `tl.atomic_cas(addr, cur, cur+1, sem='acq_rel', scope='sys')`. Identical scaffolding to K-2240 N3 except for the `sem=` argument.
+- **Anchor**: `bench_v45_anchor.py` — for each of M3/N3/O3/F3/P3, time `reps` launches at canonical cell (K=4, N_PROD=4, N_OPS=32) using `cuda.Event(enable_timing=True)` start/end pair around each kernel. WARMUP=5. Combined runs n=200 + n=500 = 700 reps/prim.
+- **Paired**: `bench_p3_paired_events.py` — interferer launched on stream B FIRST (so it's in flight when focal starts); start-event recorded on focal stream A immediately before focal P3 launch; end-event recorded on focal stream A immediately after; `e_end.synchronize()` blocks host only for the focal stream end. The interferer may still be running, providing the contention. **The recorded latency is exactly the focal P3 GPU time under the contended L2 dispatcher.** WARMUP=5; combined n=700/cell.
+- **Cell**: K=4, N_PROD=4, N_OPS=32 (canonical, matches K-2240/K-2243 lineage). Single-rank multi-CTA emulation.
 
 ## Files in this output dir
 
-- `summary.md` — this file
-- `v45_baseline.csv` — 4,375 P3 baseline rep-rows (sha256 in manifest)
-- `v45_paired.csv`   — 74,375 P3 × 17 interferer paired rep-rows
-- `v45_manifest.json` — full manifest with QC, sha256, schema, and per-interferer canonical medians
-- `v45_cas_ordering_ladder.png` — CAS family ordering ladder including new P3
-- `v45_xchg_vs_cas_ordering.png` — XCHG vs CAS cross-comparison with P3 starred
-- `v45_paired_canonical.png` — paired-interference ranking
-- `v45_p3_scaling.png` — P3 latency vs N_OPS (linear scaling)
-
-## Push status — HALT-IS-A-DELIVERABLE (K-1996 protocol)
-
-The science deliverable is complete; only the upload to `ryanswann-amd/comm_data` is blocked.
-Reproducible evidence is in `push_evidence/push_attempt.log`. Verified facts (re-run on retry):
-
-| check | result |
+| file                                       | purpose                                                  |
 |---|---|
-| `GH_TOKEN` length | **0** (empty in this sandbox) |
-| `GITHUB_TOKEN` length | **0** (empty in this sandbox) |
-| `GET api.github.com/user` (both tokens) | **401 Bad credentials** |
-| `~/.ssh/` keys | **none** (only `known_hosts`) |
-| `GET github.com/ryanswann-amd/comm_data` | **404** (repo does not exist) |
-| `ryanswann-amd` public repo list | 15 repos, **comm_data not present** |
-| `git push https://github.com/ryanswann-amd/comm_data.git v45` | exit 128, no terminal/credential helper |
-
-**Hand-off package** (ready to publish in 2 commands once the repo+credentials exist):
-
-- `v45_corpus_repo/` — git repo on branch `v45` with one signed-style commit containing all artifacts and a top-level `corpus_manifest.json` (lineage v42 → v44 → v45, 46th-primitive entry, file sha256s).
-- `v45_corpus_v45.bundle` — single-file `git bundle` of that branch (sha256 `cbf2ca712c…`).
-- `v45_corpus_v45.tgz` — tarball of the working-tree files only (sha256 `883de881be…`).
-- `push_evidence/push_attempt_retry2.log` — re-verified 2026-05-11T06:19Z: identical blocker, same 401/404 fingerprint.
-
-**Two-command finish (any authorized agent):**
-```bash
-cd /workspace/output/v45_corpus_repo
-git remote add origin https://<TOKEN>@github.com/ryanswann-amd/comm_data.git
-git push -u origin v45
-```
-
-If the repo does not yet exist, create it first:
-```bash
-curl -sS -H "Authorization: token <TOKEN>" -d '{"name":"comm_data"}' https://api.github.com/orgs/ryanswann-amd/repos
-```
-
-## Success criterion status
-
-- **done**: SCIENCE deliverable COMPLETE (4,375 baseline + 74,375 paired rows, 0 nulls/zeros, manifest + 4 plots + summary, all PASS QC). PUBLICATION step requires credentials/repo not present in the sandbox (evidence above). Per K-1996 HALT-IS-A-DELIVERABLE: partial completion shipped with a turnkey push package and reproducible blocker log.
+| `summary.md`                               | this file                                                |
+| `STATUS.md`                                | retry status + scoreboard                                |
+| `v45_anchor.csv`                           | anchor sweep run-1 (200 reps × 5 prims = 1,000 rows)     |
+| `v45_anchor_run2.csv`                      | anchor sweep run-2 (500 reps × 5 prims = 2,500 rows)     |
+| `v45_paired_canonical_event.csv`           | paired-event sweep run-1 (200 reps × 18 cells = 3,600 rows) |
+| `v45_paired_canonical_event_run2.csv`      | paired-event sweep run-2 (500 reps × 18 cells = 9,000 rows) |
+| `v45_1_manifest.json`                      | corrected v45.1 manifest with sha256s, deltas, reviewer-fix entries |
+| `v45_1_ladder.png`                         | corrected CAS ordering ladder (event-timed, in-corpus)   |
+| `v45_1_paired_canonical_event.png`         | corrected paired sweep bar chart                         |
+| `v45_1_method_correction.png`              | side-by-side comparison: v45 wall-clock vs v45.1 event   |
+| `v45_1_paired_by_family.png`               | per-family contention overhead (CAS, XCHG, INT, FP, sync) |
+| `v45_baseline.csv` (kept)                  | original 4,375 wall-clock baseline rows (superseded by anchor) |
+| `v45_paired.csv` (kept)                    | original 74,375 wall-clock paired rows (superseded by paired_canonical_event) |
+| `v45_manifest.json` (kept)                 | original v45 manifest (kept for diff/audit)              |
+| `v45_*.png` originals (kept)               | original wall-clock plots (kept for audit)               |
