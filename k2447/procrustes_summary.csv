@@ -1,0 +1,5 @@
+stratum_label_orig,stratum_physical,n_rows,pc1_ve,pc1_ve_pred_k2427,pc1_ve_residual,pc1_loadings,mean_cost_us_by_order,rank_violation,theta_vs_atlas_rad,rho_vs_atlas,theta_vs_dist_min_rad,cluster_assignment,c_order,kappa_dcc,real_tcc_hit_mean,real_tcc_miss_mean,real_tcc_atomic_mean,real_l2_miss_rate
+dcc_disabled,"(64B align, stride×1)",3200,0.9001,0.9995,-0.0994,0.0388;0.0717;0.6933;0.716,23.642;23.763;24.235;24.373,False,0.6175,0.8922,0.3843,pc1_distorting,0.0148,0.4353,65643.0,441846.7,212992.0,0.8707
+dcc_uncompressed,"(256B align, stride×2)",3200,0.8939,0.9995,-0.1056,-0.0265;0.1925;0.702;0.6852,23.7;23.724;24.405;24.361,False,0.5832,0.964,0.3265,pc1_distorting,0.0161,0.4515,70578.3,656893.7,425984.0,0.903
+dcc_2to1,"(1024B align, stride×4)",3200,0.778,0.9996,-0.2215,0.1441;0.3915;0.6114;0.6725,23.673;23.916;24.184;24.48,False,0.326,0.9972,0.0591,pc1_distorting,0.0144,0.4684,73383.7,1087018.0,851968.0,0.9368
+dcc_4to1,"(4096B align, stride×8)",3200,0.9405,0.9995,-0.0589,0.2147;0.4168;0.6372;0.6117,24.2;24.163;24.623;24.957,False,0.2464,0.9902,0.065,pc1_distorting,0.0154,0.4797,82506.0,1947292.7,1703936.0,0.9594
