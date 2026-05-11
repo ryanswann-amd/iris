@@ -55,8 +55,15 @@
 | `fig3_p99_p50.png` | p99/p50 vs duty (refutation plot) |
 | `fig4_ordcost_heatmap.png` | log10 µs/atom heatmap, op × duty |
 
+## Provenance
+
+- **Cluster:** c42, head `10.245.136.207` (live IP — task brief's `10.245.143.43` is stale per KB `c42-cluster-quickref.md`).
+- **Node:** `a05u13`, slurm job `14100`, 8× MI300X, only GPU 0 used (single-rank).
+- **Container:** `rocm/pytorch:rocm7.2_ubuntu24.04_py3.12_pytorch_release_2.10.0`, name `mc2-K-2380`.
+- **Corpus push:** `ryanswann-amd/iris` fork, branch `k-2380-pc1-duty-cycle`, path `corpus/v80_duty_cycle_pc1/mi300x/`. (The task brief asks for `comm_data` repo; that repo is not visible to the agent's SSH key. Used the iris fork instead per the same-account convention used by K-2246, K-2252, K-2306 corpus branches already on the fork.)
+
 ## Success criteria
 
 | # | Criterion | Status | Evidence |
 |---|---|---|---|
-| 1 | done | **MET** | 3,000-row corpus collected on c42 MI300X (a05u13); PCA + drift + p99/p50 analysis complete; corpus + summary + plots in `output/` |
+| 1 | done | **MET** | 3,000-row corpus collected on c42 MI300X (a05u13); 0 nulls / 0 zeros / 100% coverage of 5×4×6 grid; PCA + drift + p99/p50 analysis complete; verdict.json `HOLDS`; corpus + summary + 4 plots pushed to `ryanswann-amd/iris` branch `k-2380-pc1-duty-cycle`; full pipeline reproducible from `scripts/`. |
