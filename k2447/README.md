@@ -105,6 +105,9 @@ See "Push artifacts" §.
 
 ## Push artifacts
 
-- Local stage: `output/k2447_reconciled/` ready for `comm_data/k2447/` (see Push status §).
-- Workaround: pushed to `git@github.com:ryanswann-amd/iris.git` branch `k2447-data` —
-  see git log of that branch for commit hash and timestamp.
+- Local stage: `output/k2447/` ready for `comm_data/k2447/` (see Push status §).
+- **Workaround push CONFIRMED**: `git@github.com:ryanswann-amd/iris.git` branch
+  `k2447-data`, commit `02878e724a03575e713d806666aabf80eae7af7c` (verified via
+  `git ls-remote refs/heads/k2447-data`). Tree contains the full `k2447/` payload
+  (README.md, raw + reconciled + validated CSVs, REAL rocprof PMC csv + json,
+  procrustes summary, 5 plots, source scripts).
