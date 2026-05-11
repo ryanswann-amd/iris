@@ -44,6 +44,15 @@ class Config:
                                  (default: auto-set to block_size_n // world_size at runtime)
         reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot")
                                 Only "two_shot" is supported
+        broadcast_variant: Variant for broadcast operation (default: "auto")
+                           Options: "direct", "tree", "auto"
+                           - "direct": source rank pushes the tensor to every peer
+                                       over its single egress link. Best for small payloads.
+                           - "tree":   staged scatter + all-gather. Source scatters
+                                       1/world_size shards to each rank, then every rank
+                                       pushes its shard to every other rank, saturating
+                                       all 8 GPU egress links in parallel. Best for >=1 MiB.
+                           - "auto":   selects "tree" for payloads >= 1 MiB, else "direct".
         num_stages: Number of pipeline stages for the kernel (default: 1)
         num_warps: Number of warps per workgroup (default: 4). For gluon kernels,
                    this also sets WARPS_PER_CTA in the BlockedLayout. The product
@@ -90,6 +99,7 @@ class Config:
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
     reduce_scatter_variant: str = "two_shot"
+    broadcast_variant: str = "auto"
     num_stages: int = 1
     num_warps: int = 4
     threads_per_warp: int = 64
@@ -143,6 +153,12 @@ class Config:
         # Validate reduce_scatter_variant
         if self.reduce_scatter_variant != "two_shot":
             raise ValueError(f"reduce_scatter_variant must be 'two_shot', got '{self.reduce_scatter_variant}'")
+
+        # Validate broadcast_variant
+        if self.broadcast_variant not in ("direct", "tree", "auto"):
+            raise ValueError(
+                f"broadcast_variant must be one of: 'direct', 'tree', 'auto', got '{self.broadcast_variant}'"
+            )
 
         if self.threads_per_warp not in (32, 64):
             raise ValueError(f"threads_per_warp must be 32 (NVIDIA) or 64 (AMD), got {self.threads_per_warp}")

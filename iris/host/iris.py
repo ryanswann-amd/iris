@@ -1317,6 +1317,61 @@ class Iris:
                 config=config,
             )
 
+        def broadcast_tensor(
+            self, output_tensor, input_tensor, src=0, group=None, async_op=False, config=None
+        ):
+            """
+            Broadcast collective operation (GPU/RMA path).
+
+            Rank ``src`` distributes ``input_tensor`` to ``output_tensor`` on every
+            rank in the group. Supports two variants selected by
+            ``config.broadcast_variant``:
+
+            - ``"direct"``: source rank pushes the entire tensor to every peer over
+              its single egress link. Best for small payloads (< 1 MiB).
+            - ``"tree"``: staged scatter + all-gather. Source scatters one shard
+              per rank; every rank then pushes its shard to every other rank,
+              saturating all 8 GPU egress links in parallel. Best for >= 1 MiB.
+            - ``"auto"`` (default): selects ``"tree"`` for payloads >= 1 MiB,
+              else ``"direct"``.
+
+            Args:
+                output_tensor: Output tensor of shape (M, N) — receive buffer on every rank.
+                input_tensor:  Input tensor of shape (M, N) — only the contents on rank
+                               ``src`` are read. Non-source ranks may pass any tensor of
+                               the same shape (commonly the same buffer as ``output_tensor``).
+                src: Source rank within the group. Default: 0.
+                group: ProcessGroup or None. If None, uses all ranks in shmem context.
+                async_op: If False, performs a barrier at the end. If True, returns immediately.
+                config: Config instance with kernel parameters. Default: None.
+
+            Note:
+                This is the GPU-side, RMA-based broadcast for tensors held on the
+                symmetric heap. The host-side ``ctx.broadcast(value, src=...)`` API
+                continues to handle Python scalars, numpy arrays, and CPU-side
+                broadcast over PyTorch distributed.
+
+            Example:
+                >>> ctx = iris.iris()
+                >>> # Auto-selects "tree" for tensors >= 1 MiB
+                >>> ctx.ccl.broadcast_tensor(output_tensor, input_tensor, src=0)
+
+                >>> from iris.ccl import Config
+                >>> config = Config(broadcast_variant="tree")
+                >>> ctx.ccl.broadcast_tensor(output_tensor, input_tensor, src=0, config=config)
+            """
+            from iris.ccl.broadcast import broadcast
+
+            broadcast(
+                output_tensor,
+                input_tensor,
+                self._iris,
+                src=src,
+                group=group,
+                async_op=async_op,
+                config=config,
+            )
+
 
 def iris(heap_size=1 << 30, allocator_type="torch"):
     """
