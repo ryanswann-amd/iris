@@ -1,0 +1,18 @@
+{
+  "n_cells": 32,
+  "n_prims": 4,
+  "pc1_ve": 0.9915443736904972,
+  "pc2_ve": 0.0061025119932659804,
+  "pc1_loadings": {
+    "CAS_ACQREL": 0.5171541239739968,
+    "FADD_RELEASE": 0.4924861930503178,
+    "MAX_ACQUIRE": 0.5368483130695996,
+    "XCHG_ACQREL": 0.4492247215657412
+  },
+  "prims": [
+    "CAS_ACQREL",
+    "FADD_RELEASE",
+    "MAX_ACQUIRE",
+    "XCHG_ACQREL"
+  ]
+}

@@ -1,0 +1,5 @@
+ordering_class,issue_op,issue_sem,observe_op,observe_sem,prod_num_warps,cons_num_warps,prod_waves_per_CU,cons_waves_per_CU,imbalance_ratio,n_workgroups,wgs_per_cu,block_size,buffer_bytes,buffer_class,n_elements,dtype,src_rank,dst_rank,n_repeat,n_warmup,world_size,ms_mean,us_per_call,node,ts
+XCHG_ACQREL,xchg,acq_rel,max,acq_rel,4,8,4.0,8.0,0.5,304,1.0,256,2097152,L2,524288,int32,0,1,25,4,8,0.07429747998714448,74.29747998714447,c09u13,1778503353.8745432
+MAX_ACQUIRE,max,acquire,max,acquire,4,8,4.0,8.0,0.5,304,1.0,256,2097152,L2,524288,int32,0,1,25,4,8,0.07433584064245224,74.33584064245224,c09u13,1778503353.978798
+CAS_ACQREL,cas,acq_rel,max,acq_rel,4,8,4.0,8.0,0.5,304,1.0,256,2097152,L2,524288,int32,0,1,25,4,8,0.08185523927211762,81.85523927211761,c09u13,1778503354.0176528
+FADD_RELEASE,fadd,release,max,acquire,4,8,4.0,8.0,0.5,304,1.0,256,2097152,L2,524288,int32,0,1,25,4,8,0.0675860795378685,67.5860795378685,c09u13,1778503354.0708919
