@@ -1,0 +1,7 @@
+{
+  "min_pc1_var": 0.9971176094523952,
+  "min_cosine_vs_sustained": 0.9991373204681012,
+  "verdict": "HOLDS",
+  "baseline_K2317": 0.958,
+  "sustained_pc1": 0.9996862111611573
+}
