@@ -10,7 +10,7 @@
   ryanswann-amd/comm_data --private` and grant push to the agent's deploy key,
   then this corpus can be moved verbatim (sha256 below proves byte-identity).
 * **Fallback (in-place today):** branch `K-2252-v47-r3-atomic-and` on
-  `ryanswann-amd/iris`, commit `8e8bea0391c6d23c587d2a1a5577811c5f327bd7`,
+  `ryanswann-amd/iris`, commit `f94512e8aed8f9321ca2072a39250ea9b1538d80`,
   path `K-2252/v47/`. Verified live via `git ls-remote`.
 * **Scope:** 5,590 rows of the canonical 100,625-row spec (5.55%). Same
   reduction as sibling tasks K-2254/K-2256/K-2259. Sign-off recorded in
@@ -151,7 +151,7 @@ unchanged and remains available via K-2248's pinned artifacts.
    `/home/ryaswann/mc2-workspaces/K-2252/output/`, validates
    (`data_quality.py PASS / 1 warn`), is sha256-pinned, and pushed to the
    writable fork available (`ryanswann-amd/iris`, branch
-   `K-2252-v47-r3-atomic-and`, commit `8e8bea0391c6d23c587d2a1a5577811c5f327bd7`).
+   `K-2252-v47-r3-atomic-and`, commit `f94512e8aed8f9321ca2072a39250ea9b1538d80`).
    Push destination status, scope deltas, and latency reconciliation are
    all explicit and at the top of this document. Reviewer feedback from
    prior attempt addressed.

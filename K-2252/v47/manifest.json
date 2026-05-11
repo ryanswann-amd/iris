@@ -99,7 +99,8 @@
     "destination_canonical_next_steps": "The human owner of the ryanswann-amd org (Ryan Swann) must `gh repo create ryanswann-amd/comm_data --private` and grant push access to the agent's deploy key. Once provisioned, this corpus can be moved verbatim — the sha256 hashes below prove byte-identity for both csv and parquet.",
     "destination_used": "ryanswann-amd/iris",
     "branch": "K-2252-v47-r3-atomic-and",
-    "commit_sha": "8e8bea0391c6d23c587d2a1a5577811c5f327bd7",
+    "commit_sha": "f94512e8aed8f9321ca2072a39250ea9b1538d80",
+    "previous_commit_sha": "8e8bea0391c6d23c587d2a1a5577811c5f327bd7",
     "verified_via": "git ls-remote git@github.com:ryanswann-amd/iris.git refs/heads/K-2252-v47-r3-atomic-and",
     "byte_identity_proof": "v47_corpus.sha256 pins both csv and parquet for verbatim move when comm_data is provisioned"
   },
