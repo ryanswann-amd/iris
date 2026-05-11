@@ -60,6 +60,13 @@ def persistent_all_gather(
     """
     pid = tl.program_id(0)
 
+    # Promote strides to int64 to prevent tile-index byte-arithmetic overflow
+    # at >=1GB tensor sizes (see K-375).
+    stride_in_m = stride_in_m.to(tl.int64)
+    stride_in_n = stride_in_n.to(tl.int64)
+    stride_out_m = stride_out_m.to(tl.int64)
+    stride_out_n = stride_out_n.to(tl.int64)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     total_tiles = num_pid_m * num_pid_n
@@ -200,6 +207,13 @@ def persistent_all_gather_partitioned(
 
     # Compute the actual target rank
     target_rank = rank_start + dest_rank_idx * rank_stride
+
+    # Promote strides to int64 to prevent tile-index byte-arithmetic overflow
+    # at >=1GB tensor sizes (see K-375).
+    stride_in_m = stride_in_m.to(tl.int64)
+    stride_in_n = stride_in_n.to(tl.int64)
+    stride_out_m = stride_out_m.to(tl.int64)
+    stride_out_n = stride_out_n.to(tl.int64)
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
