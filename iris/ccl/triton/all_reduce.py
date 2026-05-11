@@ -920,6 +920,11 @@ def launch(
         )
 
     elif variant == VARIANT_TWO_SHOT:
+        # Clamp NUM_CHANNELS to world_size: when NUM_CHANNELS > world_size, the
+        # per-channel offset (world_size // NUM_CHANNELS) becomes 0, collapsing
+        # every channel back onto the single-channel ring. Clamping prevents that
+        # silent degeneration. NUM_CHANNELS=1 always reproduces legacy behavior.
+        num_channels = max(1, min(int(config.all_reduce_num_channels), int(world_size)))
         iris_launch(
             persistent_all_reduce_two_shot,
             (config.comm_sms,),
@@ -944,7 +949,7 @@ def launch(
             config.num_xcds,
             config.chunk_size,
             config.all_reduce_distribution,
-            config.all_reduce_num_channels,
+            num_channels,
             num_warps=8,
             num_stages=1,
             waves_per_eu=1,

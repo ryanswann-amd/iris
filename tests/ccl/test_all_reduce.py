@@ -171,6 +171,68 @@ def test_all_reduce_two_shot_distribution(distribution, dtype=torch.float32, M=1
         gc.collect()
 
 
+@pytest.mark.parametrize("num_channels", [1, 2, 4, 8])
+@pytest.mark.parametrize("distribution", [0, 1])
+def test_all_reduce_two_shot_num_channels(num_channels, distribution, dtype=torch.float32, M=2048, N=512):
+    """Verify that pilot N-channel two-shot (K-377) preserves correctness for N in {1,2,4,8}.
+
+    NUM_CHANNELS=1 must reproduce the legacy single-channel formula bit-for-bit.
+    NUM_CHANNELS in {2,4,8} should produce identical reduced output (same SUM)
+    while internally fanning each channel's ring across distinct xGMI links.
+    """
+    if not dist.is_initialized():
+        pytest.skip("torch.distributed not initialized")
+
+    heap_size = 2**33
+    shmem = iris.iris(heap_size)
+    rank = shmem.get_rank()
+    world_size = shmem.get_num_ranks()
+
+    if num_channels > world_size:
+        pytest.skip(
+            f"NUM_CHANNELS={num_channels} > world_size={world_size}: launch() clamps "
+            f"to world_size, so this case collapses to the world_size variant."
+        )
+
+    pytorch_input_tensor = torch.randn(M, N, dtype=dtype, device=f"cuda:{rank}")
+    pytorch_input_tensor.fill_(float(rank + 1))
+
+    pytorch_output_tensor = pytorch_input_tensor.clone()
+    shmem.barrier()
+    dist.all_reduce(pytorch_output_tensor, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+
+    iris_input_tensor = shmem.zeros((M, N), dtype=dtype)
+    iris_input_tensor.copy_(pytorch_input_tensor)
+    iris_output_tensor = shmem.zeros((M, N), dtype=dtype)
+
+    shmem.barrier()
+    config = Config(
+        all_reduce_variant="two_shot",
+        all_reduce_distribution=distribution,
+        all_reduce_num_channels=num_channels,
+    )
+    workspace = shmem.ccl.all_reduce_preamble(iris_output_tensor, iris_input_tensor, config=config)
+    shmem.barrier()
+    shmem.ccl.all_reduce(iris_output_tensor, iris_input_tensor, config=config, workspace=workspace)
+    torch.cuda.synchronize()
+
+    atol = 1e-5
+    max_diff = torch.abs(iris_output_tensor - pytorch_output_tensor).max().item()
+    try:
+        assert torch.allclose(iris_output_tensor, pytorch_output_tensor, atol=atol), (
+            f"Max difference: {max_diff}, expected < {atol}\n"
+            f"Rank {rank}: K-377 multi-channel two-shot mismatch "
+            f"(num_channels={num_channels}, distribution={distribution})"
+        )
+    finally:
+        shmem.barrier()
+        del shmem
+        import gc
+
+        gc.collect()
+
+
 def test_all_reduce_spinlock_lock_too_small():
     """Test that ValueError is raised when the spinlock lock array is too small for current tile count.
 
