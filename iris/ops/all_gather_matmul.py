@@ -165,7 +165,7 @@ def all_gather_matmul_preamble(
     B: torch.Tensor,
     config: Optional[FusedConfig] = None,
 ) -> FusedWorkspace:
-    """Allocate workspace for all_gather_matmul (none needed for pull pattern)."""
+    """Allocate workspace for all_gather_matmul."""
     if config is None:
         config = FusedConfig()
 
@@ -176,13 +176,15 @@ def all_gather_matmul_preamble(
     expected_K = world_size * K_local
     assert K == expected_K, f"K ({K}) must equal world_size ({world_size}) * K_local ({K_local})"
 
-    return FusedWorkspace(
+    ws = FusedWorkspace(
         operation="all_gather_matmul",
         shape=(M, N, K),
         dtype=A_sharded.dtype,
         world_size=world_size,
         prepared=True,
     )
+
+    return ws
 
 
 def all_gather_matmul(
@@ -224,17 +226,6 @@ def all_gather_matmul(
     assert output_tensor.shape == (M, N), f"Output must be ({M}, {N}), got {output_tensor.shape}"
 
     # Validate problem size against block sizes
-    assert M >= config.block_size_m, (
-        f"M ({M}) must be >= block_size_m ({config.block_size_m}). Use smaller block sizes for small problems."
-    )
-    assert K_local >= config.block_size_k, (
-        f"K_local ({K_local}) must be >= block_size_k ({config.block_size_k}). "
-        f"Use smaller block sizes for small problems."
-    )
-    assert N >= config.block_size_n, (
-        f"N ({N}) must be >= block_size_n ({config.block_size_n}). Use smaller block sizes for small problems."
-    )
-
     if workspace is None:
         workspace = all_gather_matmul_preamble(shmem, A_sharded, B, config)
 
@@ -261,7 +252,8 @@ def all_gather_matmul(
     even_k = K_local % config.block_size_k == 0
     num_k_blocks_local = (K_local + config.block_size_k - 1) // config.block_size_k
 
-    # Launch single fused kernel
+    num_tiles_m = (M + config.block_size_m - 1) // config.block_size_m
+    num_tiles_n = (N + config.block_size_n - 1) // config.block_size_n
     grid = (num_sms,)
     iris_launch(
         _fused_all_gather_matmul_kernel,

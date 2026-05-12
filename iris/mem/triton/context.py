@@ -864,7 +864,7 @@ class Context:
             self.store(dst_ptr, tile.data, to_rank=dest_rank, mask=combined_mask, hint=(1, tile.block_n))
 
     @triton.jit
-    def gather(self, tile: TileView, src_view: TensorView, source_rank: tl.constexpr):
+    def gather(self, tile: TileView, src_view: TensorView, source_rank: tl.constexpr, hint: tl.constexpr = None):
         """
         Tile-level gather from a specific rank.
 
@@ -874,6 +874,9 @@ class Context:
             tile: Tile with position and dimensions.
             src_view: TensorView for source tensor on source_rank.
             source_rank: Specific rank to load from (constexpr).
+            hint: Vectorization hint passed to tl.multiple_of / tl.max_contiguous on
+                the translated pointer. Use a scalar (e.g. 16) or a tuple
+                (e.g. (1, 16)) to indicate alignment. Defaults to None (no hint).
 
         Returns:
             Loaded tile data as a tensor.
@@ -883,7 +886,7 @@ class Context:
         if source_rank == self.rank:
             tile_data = tl.load(src_tile_ptr, mask=mask, other=0.0)
         else:
-            tile_data = self.load(src_tile_ptr, from_rank=source_rank, mask=mask)
+            tile_data = self.load(src_tile_ptr, from_rank=source_rank, mask=mask, hint=hint)
 
         return tile_data
 
