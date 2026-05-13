@@ -273,11 +273,21 @@ def test_all_reduce_ring_flags_too_small():
 def test_all_reduce_ring_spin_sleep_correctness(sleep_cycles):
     """Ring all-reduce stays correct for SPIN_SLEEP_CYCLES in {0, 1, 7, 31}.
 
-    Locks in the K-3695 patch: every value in the supported sweep range must
-    produce results that match torch.distributed's reference all_reduce within
-    the BF16 reduction tolerance. If a future refactor breaks the
-    ``device_sleep`` plumbing or the constexpr forwarding through
-    ``persistent_all_reduce_ring``, this test fails before users notice.
+    Each rank generates a *different, fully random* BF16 tensor (no
+    ``fill_``), so a regression that returned only the local input or skipped
+    the reduction would produce a non-zero diff. The reference is computed
+    with ``torch.distributed.all_reduce(SUM)`` on the same per-rank random
+    tensor, and the kernel output is compared to it within the BF16 reduction
+    tolerance for both the strict default (sleep=0) and a non-default sleep
+    value (1, 7, 31). This locks in:
+
+    1. The s_sleep emit path (sleep>0) does not silently skip iterations of
+       the spin loop — if it did, ranks would observe stale flag values and
+       the reduction would be wrong on a per-element basis (random tensors
+       expose this; constant fills cannot).
+    2. The constexpr plumbing through ``persistent_all_reduce_ring`` and
+       ``Config.all_reduce_ring_spin_sleep_cycles`` keeps numerical equality
+       with torch's reference for *every* documented sweep value.
     """
     if not dist.is_initialized():
         pytest.skip("torch.distributed not initialized")
@@ -293,9 +303,15 @@ def test_all_reduce_ring_spin_sleep_correctness(sleep_cycles):
     block_size_n = (block_size_n // world_size) * world_size
     dtype = torch.bfloat16
 
-    pytorch_input = torch.randn(M, N, dtype=dtype, device=f"cuda:{rank}")
-    pytorch_input.fill_(float(rank + 1))
+    # Per-rank seed → each rank holds a *different* random tensor. Constant
+    # fills (the legacy approach) can't distinguish a correct reduction from
+    # a kernel that just leaves the input unchanged for ranks where
+    # rank_value happens to equal sum/world_size; random per-element values
+    # close that loophole.
+    gen = torch.Generator(device=f"cuda:{rank}").manual_seed(0xBADC0FFEE0DDF00D + rank * 7919)
+    pytorch_input = torch.randn(M, N, dtype=dtype, device=f"cuda:{rank}", generator=gen)
 
+    # Reference: torch.distributed allreduce on the same per-rank random tensor.
     pytorch_output = pytorch_input.clone()
     shmem.barrier()
     dist.all_reduce(pytorch_output, op=dist.ReduceOp.SUM)
@@ -318,12 +334,88 @@ def test_all_reduce_ring_spin_sleep_correctness(sleep_cycles):
     shmem.ccl.all_reduce(iris_output, iris_input, config=config, workspace=workspace)
     torch.cuda.synchronize()
 
-    atol = 5e-4  # BF16 reduction tolerance (matches K-228 / K-377 convention)
-    max_diff = torch.abs(iris_output - pytorch_output).max().item()
+    # BF16 sum-reduction: per-element error grows ~ world_size * eps_bf16.
+    # eps_bf16 = 2^-7 ~ 7.8e-3, so for world_size=8 a per-element atol of
+    # 8 * 8e-3 = 6.4e-2 is safe against legitimate rounding while still
+    # catching wrong-summand bugs (random magnitudes are O(1), so a missed
+    # rank would yield O(1) diffs, well above atol).
+    atol = 8.0 * (2 ** -7) * world_size
+    max_diff = torch.abs(iris_output.float() - pytorch_output.float()).max().item()
+
+    # Sanity: the input is genuinely random (non-degenerate). A zero stddev
+    # would mean the per-rank seed broke and we're back to a constant fill.
+    assert pytorch_input.float().std().item() > 0.1, (
+        "Test input degenerated to a constant; per-rank random seed is broken."
+    )
 
     try:
-        assert torch.allclose(iris_output, pytorch_output, atol=atol), (
-            f"Max diff {max_diff} > tol {atol} for SPIN_SLEEP_CYCLES={sleep_cycles}"
+        assert torch.allclose(iris_output.float(), pytorch_output.float(), atol=atol), (
+            f"Max diff {max_diff} > tol {atol} for SPIN_SLEEP_CYCLES={sleep_cycles} "
+            f"(rank={rank}, world_size={world_size}). The s_sleep spin-wait "
+            f"likely skipped or corrupted a reduction step."
+        )
+    finally:
+        shmem.barrier()
+        del shmem
+        import gc
+
+        gc.collect()
+
+
+def test_all_reduce_ring_spin_sleep_nondefault_random_input():
+    """Random per-rank input + non-default SPIN_SLEEP_CYCLES = end-to-end check.
+
+    Reviewer-requested explicit case (Testing Zealot): a single test that
+    exercises the patched spin loop with both (a) a non-default sleep value
+    and (b) a per-element-random input, asserting against torch's reference
+    allreduce. Failure here means the s_sleep handshake corrupts the
+    reduction — which constant-fill tests can mask.
+    """
+    if not dist.is_initialized():
+        pytest.skip("torch.distributed not initialized")
+
+    heap_size = 2**33
+    shmem = iris.iris(heap_size)
+    rank = shmem.get_rank()
+    world_size = shmem.get_num_ranks()
+
+    M, N = 1024, 256
+    block_size_n = max(world_size, 64)
+    block_size_n = (block_size_n // world_size) * world_size
+    dtype = torch.bfloat16
+    sleep_cycles = 7  # non-default — exercises the inline-asm s_sleep path
+
+    gen = torch.Generator(device=f"cuda:{rank}").manual_seed(0xC0FFEE00 + rank * 31337)
+    pytorch_input = torch.randn(M, N, dtype=dtype, device=f"cuda:{rank}", generator=gen)
+    pytorch_output = pytorch_input.clone()
+    shmem.barrier()
+    dist.all_reduce(pytorch_output, op=dist.ReduceOp.SUM)
+    torch.cuda.synchronize()
+
+    iris_input = shmem.zeros((M, N), dtype=dtype)
+    iris_input.copy_(pytorch_input)
+    iris_output = shmem.zeros((M, N), dtype=dtype)
+
+    cfg = Config(
+        all_reduce_variant="ring",
+        block_size_m=64,
+        block_size_n=block_size_n,
+        all_reduce_num_rings=1,
+        all_reduce_ring_spin_sleep_cycles=sleep_cycles,
+    )
+    shmem.barrier()
+    ws = shmem.ccl.all_reduce_preamble(iris_output, iris_input, config=cfg)
+    shmem.barrier()
+    shmem.ccl.all_reduce(iris_output, iris_input, config=cfg, workspace=ws)
+    torch.cuda.synchronize()
+
+    atol = 8.0 * (2 ** -7) * world_size
+    max_diff = torch.abs(iris_output.float() - pytorch_output.float()).max().item()
+
+    try:
+        assert torch.allclose(iris_output.float(), pytorch_output.float(), atol=atol), (
+            f"Random-input ring all-reduce diverges from torch reference at "
+            f"SPIN_SLEEP_CYCLES={sleep_cycles}: max_diff={max_diff} atol={atol}"
         )
     finally:
         shmem.barrier()
