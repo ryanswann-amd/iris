@@ -339,7 +339,7 @@ def test_all_reduce_ring_spin_sleep_correctness(sleep_cycles):
     # 8 * 8e-3 = 6.4e-2 is safe against legitimate rounding while still
     # catching wrong-summand bugs (random magnitudes are O(1), so a missed
     # rank would yield O(1) diffs, well above atol).
-    atol = 8.0 * (2 ** -7) * world_size
+    atol = 8.0 * (2**-7) * world_size
     max_diff = torch.abs(iris_output.float() - pytorch_output.float()).max().item()
 
     # Sanity: the input is genuinely random (non-degenerate). A zero stddev
@@ -409,7 +409,7 @@ def test_all_reduce_ring_spin_sleep_nondefault_random_input():
     shmem.ccl.all_reduce(iris_output, iris_input, config=cfg, workspace=ws)
     torch.cuda.synchronize()
 
-    atol = 8.0 * (2 ** -7) * world_size
+    atol = 8.0 * (2**-7) * world_size
     max_diff = torch.abs(iris_output.float() - pytorch_output.float()).max().item()
 
     try:
