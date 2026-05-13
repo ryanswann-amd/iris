@@ -89,6 +89,10 @@ class Config:
     all_reduce_distribution: int = 1
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
+    # Number of cycles inserted as ``s_sleep N`` between spin attempts in the
+    # ring all-reduce flag handshake. ``0`` preserves the legacy busy-spin.
+    # Recommended sweep values on MI300X: 1, 7, 31. Valid range 0..127 (CDNA).
+    all_reduce_ring_spin_sleep_cycles: int = 0
     reduce_scatter_variant: str = "two_shot"
     num_stages: int = 1
     num_warps: int = 4
@@ -139,6 +143,11 @@ class Config:
             )
         if self.all_reduce_ring_slice_n & (self.all_reduce_ring_slice_n - 1):
             raise ValueError(f"all_reduce_ring_slice_n must be a power of two, got {self.all_reduce_ring_slice_n}")
+        if not (0 <= self.all_reduce_ring_spin_sleep_cycles <= 127):
+            raise ValueError(
+                f"all_reduce_ring_spin_sleep_cycles must be in 0..127 (CDNA s_sleep range), "
+                f"got {self.all_reduce_ring_spin_sleep_cycles}"
+            )
 
         # Validate reduce_scatter_variant
         if self.reduce_scatter_variant != "two_shot":

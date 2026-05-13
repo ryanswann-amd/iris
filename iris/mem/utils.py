@@ -69,6 +69,31 @@ else:
 
 
 @triton.jit
+def device_sleep(SLEEP_CYCLES: tl.constexpr):
+    """
+    Emit AMDGPU ``s_sleep N`` (no-op when ``SLEEP_CYCLES <= 0``).
+
+    ``s_sleep N`` parks the wavefront for ~64*N cycles (architecturally up to
+    ``64*N + 64``) without consuming SQ_WAIT_INST_ANY slots, freeing those
+    issue slots for sibling data-movement wavefronts. This is the canonical
+    fix for tight ``while atomic_cas() != X: pass`` spin loops on CDNA, which
+    otherwise drown the SQ instruction issue stage.
+
+    ``SLEEP_CYCLES`` is a ``tl.constexpr`` so the literal can be embedded
+    directly in the assembly. Valid range is ``0..127`` (CDNA3 / CDNA4).
+    """
+    if SLEEP_CYCLES > 0:
+        tl.inline_asm_elementwise(
+            asm=f"s_sleep {SLEEP_CYCLES}\n        s_mov_b32 $0, 0",
+            constraints=("=s"),
+            args=[],
+            dtype=tl.int32,
+            is_pure=False,
+            pack=1,
+        )
+
+
+@triton.jit
 def get_xcc_id():
     """
     Get XCC (GPU chiplet) ID.

@@ -14,6 +14,7 @@ import triton.language as tl
 import torch
 import iris
 from iris.host.tracing.kernel_artifacts import iris_launch
+from iris.mem.utils import device_sleep
 from ..utils import chiplet_transform_chunked
 
 # Variant types
@@ -452,6 +453,7 @@ def persistent_all_reduce_ring(
     NUM_RINGS: tl.constexpr,
     SLICE_SIZE_N: tl.constexpr,
     FLAGS_PER_TILE: tl.constexpr,
+    SPIN_SLEEP_CYCLES: tl.constexpr,
 ):
     """
     Ring-based all-reduce kernel that streams whole tiles around the ring using a
@@ -533,7 +535,11 @@ def persistent_all_reduce_ring(
                         )
                         != 0
                     ):
-                        pass
+                        # s_sleep N between CAS retries: yields SQ issue
+                        # slots to data-movement wavefronts and reduces
+                        # remote-flag cache-line contention. Compiles to a
+                        # no-op when SPIN_SLEEP_CYCLES == 0.
+                        device_sleep(SPIN_SLEEP_CYCLES)
 
                     iris.store(
                         ring_buffer + tile_offset,
@@ -556,7 +562,10 @@ def persistent_all_reduce_ring(
                     )
 
                     while tl.atomic_cas(local_flag_ptr, 0, 0, sem="acquire", scope="sys") != 1:
-                        pass
+                        # Same rationale as the producer-side spin above:
+                        # s_sleep yields execution slots while we wait on the
+                        # local flag to be flipped by our predecessor.
+                        device_sleep(SPIN_SLEEP_CYCLES)
 
                     recv_tile = tl.load(ring_buffer + tile_offset, mask=mask, other=0)
                     acc += recv_tile.to(acc_dtype)
@@ -890,6 +899,7 @@ def launch(
             config.all_reduce_num_rings,
             slice_n,
             workspace.flags_per_tile,
+            getattr(config, "all_reduce_ring_spin_sleep_cycles", 0),
             algorithm="all_reduce",
             rank=rank_global,
             dtype=input_tensor.dtype,
