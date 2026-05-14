@@ -73,8 +73,12 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
         group=group,
     )
 
-    if workspace is not None:
-        workspace.prepared = False
+    # NOTE(K-4640): Do NOT reset workspace.prepared = False here. The dirty-flag
+    # guard inside `launch` already re-runs the preamble whenever the variant,
+    # shape, dtype, world_size-derived params, or required buffers change. Forcing
+    # `prepared = False` after every call defeats workspace reuse and re-zeros all
+    # buffers + barriers on each call, adding a measurable per-call preamble cost.
+    # The launch-side guard ensures correctness for heterogeneous call sequences.
 
     if not async_op:
         ctx.barrier()
