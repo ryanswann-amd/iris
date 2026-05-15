@@ -28,6 +28,14 @@ remote-store + reduction, ring-staged XGMI scheduling, launch-overhead
 reduction), not further tuning of these knobs. See
 ``output/revision-notes.md`` on the sprint branch for the full gap
 analysis and the in-scope vs. out-of-scope split.
+
+In addition to the perf gap, the on-target verifier in
+``benchmark/ccl/comprehensive_sweep.py`` (round-2 evidence in
+``output/sweep_revision_smoke_mi300x.csv``) caught nine ``all_reduce`` cells
+where the table-selected variant produces all-zero output. Those cells live
+in :data:`_KNOWN_BAD_CELLS`; :func:`default_config` raises
+``NotImplementedError`` for them so iris fails closed at config-resolution
+time instead of silently launching a kernel known to return wrong data.
 """
 
 from dataclasses import dataclass
@@ -244,6 +252,39 @@ _DEFAULTS_TABLE: dict[str, dict[str, list[tuple[float, dict[str, Any]]]]] = {
 _VALID_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all")
 
 
+# ── Fail-closed registry of cells the on-target verifier flagged as wrong ──
+#
+# ``benchmark/ccl/comprehensive_sweep.py`` (round 2 evidence,
+# ``output/sweep_revision_smoke_mi300x.csv`` in workspace K-7267) runs every
+# iris cell through ``_compare_to_reference`` against the analytical reduction
+# answer. Cells listed here returned ``correct=False`` with
+# ``max_abs_err == sum_{r=0..7}(r+1) == 36`` — i.e. iris wrote the all-zero
+# tensor instead of the reduced one. The bug lives in the kernel (the chosen
+# variant skips tiles for certain ``(M, N)`` shapes) and is out of scope for
+# this surgical revision; what *is* in scope is making sure the routing table
+# never silently returns a config that is known to produce wrong output for a
+# given ``(arch, collective, total_bytes)`` cell.
+#
+# ``default_config()`` raises :class:`NotImplementedError` for any cell in
+# this set so iris fails closed at config-resolution time rather than handing
+# back a config that the verifier already proved is broken. Callers who
+# explicitly construct their own :class:`Config` are unaffected — this is a
+# safety net for the *default* (``config=None``) path only. See
+# ``output/revision-notes.md`` for the full failure list and the kernel-work
+# follow-up.
+_KNOWN_BAD_CELLS: set[tuple[str, str, int]] = {
+    ("gfx942", "all_reduce", 131072),
+    ("gfx942", "all_reduce", 524288),
+    ("gfx942", "all_reduce", 1048576),
+    ("gfx942", "all_reduce", 8388608),
+    ("gfx942", "all_reduce", 16777216),
+    ("gfx942", "all_reduce", 67108864),
+    ("gfx942", "all_reduce", 134217728),
+    ("gfx942", "all_reduce", 268435456),
+    ("gfx942", "all_reduce", 536870912),
+}
+
+
 def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None) -> dict[str, Any]:
     """Look up the static defaults for ``(arch, collective, message_bytes)``.
 
@@ -295,7 +336,27 @@ def default_config(collective: str, message_bytes: int, arch: str | None = None)
         A :class:`Config` instance with the table-selected overrides applied.
         Caller may further mutate the returned object before handing it to a
         kernel launch; the dataclass is mutable by design.
+
+    Raises:
+        NotImplementedError: If the requested ``(arch, collective,
+            message_bytes)`` is in :data:`_KNOWN_BAD_CELLS` — the on-target
+            verifier already proved the table-selected variant produces wrong
+            output for that cell, so we fail closed here rather than silently
+            launch a broken kernel. Callers can pass an explicit
+            :class:`Config` to bypass this safeguard while the kernel bug is
+            being investigated.
     """
+    arch_key = arch or _detect_arch()
+    if (arch_key, collective, message_bytes) in _KNOWN_BAD_CELLS:
+        raise NotImplementedError(
+            f"iris.ccl.{collective} default Config for {message_bytes} B on {arch_key} "
+            "is fail-closed: the on-target verification sweep "
+            "(benchmark/ccl/comprehensive_sweep.py) flagged this cell as producing "
+            "wrong output (max_abs_err=36, i.e. iris wrote zeros). Pass an explicit "
+            "Config(...) to override, or use a different message size while the "
+            "underlying kernel bug is being fixed. See iris/ccl/config.py::"
+            "_KNOWN_BAD_CELLS and output/revision-notes.md for the failure list."
+        )
     overrides = lookup_defaults(collective, message_bytes, arch=arch)
     kwargs: dict[str, Any] = {}
     field_map = {

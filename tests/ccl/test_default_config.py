@@ -202,6 +202,56 @@ def test_variant_field_routes_per_collective(config_module):
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Fail-closed safeguard — cells the on-target verifier flagged as wrong must
+# NOT be silently routed by ``default_config``. They must raise so the
+# routing table cannot hand back a config that produces wrong output.
+# --------------------------------------------------------------------------
+
+
+def test_known_bad_cells_set_is_non_empty(config_module):
+    """The fail-closed registry must have entries — an empty set would
+    silently regress to the broken behaviour the verifier already caught."""
+    assert config_module._KNOWN_BAD_CELLS, (
+        "_KNOWN_BAD_CELLS is empty; if the kernel bug is fixed, document the "
+        "passing on-target sweep that justifies clearing it before deleting "
+        "this assertion."
+    )
+
+
+def test_known_bad_cells_have_valid_collectives(config_module):
+    """Every registered cell must reference a real collective so the
+    fail-closed check in ``default_config`` actually triggers."""
+    for arch, collective, _ in config_module._KNOWN_BAD_CELLS:
+        assert isinstance(arch, str) and arch
+        assert collective in COLLECTIVES, f"unknown collective {collective!r} in _KNOWN_BAD_CELLS"
+
+
+def test_default_config_raises_for_known_bad_cell(config_module):
+    """``default_config`` must fail closed on every entry in the registry."""
+    for arch, collective, message_bytes in config_module._KNOWN_BAD_CELLS:
+        with pytest.raises(NotImplementedError, match="fail-closed"):
+            config_module.default_config(collective, message_bytes, arch=arch)
+
+
+def test_default_config_succeeds_for_neighbouring_good_cell(config_module):
+    """Cells one byte off the known-bad list must still resolve normally —
+    the safeguard is a precise registry lookup, not a blanket veto on the
+    surrounding bucket."""
+    for arch, collective, message_bytes in config_module._KNOWN_BAD_CELLS:
+        cfg = config_module.default_config(collective, message_bytes + 1, arch=arch)
+        assert cfg.comm_sms > 0
+
+
+def test_lookup_defaults_unaffected_by_known_bad_cells(config_module):
+    """``lookup_defaults`` is the raw bucket lookup and must NOT be gated by
+    the fail-closed registry — the safeguard lives in ``default_config`` so
+    callers building a Config manually can still inspect the table values."""
+    for arch, collective, message_bytes in config_module._KNOWN_BAD_CELLS:
+        overrides = config_module.lookup_defaults(collective, message_bytes, arch=arch)
+        assert overrides, "lookup_defaults must still return the bucket overrides"
+
+
 def test_public_apis_import_default_config():
     """The four public-API stubs must reference ``default_config``.
 
