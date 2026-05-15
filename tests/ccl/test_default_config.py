@@ -294,9 +294,17 @@ def test_default_config_succeeds_for_validated_cell(config_module):
         assert cfg.comm_sms > 0
 
 
-def test_default_config_raises_for_unvalidated_cell(config_module):
-    """Cells with no on-target evidence must fail-closed — pick a sample
-    spread of sizes/collectives that are explicitly NOT in the allow-list."""
+def test_default_config_warns_for_unvalidated_cell(config_module):
+    """Cells with no on-target evidence must emit
+    :class:`UnvalidatedDefaultConfigWarning` but still return a best-effort
+    Config — the round-9 Architect required that the public
+    ``ctx.ccl.<collective>(config=None)`` contract keep working out of the
+    box, with provenance surfaced as a warning rather than as a hard
+    ``NotImplementedError`` that silently narrows the API to a small
+    allow-list. Callers that want the previous fail-closed behaviour can
+    install ``warnings.filterwarnings("error", ...)`` selectively."""
+    import warnings
+
     arch = "gfx942"
     samples = [
         ("all_gather", 8192),
@@ -310,8 +318,29 @@ def test_default_config_raises_for_unvalidated_cell(config_module):
             f"{(arch, collective, message_bytes)} accidentally landed in the "
             "allow-list; pick a different sample for this test."
         )
-        with pytest.raises(NotImplementedError, match="fail-closed"):
-            config_module.default_config(collective, message_bytes, arch=arch)
+        with pytest.warns(config_module.UnvalidatedDefaultConfigWarning, match="no on-target verifier evidence"):
+            cfg = config_module.default_config(collective, message_bytes, arch=arch)
+        assert cfg.comm_sms > 0
+
+        # Escalation path: filterwarnings("error", ...) recovers the previous
+        # fail-closed behaviour for production callers that opt in.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=config_module.UnvalidatedDefaultConfigWarning)
+            with pytest.raises(config_module.UnvalidatedDefaultConfigWarning):
+                config_module.default_config(collective, message_bytes, arch=arch)
+
+
+def test_default_config_does_not_warn_for_validated_cell(config_module):
+    """Validated cells must NOT trigger
+    :class:`UnvalidatedDefaultConfigWarning` — the allow-list is the
+    "no warning needed, on-target evidence exists" set."""
+    import warnings
+
+    for arch, collective, message_bytes in config_module._VALIDATED_CELLS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", config_module.UnvalidatedDefaultConfigWarning)
+            cfg = config_module.default_config(collective, message_bytes, arch=arch)
+        assert cfg.comm_sms > 0
 
 
 def test_lookup_raw_unaffected_by_allow_list(config_module):

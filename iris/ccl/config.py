@@ -34,18 +34,36 @@ In addition to the perf gap, the on-target verifier in
 proved any cell of the table runs end-to-end on real MI300X hardware. Round-2
 evidence (``output/sweep_revision_smoke_mi300x.csv`` in K-7267) covered
 ``all_reduce`` × fp16 × 1 KiB → 1 GiB and produced 12 cells with
-``correct=True``. **Every other cell of the table is currently unvalidated
-on-target**, so :func:`default_config` fails closed for anything not in the
-allow-list :data:`_VALIDATED_CELLS` — iris raises ``NotImplementedError`` at
-config-resolution time instead of silently launching a kernel for which we
-have no proof it produces correct output. Callers that need an unvalidated
-cell can still build a :class:`Config` by hand and pass it explicitly; the
-fail-closed gate only guards the ``config=None`` default-resolution path.
+``correct=True``. Every other cell of the table is currently unvalidated
+on-target. Per the round-9 Architect review, validation provenance is
+surfaced as a ``UserWarning`` at config-resolution time rather than as a
+hard ``NotImplementedError``: :func:`default_config` always returns the
+table-selected best-effort :class:`Config` so callers using
+``ctx.ccl.<collective>(config=None)`` get the documented "out of the box"
+behaviour the PRD requires, but cells outside :data:`_VALIDATED_CELLS`
+emit an :class:`UnvalidatedDefaultConfigWarning` advertising the missing
+on-target evidence so production callers can opt in to ``warnings.filterwarnings("error", ...)``
+to recover the previous fail-closed behaviour. See
+``output/revision-notes.md`` on the sprint branch for the rationale and
+the orchestrator-level rescope request.
 """
 
+import warnings
 from dataclasses import dataclass
 from typing import Any
+
 import iris
+
+
+class UnvalidatedDefaultConfigWarning(UserWarning):
+    """Raised when :func:`default_config` resolves a cell with no on-target evidence.
+
+    Surfacing the missing-evidence signal as a dedicated warning subclass lets
+    production callers either ignore it (default Python behaviour, preserves
+    the "out of the box" PRD contract) or escalate it to an error via
+    ``warnings.filterwarnings("error", category=UnvalidatedDefaultConfigWarning)``
+    to recover the previous fail-closed behaviour selectively.
+    """
 
 
 # ── Architecture detection ────────────────────────────────────────────────
@@ -257,7 +275,7 @@ _DEFAULTS_TABLE: dict[str, dict[str, list[tuple[float, dict[str, Any]]]]] = {
 _VALID_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all")
 
 
-# ── Fail-closed allow-list of cells with positive on-target evidence ──────
+# ── Allow-list of cells with positive on-target evidence ──────────────────
 #
 # ``benchmark/ccl/comprehensive_sweep.py`` (round 2 evidence,
 # ``output/sweep_revision_smoke_mi300x.csv`` in workspace K-7267) runs every
@@ -271,14 +289,17 @@ _VALID_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all"
 #
 # Both ``_lookup_raw`` and :func:`default_config` route through the single
 # :func:`_resolve` helper, which consults this set so that "validated" is a
-# property of the data: :func:`default_config` raises
-# :class:`NotImplementedError` for any cell **not** in the allow-list, while
-# ``_lookup_raw`` is the module-private raw-lookup helper used by the sweep
-# harness, table-introspection tests, and ``default_config`` itself. Callers
-# who explicitly construct their own :class:`Config` are unaffected — this is
-# a safety net for the *default* (``config=None``) path only. See
-# ``output/revision-notes.md`` for the validation matrix and the kernel-work
-# follow-up needed to grow the allow-list.
+# property of the data: :func:`default_config` emits an
+# :class:`UnvalidatedDefaultConfigWarning` for any cell **not** in the
+# allow-list (and still returns the best-effort :class:`Config` so the
+# ``ctx.ccl.<collective>(config=None)`` PRD contract still works out of the
+# box), while ``_lookup_raw`` is the module-private raw-lookup helper used
+# by the sweep harness, table-introspection tests, and ``default_config``
+# itself. Callers who want the previous fail-closed behaviour can install
+# ``warnings.filterwarnings("error", category=UnvalidatedDefaultConfigWarning)``
+# to selectively escalate. See ``output/revision-notes.md`` for the
+# validation matrix and the kernel-work follow-up needed to grow the
+# allow-list.
 _VALIDATED_CELLS: set[tuple[str, str, int]] = {
     ("gfx942", "all_reduce", 1024),
     ("gfx942", "all_reduce", 2048),
@@ -300,9 +321,12 @@ def _resolve(collective: str, message_bytes: int, arch: str | None = None) -> tu
 
     Walks the bucket list and consults :data:`_VALIDATED_CELLS` so that
     "validated" is a property of the data, not of the entry point. Both
-    :func:`_lookup_raw` (raw, ungated) and :func:`default_config` (validated,
-    fail-closed) route through this helper, so any future caller that needs
-    the table sees the same answer for both pieces of information.
+    :func:`_lookup_raw` (raw, ungated) and :func:`default_config` (which
+    surfaces the missing-evidence flag as
+    :class:`UnvalidatedDefaultConfigWarning` while still returning the
+    best-effort Config) route through this helper, so any future caller
+    that needs the table sees the same answer for both pieces of
+    information.
 
     Args:
         collective: One of :data:`_VALID_COLLECTIVES`.
@@ -348,12 +372,13 @@ def _lookup_raw(collective: str, message_bytes: int, arch: str | None = None) ->
     """Raw bucket lookup for ``(arch, collective, message_bytes)``.
 
     Module-private escape hatch that returns the table values verbatim,
-    bypassing the :data:`_VALIDATED_CELLS` fail-closed gate. The public
-    surface intentionally exposes exactly one safe entry point —
-    :func:`default_config` — so production callers cannot accidentally route
-    through the ungated path. This helper exists for in-tree tooling (the
-    sweep harness, table-introspection tests, and :func:`default_config`
-    itself) that explicitly opts out of the gate.
+    without the :class:`UnvalidatedDefaultConfigWarning` provenance signal
+    :func:`default_config` emits for cells outside :data:`_VALIDATED_CELLS`.
+    The public surface intentionally exposes exactly one safe entry point —
+    :func:`default_config` — so production callers route through the
+    warning-aware path; this helper exists for in-tree tooling (the sweep
+    harness, table-introspection tests, and :func:`default_config` itself)
+    that wants the raw bucket value without triggering the warning.
 
     Args:
         collective: One of :data:`_VALID_COLLECTIVES`.
@@ -388,27 +413,32 @@ def default_config(collective: str, message_bytes: int, arch: str | None = None)
         Caller may further mutate the returned object before handing it to a
         kernel launch; the dataclass is mutable by design.
 
-    Raises:
-        NotImplementedError: If :func:`_resolve` returns ``validated=False``,
-            i.e. the requested ``(arch, collective, message_bytes)`` is **not**
-            in :data:`_VALIDATED_CELLS` — we have no on-target evidence that
-            the table-selected variant produces correct output for that cell,
-            so we fail closed here rather than silently launch a kernel of
-            unproven correctness. Callers can pass an explicit :class:`Config`
-            to bypass this safeguard while the allow-list grows.
+    Warns:
+        UnvalidatedDefaultConfigWarning: If :func:`_resolve` returns
+            ``validated=False`` — the requested
+            ``(arch, collective, message_bytes)`` is **not** in
+            :data:`_VALIDATED_CELLS`, so no on-target sweep has yet proved
+            the table-selected variant produces correct output for that
+            cell. The function still returns the best-effort table value so
+            the ``ctx.ccl.<collective>(config=None)`` PRD contract holds out
+            of the box; callers that need the previous fail-closed behaviour
+            can escalate the warning with
+            ``warnings.filterwarnings("error", category=UnvalidatedDefaultConfigWarning)``.
     """
     overrides, validated = _resolve(collective, message_bytes, arch=arch)
     arch_key = arch or _detect_arch()
     if not validated:
-        raise NotImplementedError(
+        warnings.warn(
             f"iris.ccl.{collective} default Config for {message_bytes} B on {arch_key} "
-            "is fail-closed: this cell is not in iris.ccl.config._VALIDATED_CELLS, "
-            "so no on-target sweep has proved the table-selected variant produces "
-            "correct output here. Pass an explicit Config(...) to override, or "
-            "extend the allow-list with fresh on-target evidence "
-            "(benchmark/ccl/comprehensive_sweep.py). See iris/ccl/config.py::"
-            "_VALIDATED_CELLS and output/revision-notes.md for the validation "
-            "matrix."
+            "has no on-target verifier evidence: this cell is not in "
+            "iris.ccl.config._VALIDATED_CELLS. Returning the best-effort "
+            "table-selected Config; pass an explicit Config(...) or extend the "
+            "allow-list with fresh on-target evidence "
+            "(benchmark/ccl/comprehensive_sweep.py) to silence this warning. "
+            "See iris/ccl/config.py::_VALIDATED_CELLS and output/revision-notes.md "
+            "for the validation matrix.",
+            UnvalidatedDefaultConfigWarning,
+            stacklevel=2,
         )
     kwargs: dict[str, Any] = {}
     field_map = {
