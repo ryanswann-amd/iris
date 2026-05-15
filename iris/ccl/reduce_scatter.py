@@ -23,7 +23,7 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
         async_op: If True, skip trailing barrier
         config: Config with kernel parameters
     """
-    from iris.ccl.config import Config
+    from iris.ccl.config import default_config
     from iris.ccl.utils import ReduceOp
 
     if op is None:
@@ -34,7 +34,10 @@ def reduce_scatter(output_tensor, input_tensor, ctx, op=None, group=None, async_
             "Support for other operations will be added in a future release."
         )
     if config is None:
-        config = Config(block_size_m=32, block_size_n=64, all_reduce_distribution=1)
+        # Per-rank input bytes drive the (arch, collective, message-size) lookup
+        # in iris/ccl/config.py::_DEFAULTS_TABLE.
+        message_bytes = input_tensor.numel() * input_tensor.element_size()
+        config = default_config("reduce_scatter", message_bytes)
     if config.use_gluon:
         raise ValueError(
             "reduce_scatter does not support use_gluon=True. "

@@ -24,10 +24,13 @@ def all_gather(output_tensor, input_tensor, ctx, group=None, async_op=False, con
         async_op: If True, skip trailing barrier
         config: Config with kernel parameters
     """
-    from iris.ccl.config import Config
+    from iris.ccl.config import default_config
 
     if config is None:
-        config = Config(block_size_m=32, block_size_n=64)
+        # Per-rank input bytes drive the (arch, collective, message-size) lookup
+        # in iris/ccl/config.py::_DEFAULTS_TABLE.
+        message_bytes = input_tensor.numel() * input_tensor.element_size()
+        config = default_config("all_gather", message_bytes)
 
     rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, ctx)
 
