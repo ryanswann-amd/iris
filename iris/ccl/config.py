@@ -22,13 +22,20 @@ reproduced from source.
 
 from dataclasses import dataclass
 from typing import Any
-import iris
+
+# NOTE: ``iris`` is intentionally NOT imported at module load time. The
+# defaults table and lookup helpers are pure-Python and must remain
+# importable on CPU-only hosts (CI, doc builders, ...) where loading the
+# top-level ``iris`` package would pull in ``libamdhip64.so`` and fail.
+# ``Config.__post_init__`` performs a deferred ``import iris`` for the only
+# real iris dependency (``iris.hip.get_num_xcc``).
 
 
 # ── Architecture detection ────────────────────────────────────────────────
 
 
 _DEFAULT_ARCH = "gfx942"  # MI300X
+_KNOWN_ARCHS = ("gfx942", "gfx950", "gfx90a")
 
 
 def _detect_arch() -> str:
@@ -43,7 +50,7 @@ def _detect_arch() -> str:
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(torch.cuda.current_device())
             name = (getattr(props, "gcnArchName", "") or "").lower()
-            for stem in ("gfx942", "gfx950", "gfx90a"):
+            for stem in _KNOWN_ARCHS:
                 if stem in name:
                     return stem
     except Exception:
@@ -295,6 +302,52 @@ def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None
     return dict(buckets[-1][1])
 
 
+# Per-collective mapping from "table key" → "Config dataclass field". Keys
+# that don't appear in a collective's mapping (and aren't in
+# :data:`_COMMON_PASSTHROUGH`) are not silently ignored — ``default_config``
+# raises so a typo in the defaults table (e.g. ``coomm_sms``) is caught at
+# lookup time, not lost. This also prevents an ``all_reduce``-only override
+# (such as ``num_rings``) from accidentally being applied to ``all_gather``.
+_FIELD_MAP: dict[str, dict[str, str]] = {
+    "all_reduce": {
+        "variant": "all_reduce_variant",
+        "distribution": "all_reduce_distribution",
+        "num_rings": "all_reduce_num_rings",
+        "ring_slice_n": "all_reduce_ring_slice_n",
+    },
+    "all_gather": {
+        "variant": "all_gather_variant",
+    },
+    "reduce_scatter": {
+        "variant": "reduce_scatter_variant",
+        # The two-shot reduce-scatter kernel reads
+        # ``config.all_reduce_distribution`` (see
+        # iris/ccl/triton/reduce_scatter.py) so we expose the same
+        # ``distribution`` alias here.
+        "distribution": "all_reduce_distribution",
+    },
+    "all_to_all": {},
+}
+
+# Keys that map straight onto identically-named ``Config`` fields and are
+# accepted by every collective.
+_COMMON_PASSTHROUGH = frozenset(
+    {
+        "block_size_m",
+        "block_size_n",
+        "swizzle_size",
+        "comm_sms",
+        "num_xcds",
+        "chunk_size",
+        "use_gluon",
+        "num_stages",
+        "num_warps",
+        "threads_per_warp",
+        "waves_per_eu",
+    }
+)
+
+
 def default_config(collective: str, message_bytes: int, arch: str | None = None) -> "Config":
     """Build a :class:`Config` populated from the static defaults table.
 
@@ -307,27 +360,26 @@ def default_config(collective: str, message_bytes: int, arch: str | None = None)
         A :class:`Config` instance with the table-selected overrides applied.
         Caller may further mutate the returned object before handing it to a
         kernel launch; the dataclass is mutable by design.
+
+    Raises:
+        ValueError: If ``collective`` is unknown or if the table contains a
+            key that doesn't map to any known ``Config`` field for that
+            collective (typo guard for ``_DEFAULTS_TABLE``).
     """
     overrides = lookup_defaults(collective, message_bytes, arch=arch)
+    per_collective = _FIELD_MAP[collective]  # collective already validated above
     kwargs: dict[str, Any] = {}
-    field_map = {
-        "variant": {
-            "all_reduce": "all_reduce_variant",
-            "all_gather": "all_gather_variant",
-            "reduce_scatter": "reduce_scatter_variant",
-        },
-        "distribution": "all_reduce_distribution",
-        "num_rings": "all_reduce_num_rings",
-    }
     for key, value in overrides.items():
-        if key == "variant":
-            mapped = field_map["variant"].get(collective)
-            if mapped:
-                kwargs[mapped] = value
-        elif key in ("distribution", "num_rings"):
-            kwargs[field_map[key]] = value
-        else:
+        if key in per_collective:
+            kwargs[per_collective[key]] = value
+        elif key in _COMMON_PASSTHROUGH:
             kwargs[key] = value
+        else:
+            raise ValueError(
+                f"Unknown defaults-table key {key!r} for collective {collective!r}; "
+                "expected a Config field name or one of the per-collective aliases "
+                f"({sorted(per_collective)})."
+            )
     return Config(**kwargs)
 
 
@@ -422,6 +474,12 @@ class Config:
     def __post_init__(self):
         """Validate and auto-detect num_xcds if not set."""
         if self.num_xcds is None:
+            # Deferred import: keeps ``iris.ccl.config`` importable on
+            # CPU-only hosts where ``import iris`` would dlopen
+            # ``libamdhip64.so``. The default-Config code path that needs
+            # the XCC count already runs on a real GPU node.
+            import iris  # noqa: WPS433 - intentional lazy import
+
             self.num_xcds = iris.hip.get_num_xcc()
 
         if self.chunk_size is None:
