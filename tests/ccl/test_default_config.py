@@ -593,9 +593,7 @@ def test_all_reduce_call_site_warns_for_unvalidated_cell(monkeypatch):
     _stub_launch_module(monkeypatch, "all_reduce")
     from iris.ccl import all_reduce as ar_mod
 
-    matching = _capture_unvalidated_warning(
-        lambda: ar_mod.all_reduce(_FakeTensor(), _FakeTensor(), _FakeCtx())
-    )
+    matching = _capture_unvalidated_warning(lambda: ar_mod.all_reduce(_FakeTensor(), _FakeTensor(), _FakeCtx()))
     assert matching, "all_reduce did not emit UnvalidatedDefaultConfigWarning at call site"
     assert "all_reduce" in str(matching[0].message)
 
@@ -607,9 +605,7 @@ def test_all_gather_call_site_warns_for_unvalidated_cell(monkeypatch):
     _stub_launch_module(monkeypatch, "all_gather")
     from iris.ccl import all_gather as ag_mod
 
-    matching = _capture_unvalidated_warning(
-        lambda: ag_mod.all_gather(_FakeTensor(), _FakeTensor(), _FakeCtx())
-    )
+    matching = _capture_unvalidated_warning(lambda: ag_mod.all_gather(_FakeTensor(), _FakeTensor(), _FakeCtx()))
     assert matching, "all_gather did not emit UnvalidatedDefaultConfigWarning at call site"
     assert "all_gather" in str(matching[0].message)
 
@@ -621,9 +617,7 @@ def test_reduce_scatter_call_site_warns_for_unvalidated_cell(monkeypatch):
     _stub_launch_module(monkeypatch, "reduce_scatter")
     from iris.ccl import reduce_scatter as rs_mod
 
-    matching = _capture_unvalidated_warning(
-        lambda: rs_mod.reduce_scatter(_FakeTensor(), _FakeTensor(), _FakeCtx())
-    )
+    matching = _capture_unvalidated_warning(lambda: rs_mod.reduce_scatter(_FakeTensor(), _FakeTensor(), _FakeCtx()))
     assert matching, "reduce_scatter did not emit UnvalidatedDefaultConfigWarning at call site"
     assert "reduce_scatter" in str(matching[0].message)
 
@@ -635,8 +629,6 @@ def test_all_to_all_call_site_warns_for_unvalidated_cell(monkeypatch):
     _stub_launch_module(monkeypatch, "all_to_all")
     from iris.ccl import all_to_all as a2a_mod
 
-    matching = _capture_unvalidated_warning(
-        lambda: a2a_mod.all_to_all(_FakeTensor(), _FakeTensor(), _FakeCtx())
-    )
+    matching = _capture_unvalidated_warning(lambda: a2a_mod.all_to_all(_FakeTensor(), _FakeTensor(), _FakeCtx()))
     assert matching, "all_to_all did not emit UnvalidatedDefaultConfigWarning at call site"
     assert "all_to_all" in str(matching[0].message)
