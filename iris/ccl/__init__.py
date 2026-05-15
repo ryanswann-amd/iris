@@ -10,7 +10,7 @@ Collective operations are accessed through the Iris instance's ccl attribute:
     >>> ctx.ccl.all_to_all(output_tensor, input_tensor)
 """
 
-from .config import Config, default_config, lookup_defaults
+from .config import Config, default_config
 from .utils import ReduceOp
 
-__all__ = ["Config", "ReduceOp", "default_config", "lookup_defaults"]
+__all__ = ["Config", "ReduceOp", "default_config"]
