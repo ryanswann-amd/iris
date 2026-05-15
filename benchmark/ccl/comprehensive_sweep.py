@@ -59,7 +59,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import torch
 import torch.distributed as dist
@@ -127,8 +127,7 @@ def _shape_for_message(total_bytes: int, dtype: torch.dtype, world_size: int, co
         per_rank_elems = total_elems // world_size
         if per_rank_elems <= 0:
             raise ValueError(
-                f"total_bytes={total_bytes} below the per-rank floor for all_to_all "
-                f"with world_size={world_size}"
+                f"total_bytes={total_bytes} below the per-rank floor for all_to_all with world_size={world_size}"
             )
     else:
         per_rank_elems = total_elems
@@ -164,8 +163,7 @@ def _input_output_shapes(
         # ``world_size``-way concatenation: ``(m, n // world_size)`` per peer.
         if n % world_size:
             raise ValueError(
-                f"all_to_all requires N={n} to be divisible by world_size={world_size}; "
-                f"adjust the sweep grid."
+                f"all_to_all requires N={n} to be divisible by world_size={world_size}; adjust the sweep grid."
             )
         per_peer_n = n // world_size
         return (m, n), (m, n)  # both (m, world_size * per_peer_n) where total N == n
@@ -368,8 +366,7 @@ def _make_rccl_runner(
         out_t = torch.zeros((m // world_size, n), dtype=dtype, device=device)
         if m % world_size:
             raise ValueError(
-                f"reduce_scatter requires M={m} to be divisible by world_size={world_size}; "
-                f"adjust the sweep grid."
+                f"reduce_scatter requires M={m} to be divisible by world_size={world_size}; adjust the sweep grid."
             )
         in_slices = [in_t[i * (m // world_size) : (i + 1) * (m // world_size)] for i in range(world_size)]
 
@@ -384,9 +381,7 @@ def _make_rccl_runner(
         out_t = torch.zeros((m, n), dtype=dtype, device=device)
         per = n // world_size
         if per * world_size != n:
-            raise ValueError(
-                f"all_to_all requires N={n} to be divisible by world_size={world_size}"
-            )
+            raise ValueError(f"all_to_all requires N={n} to be divisible by world_size={world_size}")
         in_chunks = [in_t[:, i * per : (i + 1) * per].contiguous() for i in range(world_size)]
         out_chunks = [out_t[:, i * per : (i + 1) * per].contiguous() for i in range(world_size)]
 
@@ -407,7 +402,9 @@ def _make_rccl_runner(
 # ── Timing core ────────────────────────────────────────────────────────────
 
 
-def _timed_event_loop(run: Callable[[], None], preamble: Callable[[], None], n_warmup: int, n_repeat: int) -> list[float]:
+def _timed_event_loop(
+    run: Callable[[], None], preamble: Callable[[], None], n_warmup: int, n_repeat: int
+) -> list[float]:
     """Time ``run`` ``n_repeat`` times after ``n_warmup`` warmups, returning per-call ms.
 
     Uses the same barrier+cache-clear discipline as ``iris.do_bench`` so
@@ -471,7 +468,9 @@ class _Row:
     bus_gbps: float
 
 
-def _validation_grid(world_size: int, collectives: list[str], dtypes: list[torch.dtype]) -> list[tuple[int, torch.dtype, str]]:
+def _validation_grid(
+    world_size: int, collectives: list[str], dtypes: list[torch.dtype]
+) -> list[tuple[int, torch.dtype, str]]:
     sizes = _power_of_two_bytes(start_kib=1, stop_gib=1)
     cells: list[tuple[int, torch.dtype, str]] = []
     for total_bytes, dtype in itertools.product(sizes, dtypes):
@@ -484,11 +483,7 @@ def _run_validation(args: argparse.Namespace, ctx) -> list[_Row]:
     world_size = dist.get_world_size()
     rank = dist.get_rank()
     collectives = [c.strip() for c in args.collectives.split(",") if c.strip()]
-    dtypes = (
-        [_parse_dtype(s) for s in args.dtypes.split(",")]
-        if args.dtypes
-        else [torch.float16, torch.bfloat16]
-    )
+    dtypes = [_parse_dtype(s) for s in args.dtypes.split(",")] if args.dtypes else [torch.float16, torch.bfloat16]
     cells = _validation_grid(world_size, collectives, dtypes)
 
     pool = _build_iris_pool(ctx, world_size, max_bytes=1 << 30)
@@ -687,7 +682,9 @@ def _run_tuning(args: argparse.Namespace, ctx) -> dict:
     if args.tune_sizes:
         sizes = [int(s) for s in args.tune_sizes.split(",")]
 
-    dtypes = [_parse_dtype(s) for s in args.tune_dtypes.split(",")] if args.tune_dtypes else [torch.float16, torch.bfloat16]
+    dtypes = (
+        [_parse_dtype(s) for s in args.tune_dtypes.split(",")] if args.tune_dtypes else [torch.float16, torch.bfloat16]
+    )
     collectives = args.collectives.split(",")
 
     best: dict = {"arch": _DEFAULT_ARCH, "world_size": world_size, "entries": []}

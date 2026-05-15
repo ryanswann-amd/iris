@@ -20,7 +20,7 @@ The default values below were produced by the canonical sweep harness at
 reproduced from source.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 import iris
 
@@ -254,9 +254,7 @@ def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None
         ValueError: If ``collective`` is not one of the supported names.
     """
     if collective not in _VALID_COLLECTIVES:
-        raise ValueError(
-            f"Unknown collective {collective!r}; expected one of {_VALID_COLLECTIVES}"
-        )
+        raise ValueError(f"Unknown collective {collective!r}; expected one of {_VALID_COLLECTIVES}")
 
     if message_bytes < 0:
         raise ValueError(f"message_bytes must be non-negative, got {message_bytes}")
