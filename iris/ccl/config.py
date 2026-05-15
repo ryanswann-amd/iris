@@ -265,11 +265,14 @@ _VALID_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all"
 # never silently returns a config that is known to produce wrong output for a
 # given ``(arch, collective, total_bytes)`` cell.
 #
-# ``default_config()`` raises :class:`NotImplementedError` for any cell in
-# this set so iris fails closed at config-resolution time rather than handing
-# back a config that the verifier already proved is broken. Callers who
-# explicitly construct their own :class:`Config` are unaffected — this is a
-# safety net for the *default* (``config=None``) path only. See
+# Both :func:`lookup_defaults` and :func:`default_config` route through the
+# single :func:`_resolve` helper, which consults this set so that "validated"
+# is a property of the data: ``default_config`` raises
+# :class:`NotImplementedError` for any unvalidated cell, while
+# ``lookup_defaults`` is the documented raw-lookup escape hatch for tooling
+# (sweep harness, table introspection, tests). Callers who explicitly
+# construct their own :class:`Config` are unaffected — this is a safety net
+# for the *default* (``config=None``) path only. See
 # ``output/revision-notes.md`` for the full failure list and the kernel-work
 # follow-up.
 _KNOWN_BAD_CELLS: set[tuple[str, str, int]] = {
@@ -285,8 +288,67 @@ _KNOWN_BAD_CELLS: set[tuple[str, str, int]] = {
 }
 
 
+def _resolve(
+    collective: str, message_bytes: int, arch: str | None = None
+) -> tuple[dict[str, Any], bool]:
+    """Single source of truth for ``(arch, collective, message_bytes)`` resolution.
+
+    Walks the bucket list and consults :data:`_KNOWN_BAD_CELLS` so that
+    "validated" is a property of the data, not of the entry point. Both
+    :func:`lookup_defaults` (raw, ungated) and :func:`default_config`
+    (validated, fail-closed) route through this helper, so any future caller
+    that needs the table sees the same answer for both pieces of information.
+
+    Args:
+        collective: One of :data:`_VALID_COLLECTIVES`.
+        message_bytes: Per-rank input tensor size in bytes.
+        arch: Architecture string (``gfx942`` ...). When ``None``, auto-detected
+            via :func:`_detect_arch`; falls back to :data:`_DEFAULT_ARCH` if the
+            architecture is not present in the table.
+
+    Returns:
+        ``(overrides, validated)``. ``overrides`` is the raw override dict for
+        the smallest bucket whose ``max_bytes`` is ``>= message_bytes`` (empty
+        if the collective or arch has no table entry). ``validated`` is False
+        iff the cell is in :data:`_KNOWN_BAD_CELLS` — i.e. the on-target
+        verifier already proved the table-selected variant produces wrong
+        output for that cell.
+
+    Raises:
+        ValueError: If ``collective`` is not one of the supported names, or
+            ``message_bytes`` is negative.
+    """
+    if collective not in _VALID_COLLECTIVES:
+        raise ValueError(f"Unknown collective {collective!r}; expected one of {_VALID_COLLECTIVES}")
+
+    if message_bytes < 0:
+        raise ValueError(f"message_bytes must be non-negative, got {message_bytes}")
+
+    arch_key = arch or _detect_arch()
+    validated = (arch_key, collective, message_bytes) not in _KNOWN_BAD_CELLS
+    table = _DEFAULTS_TABLE.get(arch_key) or _DEFAULTS_TABLE.get(_DEFAULT_ARCH)
+    if not table:
+        return {}, validated
+    buckets = table.get(collective)
+    if not buckets:
+        return {}, validated
+    for max_bytes, overrides in buckets:
+        if message_bytes <= max_bytes:
+            return dict(overrides), validated
+    # Fallthrough: use the last bucket.
+    return dict(buckets[-1][1]), validated
+
+
 def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None) -> dict[str, Any]:
-    """Look up the static defaults for ``(arch, collective, message_bytes)``.
+    """Raw bucket lookup for ``(arch, collective, message_bytes)``.
+
+    This is the low-level escape hatch that returns the table values verbatim,
+    bypassing the :data:`_KNOWN_BAD_CELLS` fail-closed gate. **Production
+    callers should use** :func:`default_config` **instead** — it routes the
+    same cell through the same resolver but enforces the validation flag, so
+    iris cannot silently launch a kernel known to write garbage. This entry
+    point exists for tooling (sweep harness, table introspection, tests) that
+    explicitly opts out of the gate.
 
     Args:
         collective: One of :data:`_VALID_COLLECTIVES`.
@@ -304,24 +366,8 @@ def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None
     Raises:
         ValueError: If ``collective`` is not one of the supported names.
     """
-    if collective not in _VALID_COLLECTIVES:
-        raise ValueError(f"Unknown collective {collective!r}; expected one of {_VALID_COLLECTIVES}")
-
-    if message_bytes < 0:
-        raise ValueError(f"message_bytes must be non-negative, got {message_bytes}")
-
-    arch_key = arch or _detect_arch()
-    table = _DEFAULTS_TABLE.get(arch_key) or _DEFAULTS_TABLE.get(_DEFAULT_ARCH)
-    if not table:
-        return {}
-    buckets = table.get(collective)
-    if not buckets:
-        return {}
-    for max_bytes, overrides in buckets:
-        if message_bytes <= max_bytes:
-            return dict(overrides)
-    # Fallthrough: use the last bucket.
-    return dict(buckets[-1][1])
+    overrides, _validated = _resolve(collective, message_bytes, arch=arch)
+    return overrides
 
 
 def default_config(collective: str, message_bytes: int, arch: str | None = None) -> "Config":
@@ -338,16 +384,17 @@ def default_config(collective: str, message_bytes: int, arch: str | None = None)
         kernel launch; the dataclass is mutable by design.
 
     Raises:
-        NotImplementedError: If the requested ``(arch, collective,
-            message_bytes)`` is in :data:`_KNOWN_BAD_CELLS` — the on-target
-            verifier already proved the table-selected variant produces wrong
-            output for that cell, so we fail closed here rather than silently
-            launch a broken kernel. Callers can pass an explicit
-            :class:`Config` to bypass this safeguard while the kernel bug is
-            being investigated.
+        NotImplementedError: If :func:`_resolve` returns ``validated=False``,
+            i.e. the requested ``(arch, collective, message_bytes)`` is in
+            :data:`_KNOWN_BAD_CELLS` — the on-target verifier already proved
+            the table-selected variant produces wrong output for that cell, so
+            we fail closed here rather than silently launch a broken kernel.
+            Callers can pass an explicit :class:`Config` to bypass this
+            safeguard while the kernel bug is being investigated.
     """
+    overrides, validated = _resolve(collective, message_bytes, arch=arch)
     arch_key = arch or _detect_arch()
-    if (arch_key, collective, message_bytes) in _KNOWN_BAD_CELLS:
+    if not validated:
         raise NotImplementedError(
             f"iris.ccl.{collective} default Config for {message_bytes} B on {arch_key} "
             "is fail-closed: the on-target verification sweep "
@@ -357,7 +404,6 @@ def default_config(collective: str, message_bytes: int, arch: str | None = None)
             "underlying kernel bug is being fixed. See iris/ccl/config.py::"
             "_KNOWN_BAD_CELLS and output/revision-notes.md for the failure list."
         )
-    overrides = lookup_defaults(collective, message_bytes, arch=arch)
     kwargs: dict[str, Any] = {}
     field_map = {
         "variant": {

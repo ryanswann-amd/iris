@@ -252,6 +252,58 @@ def test_lookup_defaults_unaffected_by_known_bad_cells(config_module):
         assert overrides, "lookup_defaults must still return the bucket overrides"
 
 
+def test_resolve_is_single_source_of_truth(config_module):
+    """Both ``lookup_defaults`` (raw) and ``default_config`` (validated) must
+    route through the same internal ``_resolve`` helper so the table has a
+    single resolution path — this prevents the maintenance trap the Round-3
+    Architect flagged where a future caller could bypass the safeguard by
+    going through a divergent code path.
+
+    The contract: ``_resolve`` returns ``(overrides, validated)`` and
+    ``lookup_defaults(...) == _resolve(...)[0]`` for every cell, including
+    the bad ones (raw lookup ignores the validation flag by design).
+    """
+    arch = "gfx942"
+    for coll in COLLECTIVES:
+        # A spread of sizes that hits every bucket.
+        for size in (1024, 64 * 1024 + 1, 8 * 1024 * 1024, 1 << 30):
+            overrides_raw, validated = config_module._resolve(coll, size, arch=arch)
+            overrides_lookup = config_module.lookup_defaults(coll, size, arch=arch)
+            assert overrides_raw == overrides_lookup
+            assert isinstance(validated, bool)
+
+    # And the validated flag must be False exactly on _KNOWN_BAD_CELLS:
+    for arch_k, coll, size in config_module._KNOWN_BAD_CELLS:
+        _, validated = config_module._resolve(coll, size, arch=arch_k)
+        assert validated is False, f"{(arch_k, coll, size)} should resolve as invalidated"
+
+
+def test_known_bad_cells_match_documented_evidence(config_module):
+    """Pin the registry to the exact 9 cells flagged by the round-2 on-target
+    sweep (``output/sweep_revision_smoke_mi300x.csv``, K-7267 workspace).
+
+    A drift here means either (a) the kernel bug was fixed and the registry
+    needs trimming with fresh on-target evidence, or (b) someone added a new
+    entry without re-running the sweep. Either way the contributor must
+    update this test alongside the registry, which forces the conversation
+    about evidence."""
+    expected = {
+        ("gfx942", "all_reduce", 131072),
+        ("gfx942", "all_reduce", 524288),
+        ("gfx942", "all_reduce", 1048576),
+        ("gfx942", "all_reduce", 8388608),
+        ("gfx942", "all_reduce", 16777216),
+        ("gfx942", "all_reduce", 67108864),
+        ("gfx942", "all_reduce", 134217728),
+        ("gfx942", "all_reduce", 268435456),
+        ("gfx942", "all_reduce", 536870912),
+    }
+    assert config_module._KNOWN_BAD_CELLS == expected, (
+        "drift from the round-2 on-target sweep evidence; re-run the sweep "
+        "and update both the registry and this assertion in lock-step."
+    )
+
+
 def test_public_apis_import_default_config():
     """The four public-API stubs must reference ``default_config``.
 
