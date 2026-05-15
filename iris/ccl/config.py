@@ -14,10 +14,20 @@ are right-edge inclusive; lookups walk the buckets in order and take the
 first whose ``max_bytes`` is ``>=`` the requested message size, so the table
 is effectively a piecewise-constant map.
 
-The default values below were produced by the canonical sweep harness at
-``benchmark/ccl/comprehensive_sweep.py --mode tune`` on an MI300X (gfx942)
-8-rank node and committed alongside the harness so the table can be
-reproduced from source.
+The values below are an MI300X (gfx942) **starting point** seeded from
+``benchmark/ccl/comprehensive_sweep.py --mode tune``: they pick the best
+config among the candidates the sweep enumerates, but those candidates are
+constrained to knobs already supported by the iris kernels. Empirical
+validation (see ``output/sweep_v4.csv`` in workspace K-7224) shows the
+defaults still leave iris materially slower than tuned RCCL — particularly
+small messages where iris pays a launch-overhead floor of ~0.13 ms (vs
+~0.05 ms for RCCL), and large messages where iris saturates well below
+RCCL's XGMI bandwidth. Closing the residual gap to the ≤10 % goal in the
+original sprint brief requires algorithmic kernel work (e.g. fused
+remote-store + reduction, ring-staged XGMI scheduling, launch-overhead
+reduction), not further tuning of these knobs. See
+``output/revision-notes.md`` on the sprint branch for the full gap
+analysis and the in-scope vs. out-of-scope split.
 """
 
 from dataclasses import dataclass
@@ -319,9 +329,13 @@ class Config:
     origami config pattern from ROCm libraries. When a user invokes a
     collective without supplying an explicit ``Config``, the public API
     consults a static defaults table (see :func:`default_config`) keyed by
-    architecture, collective, and per-rank message-size bucket — the values
-    in that table were tuned on MI300X (gfx942) using
-    ``benchmark/ccl/comprehensive_sweep.py``.
+    architecture, collective, and per-rank message-size bucket. The values in
+    that table are an MI300X (gfx942) starting point produced by
+    ``benchmark/ccl/comprehensive_sweep.py --mode tune``; they are the best
+    config among the supported kernel knobs but **do not yet reach the
+    within-10 %-of-RCCL goal across the full 1 KiB–1 GiB range**. See the
+    module-level docstring in ``iris/ccl/config.py`` for the residual gap
+    breakdown.
 
     Args:
         block_size_m: Block size for the M dimension tiling (default: 32).

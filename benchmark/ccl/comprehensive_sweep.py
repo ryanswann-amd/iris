@@ -15,8 +15,11 @@ The script is the single source of truth for the static defaults table baked
 into ``iris/ccl/config.py`` — it can be invoked in two modes:
 
 * **Validation** (default): run iris.ccl with ``Config()`` defaults and
-  ``torch.distributed`` and report iris-vs-RCCL ratios. Used to demonstrate
-  the "within 10 %" claim across the entire size range.
+  ``torch.distributed`` and report iris-vs-RCCL ratios. Each iris cell is
+  also verified against an analytical reference output (see
+  :func:`reference_output`); a single correctness failure causes the
+  harness to exit non-zero so silent kernel breakage cannot pass as a
+  measurement. Pass ``--no_verify`` to disable the check.
 
 * **Tuning** (``--mode=tune``): sweep candidate kernel configs per
   (collective, message-size bucket, dtype) and emit a JSON record of the
@@ -466,6 +469,102 @@ class _Row:
     min_ms: float
     median_ms: float
     bus_gbps: float
+    # Correctness verification (iris rows only; ``None`` for RCCL or when
+    # ``--no_verify`` is passed). ``correct`` is True iff iris's output tensor
+    # matches the analytical reference within tolerance; ``max_abs_err`` is the
+    # max absolute per-element gap. ``-1.0`` is the sentinel for "not checked".
+    correct: bool | None = None
+    max_abs_err: float = -1.0
+
+
+def reference_output(
+    collective: str,
+    m: int,
+    n: int,
+    world_size: int,
+    rank: int,
+    dtype: torch.dtype,
+    device: torch.device | str,
+) -> torch.Tensor:
+    """Build the analytical expected output tensor for a collective on this rank.
+
+    Both ``_make_iris_runner`` and ``_make_rccl_runner`` fill their input
+    tensor with the constant ``rank + 1`` (a uniform per-rank value), so the
+    expected output for each collective collapses to a closed-form constant
+    that we can compute on-host without running a reference impl. This gives
+    us a real correctness check without reintroducing a torch.distributed
+    runtime dependency in the verification path itself.
+
+    Args:
+        collective: One of ``all_reduce``, ``all_gather``, ``reduce_scatter``,
+            ``all_to_all``.
+        m, n: The same ``(M, N)`` the runner was built with.
+        world_size: The collective world size.
+        rank: The local rank (only ``all_gather`` and ``all_to_all`` produce
+            rank-dependent reference tensors).
+        dtype: Output element dtype (must match the runner's dtype).
+        device: Where to materialise the reference tensor.
+
+    Returns:
+        The expected output tensor with the same shape the runner writes to.
+
+    Raises:
+        ValueError: If ``collective`` is not one of the four supported names.
+    """
+    rank_vals = [float(r + 1) for r in range(world_size)]
+    if collective in ("all_reduce", "reduce_scatter"):
+        # Sum-reduction of (rank+1) across all ranks → uniform constant.
+        s = float(sum(rank_vals))
+        return torch.full((m, n), s, dtype=dtype, device=device)
+    if collective == "all_gather":
+        # Output is the world_size × stacked (M, N) input slabs; rank ``i``
+        # contributes a slab of ``i+1``.
+        out = torch.empty((world_size * m, n), dtype=dtype, device=device)
+        for i, v in enumerate(rank_vals):
+            out[i * m : (i + 1) * m].fill_(v)
+        return out
+    if collective == "all_to_all":
+        # The harness splits each rank's (M, N) input into ``world_size``
+        # column chunks of width ``per = N // world_size``. After all-to-all
+        # this rank's output column ``i`` came from source rank ``i`` and is
+        # therefore filled with ``i + 1``.
+        if n % world_size:
+            raise ValueError(f"all_to_all requires N={n} divisible by world_size={world_size}")
+        per = n // world_size
+        out = torch.empty((m, n), dtype=dtype, device=device)
+        for i, v in enumerate(rank_vals):
+            out[:, i * per : (i + 1) * per].fill_(v)
+        return out
+    raise ValueError(f"Unknown collective {collective!r}")
+
+
+def _verify_iris_output(
+    pool: "_IrisPool",
+    collective: str,
+    m: int,
+    n: int,
+    world_size: int,
+    dtype: torch.dtype,
+) -> tuple[bool, float]:
+    """Run iris with default ``Config`` once and compare its output to the analytical reference.
+
+    Returns ``(correct, max_abs_err)``. ``correct`` is True iff every element
+    of the iris output is within an absolute tolerance derived from the dtype
+    (1e-2 for fp16/bf16 — well above the worst-case rounding for the
+    constant-fill inputs we use, which never overflow even at world_size=8).
+    """
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    run, preamble = _make_iris_runner(pool, collective, m, n, world_size, dtype, config=None)
+    preamble()
+    run()
+    torch.cuda.synchronize()
+    handles = _build_iris_handles(pool, collective, m, n, world_size, dtype)
+    actual = handles.out.detach().clone()
+    expected = reference_output(collective, m, n, world_size, rank, dtype, actual.device)
+    diff = (actual.float() - expected.float()).abs()
+    max_abs_err = float(diff.max().item())
+    tol = 1e-2  # fp16/bf16 — generous; constant-fill inputs do not overflow
+    return max_abs_err <= tol, max_abs_err
 
 
 def _validation_grid(
@@ -525,6 +624,35 @@ def _run_validation(args: argparse.Namespace, ctx) -> list[_Row]:
                     )
                 continue
 
+            # Correctness verification (iris only — RCCL is the de-facto
+            # reference). Run once before the timing loop and surface the
+            # result both in the CSV and via the harness exit code so a
+            # silent kernel failure cannot masquerade as a measurement.
+            correct: bool | None = None
+            max_abs_err: float = -1.0
+            if impl == "iris" and getattr(args, "verify", True):
+                try:
+                    correct, max_abs_err = _verify_iris_output(pool, collective, m, n, world_size, dtype)
+                except Exception as exc:  # noqa: BLE001 — surface as a hard failure
+                    correct = False
+                    max_abs_err = float("inf")
+                    if rank == 0:
+                        logger.error(
+                            "iris verify raised on cell %s/%s/%d B: %r",
+                            collective,
+                            _dtype_str(dtype),
+                            total_bytes,
+                            exc,
+                        )
+                if rank == 0 and not correct:
+                    logger.error(
+                        "iris CORRECTNESS FAIL cell %s/%s/%d B max_abs_err=%g",
+                        collective,
+                        _dtype_str(dtype),
+                        total_bytes,
+                        max_abs_err,
+                    )
+
             times = _timed_event_loop(run, preamble, args.n_warmup, args.n_repeat)
             del run, preamble
             import gc
@@ -549,6 +677,8 @@ def _run_validation(args: argparse.Namespace, ctx) -> list[_Row]:
                     min_ms=mn,
                     median_ms=med,
                     bus_gbps=bw,
+                    correct=correct,
+                    max_abs_err=max_abs_err,
                 )
             )
             if rank == 0:
@@ -787,9 +917,15 @@ def _write_csv(rows: list[_Row], path: Path) -> None:
                 "min_ms",
                 "median_ms",
                 "bus_gbps",
+                "correct",
+                "max_abs_err",
             ]
         )
         for r in rows:
+            if r.correct is None:
+                correct_cell = ""
+            else:
+                correct_cell = "true" if r.correct else "false"
             w.writerow(
                 [
                     r.collective,
@@ -803,6 +939,8 @@ def _write_csv(rows: list[_Row], path: Path) -> None:
                     f"{r.min_ms:.6f}",
                     f"{r.median_ms:.6f}",
                     f"{r.bus_gbps:.4f}",
+                    correct_cell,
+                    f"{r.max_abs_err:.6g}" if r.max_abs_err >= 0 else "",
                 ]
             )
 
@@ -912,6 +1050,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n_warmup", type=int, default=10, help="Validation warmup iterations")
     p.add_argument("--n_repeat", type=int, default=20, help="Validation timed iterations")
     p.add_argument("--dtypes", default=None, help="Comma-separated dtypes for validation (default: fp16,bf16)")
+    p.add_argument(
+        "--no_verify",
+        dest="verify",
+        action="store_false",
+        default=True,
+        help="Disable per-cell iris correctness verification (NOT recommended).",
+    )
     p.add_argument("--tune_warmup", type=int, default=3, help="Tuning warmup iterations")
     p.add_argument("--tune_repeat", type=int, default=5, help="Tuning timed iterations")
     p.add_argument("--tune_sizes", default=None, help="Comma-separated byte sizes to tune (default: 1KiB..1GiB pow2)")
@@ -972,8 +1117,20 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Comprehensive sweep starting: mode=%s impls=%s", args.mode, args.impls)
 
     t0 = time.time()
+    exit_code = 0
     if args.mode == "validate":
         rows = _run_validation(args, ctx)
+        # A failed iris correctness cell is a blocking failure — surface it
+        # via the harness exit code so the sweep cannot pass silently.
+        iris_failures = [r for r in rows if r.impl == "iris" and r.correct is False]
+        if iris_failures:
+            exit_code = 1
+            if rank == 0:
+                logger.error(
+                    "iris correctness failed for %d cell(s): %s",
+                    len(iris_failures),
+                    ", ".join(f"{r.collective}/{r.dtype}/{r.total_bytes}B" for r in iris_failures),
+                )
         if rank == 0:
             csv_path = Path(args.output_csv) if args.output_csv else Path("output/sweep.csv")
             _write_csv(rows, csv_path)
@@ -1005,7 +1162,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("Sweep complete in %.1f s", time.time() - t0)
     ctx.barrier()
     dist.destroy_process_group()
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
