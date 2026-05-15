@@ -14,46 +14,33 @@ are right-edge inclusive; lookups walk the buckets in order and take the
 first whose ``max_bytes`` is ``>=`` the requested message size, so the table
 is effectively a piecewise-constant map.
 
-Sprint scope (rescoped, round 6 — see ``output/revision-notes.md`` on the
-sprint branch). The original sprint brief targeted iris within 10 % of tuned
-RCCL across **1 KiB → 1 GiB for all four collectives in fp16+bf16 with
-default Config()**. On-target evidence on MI300X (round 2 sweep,
-``output/sweep_revision_smoke_mi300x.csv`` in workspace K-7267) showed two
-structural problems with that brief:
+The values below are an MI300X (gfx942) **starting point** seeded from
+``benchmark/ccl/comprehensive_sweep.py --mode tune``: they pick the best
+config among the candidates the sweep enumerates, but those candidates are
+constrained to knobs already supported by the iris kernels. Empirical
+validation (see ``output/sweep_v4.csv`` in workspace K-7224) shows the
+defaults still leave iris materially slower than tuned RCCL — particularly
+small messages where iris pays a launch-overhead floor of ~0.13 ms (vs
+~0.05 ms for RCCL), and large messages where iris saturates well below
+RCCL's XGMI bandwidth. Closing the residual gap to the ≤10 % goal in the
+original sprint brief requires algorithmic kernel work (e.g. fused
+remote-store + reduction, ring-staged XGMI scheduling, launch-overhead
+reduction), not further tuning of these knobs. See
+``output/revision-notes.md`` on the sprint branch for the full gap
+analysis and the in-scope vs. out-of-scope split.
 
-* The only cells with positive correctness evidence are the 12
-  ``all_reduce`` × fp16 cells listed in :data:`_VALIDATED_CELLS`. Every other
-  cell either has no on-target run or was flagged ``correct=False`` by the
-  verifier.
-* Even where iris is correct, the perf gap at large messages (~2.8× at
-  512 MiB ``all_reduce``) is structural — closing it needs a new kernel
-  variant, not further tuning of the existing knobs.
-
-The sprint has therefore been formally narrowed to:
-
-  *Default* ``Config()`` resolves to a tuned, on-target-validated cell of
-  ``_DEFAULTS_TABLE`` for every ``(arch, collective, message_bytes)`` in
-  :data:`_VALIDATED_CELLS`; for every other cell the public default-resolution
-  path fails closed with :class:`NotImplementedError`.
-
-The within-10 %-of-RCCL bar across the full 1 KiB–1 GiB grid for all four
-collectives is **explicitly out of scope** for this sprint and tracked as a
-follow-up sprint that owns the kernel work (large-message all-reduce variant,
-launch-overhead reduction, gluon ports for the remaining collectives) plus
-the on-target re-validation needed to grow :data:`_VALIDATED_CELLS`. See the
-``Out of scope / follow-up sprint`` section of ``output/revision-notes.md``
-for the rescoped success criteria and the work the follow-up sprint must
-own.
-
-Within scope, the values in ``_DEFAULTS_TABLE`` are an MI300X (gfx942)
-starting point seeded from ``benchmark/ccl/comprehensive_sweep.py --mode
-tune``: they pick the best config among the candidates the sweep enumerates,
-constrained to knobs the iris kernels already support. ``default_config``
-exposes only the validated cells; raw lookups for unvalidated cells live on
-the module-private :func:`_lookup_raw` (sweep harness + tests only). Callers
-that need an unvalidated cell can still build a :class:`Config` by hand and
-pass it explicitly; the fail-closed gate only guards the ``config=None``
-default-resolution path.
+In addition to the perf gap, the on-target verifier in
+``benchmark/ccl/comprehensive_sweep.py`` is the only thing that has actually
+proved any cell of the table runs end-to-end on real MI300X hardware. Round-2
+evidence (``output/sweep_revision_smoke_mi300x.csv`` in K-7267) covered
+``all_reduce`` × fp16 × 1 KiB → 1 GiB and produced 12 cells with
+``correct=True``. **Every other cell of the table is currently unvalidated
+on-target**, so :func:`default_config` fails closed for anything not in the
+allow-list :data:`_VALIDATED_CELLS` — iris raises ``NotImplementedError`` at
+config-resolution time instead of silently launching a kernel for which we
+have no proof it produces correct output. Callers that need an unvalidated
+cell can still build a :class:`Config` by hand and pass it explicitly; the
+fail-closed gate only guards the ``config=None`` default-resolution path.
 """
 
 from dataclasses import dataclass
@@ -458,21 +445,10 @@ class Config:
     architecture, collective, and per-rank message-size bucket. The values in
     that table are an MI300X (gfx942) starting point produced by
     ``benchmark/ccl/comprehensive_sweep.py --mode tune``; they are the best
-    config among the supported kernel knobs.
-
-    The default-resolution path is **fail-closed and intentionally narrow**:
-    after the round-6 rescope (see the module docstring and
-    ``output/revision-notes.md`` on the sprint branch), :func:`default_config`
-    only serves the cells in :data:`_VALIDATED_CELLS` — currently the 12
-    ``all_reduce`` × fp16 cells with positive on-target evidence on MI300X.
-    All other cells (every ``all_gather`` / ``reduce_scatter`` /
-    ``all_to_all`` cell, every bf16 cell, plus the ``all_reduce`` × fp16
-    cells the verifier flagged ``correct=False``) raise
-    :class:`NotImplementedError` from :func:`default_config`. Callers that
-    need an unvalidated cell must construct a :class:`Config` explicitly. The
-    original brief's "within 10 % of tuned RCCL across 1 KiB–1 GiB for all
-    four collectives" target is **out of scope** for this sprint and is
-    tracked as a follow-up.
+    config among the supported kernel knobs but **do not yet reach the
+    within-10 %-of-RCCL goal across the full 1 KiB–1 GiB range**. See the
+    module-level docstring in ``iris/ccl/config.py`` for the residual gap
+    breakdown.
 
     Args:
         block_size_m: Block size for the M dimension tiling (default: 32).
