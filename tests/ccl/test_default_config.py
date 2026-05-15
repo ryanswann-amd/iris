@@ -294,15 +294,14 @@ def test_default_config_succeeds_for_validated_cell(config_module):
         assert cfg.comm_sms > 0
 
 
-def test_default_config_warns_for_unvalidated_cell(config_module):
-    """Cells with no on-target evidence must emit
-    :class:`UnvalidatedDefaultConfigWarning` but still return a best-effort
-    Config — the round-9 Architect required that the public
-    ``ctx.ccl.<collective>(config=None)`` contract keep working out of the
-    box, with provenance surfaced as a warning rather than as a hard
-    ``NotImplementedError`` that silently narrows the API to a small
-    allow-list. Callers that want the previous fail-closed behaviour can
-    install ``warnings.filterwarnings("error", ...)`` selectively."""
+def test_default_config_is_silent_regardless_of_validation(config_module):
+    """``default_config`` is a pure lookup helper after the round-10 Architect
+    split: it must NOT emit :class:`UnvalidatedDefaultConfigWarning` for
+    either validated or unvalidated cells. The warn-vs-silent policy lives
+    at the four collective entry points (see
+    :func:`iris.ccl.validation.warn_if_unvalidated`), not inside this
+    helper, so downstream consumers of the lookup table cannot inherit the
+    warn-and-pray contract by accident."""
     import warnings
 
     arch = "gfx942"
@@ -312,42 +311,94 @@ def test_default_config_warns_for_unvalidated_cell(config_module):
         ("all_to_all", 1 << 20),
         ("all_reduce", 131072),  # one of the round-2 verifier failures
         ("all_reduce", 1234567),  # arbitrary unvalidated all_reduce size
+        # Plus the validated rows — also must stay silent.
+        ("all_reduce", 1024),
+        ("all_reduce", 4194304),
     ]
     for collective, message_bytes in samples:
-        assert (arch, collective, message_bytes) not in config_module._VALIDATED_CELLS, (
-            f"{(arch, collective, message_bytes)} accidentally landed in the "
-            "allow-list; pick a different sample for this test."
-        )
-        with pytest.warns(config_module.UnvalidatedDefaultConfigWarning, match="no on-target verifier evidence"):
-            cfg = config_module.default_config(collective, message_bytes, arch=arch)
-        assert cfg.comm_sms > 0
-
-        # Escalation path: filterwarnings("error", ...) recovers the previous
-        # fail-closed behaviour for production callers that opt in.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("error", category=config_module.UnvalidatedDefaultConfigWarning)
-            with pytest.raises(config_module.UnvalidatedDefaultConfigWarning):
-                config_module.default_config(collective, message_bytes, arch=arch)
-
-
-def test_default_config_does_not_warn_for_validated_cell(config_module):
-    """Validated cells must NOT trigger
-    :class:`UnvalidatedDefaultConfigWarning` — the allow-list is the
-    "no warning needed, on-target evidence exists" set."""
-    import warnings
-
-    for arch, collective, message_bytes in config_module._VALIDATED_CELLS:
         with warnings.catch_warnings():
             warnings.simplefilter("error", config_module.UnvalidatedDefaultConfigWarning)
             cfg = config_module.default_config(collective, message_bytes, arch=arch)
         assert cfg.comm_sms > 0
 
 
+def test_warn_if_unvalidated_warns_for_unvalidated_cell():
+    """:func:`iris.ccl.validation.warn_if_unvalidated` must emit
+    :class:`UnvalidatedDefaultConfigWarning` for cells outside the
+    allow-list and stay silent otherwise. This is the policy hook each
+    public collective entry point invokes explicitly so the warn-vs-silent
+    decision lives at the call site rather than inside the lookup table."""
+    import warnings
+
+    from iris.ccl.validation import (
+        UnvalidatedDefaultConfigWarning,
+        _VALIDATED_CELLS,
+        warn_if_unvalidated,
+    )
+
+    arch = "gfx942"
+    unvalidated_samples = [
+        ("all_gather", 8192),
+        ("reduce_scatter", 65536),
+        ("all_to_all", 1 << 20),
+        ("all_reduce", 131072),
+    ]
+    for collective, message_bytes in unvalidated_samples:
+        assert (arch, collective, message_bytes) not in _VALIDATED_CELLS
+        with pytest.warns(UnvalidatedDefaultConfigWarning, match="no on-target verifier evidence"):
+            warn_if_unvalidated(arch, collective, message_bytes)
+
+        # Escalation path: filterwarnings("error", ...) recovers a
+        # fail-closed behaviour for production callers that opt in.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=UnvalidatedDefaultConfigWarning)
+            with pytest.raises(UnvalidatedDefaultConfigWarning):
+                warn_if_unvalidated(arch, collective, message_bytes)
+
+
+def test_warn_if_unvalidated_silent_for_validated_cell():
+    """Validated cells must NOT trigger
+    :class:`UnvalidatedDefaultConfigWarning` from the policy hook — the
+    allow-list is the "no warning needed, on-target evidence exists" set."""
+    import warnings
+
+    from iris.ccl.validation import (
+        UnvalidatedDefaultConfigWarning,
+        _VALIDATED_CELLS,
+        warn_if_unvalidated,
+    )
+
+    for arch, collective, message_bytes in _VALIDATED_CELLS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UnvalidatedDefaultConfigWarning)
+            warn_if_unvalidated(arch, collective, message_bytes)
+
+
+def test_unvalidated_default_config_warning_reexported_from_iris_ccl():
+    """The ``iris.ccl`` package must re-export
+    :class:`UnvalidatedDefaultConfigWarning` so production callers can name
+    it in ``warnings.filterwarnings(...)`` without importing from the
+    private validation submodule. The package re-export, the
+    ``iris.ccl.config`` backwards-compat re-export, and the canonical
+    definition in :mod:`iris.ccl.validation` must all be the same class
+    object so ``isinstance``/``issubclass`` checks work transparently."""
+    import iris.ccl as ccl_pkg
+    import iris.ccl.config as cfg
+    import iris.ccl.validation as validation
+
+    assert hasattr(ccl_pkg, "UnvalidatedDefaultConfigWarning")
+    assert ccl_pkg.UnvalidatedDefaultConfigWarning is validation.UnvalidatedDefaultConfigWarning
+    assert cfg.UnvalidatedDefaultConfigWarning is validation.UnvalidatedDefaultConfigWarning
+    assert "UnvalidatedDefaultConfigWarning" in ccl_pkg.__all__
+
+
 def test_lookup_raw_unaffected_by_allow_list(config_module):
     """``_lookup_raw`` is the module-private bucket lookup and must NOT be
-    gated by :data:`_VALIDATED_CELLS` — the safeguard lives in
-    ``default_config`` so in-tree tooling can still inspect the table values
-    for unvalidated cells (sweep harness, table introspection)."""
+    gated by :data:`_VALIDATED_CELLS` — after the round-10 split the
+    warn-vs-silent policy lives at each collective call site (via
+    :func:`iris.ccl.validation.warn_if_unvalidated`), so in-tree tooling
+    can still inspect the table values for unvalidated cells (sweep
+    harness, table introspection) without triggering the warning."""
     arch = "gfx942"
     unvalidated_samples = [
         ("all_gather", 8192),
@@ -441,13 +492,16 @@ def test_validated_cells_match_round2_failure_exclusion(config_module):
 
 
 def test_public_apis_import_default_config():
-    """The four public-API stubs must reference ``default_config``.
+    """The four public-API stubs must reference both ``default_config`` and
+    the explicit warn-at-call-site policy hook ``warn_if_unvalidated``.
 
     A regression where one of them silently went back to the old hard-coded
     ``Config(block_size_m=32, block_size_n=64, ...)`` literal would defeat
-    the entire purpose of this PR. Source-string sanity check guards against
-    that — much cheaper than a GPU integration test.
-    """
+    the entire purpose of this PR; a regression where one of them dropped
+    the explicit ``warn_if_unvalidated`` call would re-bury the validation
+    policy inside ``default_config`` and reintroduce the round-10 Architect
+    finding. Source-string sanity check guards against both — much cheaper
+    than a GPU integration test."""
     import inspect
     from iris.ccl import all_reduce as ar
     from iris.ccl import all_gather as ag
@@ -461,3 +515,128 @@ def test_public_apis_import_default_config():
             "iris.ccl.config.default_config — this regresses the static tuning "
             "table introduced for K-7224."
         )
+        assert "warn_if_unvalidated" in src, (
+            f"{mod.__name__} no longer invokes iris.ccl.validation.warn_if_unvalidated "
+            "explicitly at the call site — this regresses the round-10 Architect "
+            "split that requires the warn-vs-silent policy live at each public "
+            "collective entry point, not inside the shared default_config helper."
+        )
+
+
+# --------------------------------------------------------------------------
+# End-to-end routing tests — each of the four public collective entry
+# points must surface ``UnvalidatedDefaultConfigWarning`` for unvalidated
+# cells when called with ``config=None``. These tests stub the launch
+# submodule + ``extract_group_info`` so they can run on CPU CI; the
+# warn_if_unvalidated call happens before any GPU-bound code path so it
+# fires even when the downstream stub raises.
+# --------------------------------------------------------------------------
+
+
+class _FakeTensor:
+    """Minimal duck-typed tensor satisfying the public-API entry points.
+
+    ``numel`` × ``element_size`` deliberately yields **131072 bytes** —
+    this size lands in the second bucket for every collective and is
+    explicitly **not** in :data:`_VALIDATED_CELLS` (the round-2 sweep
+    flagged ``("gfx942", "all_reduce", 131072)`` as a verifier failure,
+    and the other three collectives have no validated cells at all), so
+    every collective will route through the warn path."""
+
+    shape = (256, 256)  # M=256, N=256, M*N=65536 elems → fp16 ⇒ 131072 B
+
+    def numel(self):
+        return 256 * 256
+
+    def element_size(self):
+        return 2  # fp16
+
+
+class _FakeCtx:
+    def barrier(self):
+        pass
+
+
+def _stub_launch_module(monkeypatch, modname):
+    """Install a no-op stub for ``iris.ccl.triton.<modname>`` so the
+    collective stubs' lazy ``from iris.ccl.triton.<modname> import launch``
+    line resolves on CPU CI."""
+    fake_mod = types.ModuleType(f"iris.ccl.triton.{modname}")
+    fake_mod.launch = lambda *a, **kw: None
+    fake_mod.all_reduce_preamble = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, f"iris.ccl.triton.{modname}", fake_mod)
+
+
+def _capture_unvalidated_warning(callable_under_test):
+    """Run ``callable_under_test`` and return the list of
+    UnvalidatedDefaultConfigWarning records it emitted. Swallows any
+    exception the callable raises after the warn (the launch stub is best
+    effort; the warn-at-call-site contract only requires the warn fire
+    before the kernel call site)."""
+    import warnings
+
+    from iris.ccl.validation import UnvalidatedDefaultConfigWarning
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            callable_under_test()
+        except Exception:
+            pass
+    return [w for w in caught if issubclass(w.category, UnvalidatedDefaultConfigWarning)]
+
+
+def test_all_reduce_call_site_warns_for_unvalidated_cell(monkeypatch):
+    """``iris.ccl.all_reduce`` must surface
+    :class:`UnvalidatedDefaultConfigWarning` when called with ``config=None``
+    on an unvalidated ``(arch, collective, message_bytes)`` cell."""
+    _stub_launch_module(monkeypatch, "all_reduce")
+    from iris.ccl import all_reduce as ar_mod
+
+    matching = _capture_unvalidated_warning(
+        lambda: ar_mod.all_reduce(_FakeTensor(), _FakeTensor(), _FakeCtx())
+    )
+    assert matching, "all_reduce did not emit UnvalidatedDefaultConfigWarning at call site"
+    assert "all_reduce" in str(matching[0].message)
+
+
+def test_all_gather_call_site_warns_for_unvalidated_cell(monkeypatch):
+    """``iris.ccl.all_gather`` must surface
+    :class:`UnvalidatedDefaultConfigWarning` when called with ``config=None``
+    on an unvalidated ``(arch, collective, message_bytes)`` cell."""
+    _stub_launch_module(monkeypatch, "all_gather")
+    from iris.ccl import all_gather as ag_mod
+
+    matching = _capture_unvalidated_warning(
+        lambda: ag_mod.all_gather(_FakeTensor(), _FakeTensor(), _FakeCtx())
+    )
+    assert matching, "all_gather did not emit UnvalidatedDefaultConfigWarning at call site"
+    assert "all_gather" in str(matching[0].message)
+
+
+def test_reduce_scatter_call_site_warns_for_unvalidated_cell(monkeypatch):
+    """``iris.ccl.reduce_scatter`` must surface
+    :class:`UnvalidatedDefaultConfigWarning` when called with ``config=None``
+    on an unvalidated ``(arch, collective, message_bytes)`` cell."""
+    _stub_launch_module(monkeypatch, "reduce_scatter")
+    from iris.ccl import reduce_scatter as rs_mod
+
+    matching = _capture_unvalidated_warning(
+        lambda: rs_mod.reduce_scatter(_FakeTensor(), _FakeTensor(), _FakeCtx())
+    )
+    assert matching, "reduce_scatter did not emit UnvalidatedDefaultConfigWarning at call site"
+    assert "reduce_scatter" in str(matching[0].message)
+
+
+def test_all_to_all_call_site_warns_for_unvalidated_cell(monkeypatch):
+    """``iris.ccl.all_to_all`` must surface
+    :class:`UnvalidatedDefaultConfigWarning` when called with ``config=None``
+    on an unvalidated ``(arch, collective, message_bytes)`` cell."""
+    _stub_launch_module(monkeypatch, "all_to_all")
+    from iris.ccl import all_to_all as a2a_mod
+
+    matching = _capture_unvalidated_warning(
+        lambda: a2a_mod.all_to_all(_FakeTensor(), _FakeTensor(), _FakeCtx())
+    )
+    assert matching, "all_to_all did not emit UnvalidatedDefaultConfigWarning at call site"
+    assert "all_to_all" in str(matching[0].message)

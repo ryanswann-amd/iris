@@ -31,8 +31,9 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
         config: Config with kernel parameters
         workspace: Reusable workspace from all_reduce_preamble
     """
-    from iris.ccl.config import default_config
+    from iris.ccl.config import _detect_arch, default_config
     from iris.ccl.utils import ReduceOp
+    from iris.ccl.validation import warn_if_unvalidated
 
     if op is None:
         op = ReduceOp.SUM
@@ -43,8 +44,12 @@ def all_reduce(output_tensor, input_tensor, ctx, op=None, group=None, async_op=F
         )
     if config is None:
         # Per-rank input bytes drive the (arch, collective, message-size) lookup
-        # in iris/ccl/config.py::_DEFAULTS_TABLE.
+        # in iris/ccl/config.py::_DEFAULTS_TABLE. The warn-vs-silent policy on
+        # cells without on-target evidence is applied here at the call site
+        # (round-10 Architect requirement) so the contract is visible per
+        # collective rather than implicit in a shared helper.
         message_bytes = input_tensor.numel() * input_tensor.element_size()
+        warn_if_unvalidated(_detect_arch(), "all_reduce", message_bytes)
         config = default_config("all_reduce", message_bytes)
     if config.use_gluon:
         raise ValueError(
