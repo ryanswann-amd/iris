@@ -26,6 +26,7 @@ import pytest
 # Optional-dependency stubs
 # --------------------------------------------------------------------------
 
+
 # ``iris/__init__.py`` eagerly imports ``iris.ops``, which in turn requires
 # ``tritonblas``. The defaults table is a pure-Python lookup that doesn't
 # touch any of that — install a sentinel module so the import chain
@@ -94,6 +95,7 @@ COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all")
 # Schema invariants
 # --------------------------------------------------------------------------
 
+
 def test_table_has_gfx942(config_module):
     """gfx942 (MI300X) must always have an entry — it's the canonical AMD arch."""
     assert "gfx942" in config_module._DEFAULTS_TABLE
@@ -119,6 +121,7 @@ def test_table_buckets_sorted_and_terminate_at_inf(config_module, arch, coll):
 # --------------------------------------------------------------------------
 # Lookup behaviour
 # --------------------------------------------------------------------------
+
 
 def test_lookup_unknown_collective_raises(config_module):
     with pytest.raises(ValueError, match="Unknown collective"):
@@ -160,6 +163,7 @@ def test_lookup_returns_first_matching_bucket(config_module, coll):
 # Config integration — every table row must produce a valid Config.
 # --------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("coll", COLLECTIVES)
 def test_default_config_is_valid_for_every_bucket(config_module, coll):
     """Every entry in the table must yield a Config that survives validation."""
@@ -196,6 +200,7 @@ def test_variant_field_routes_per_collective(config_module):
 # Public-API wiring — the four collective stubs must consult the table when
 # ``config=None`` rather than falling back to their old hard-coded literals.
 # --------------------------------------------------------------------------
+
 
 def test_public_apis_import_default_config():
     """The four public-API stubs must reference ``default_config``.
