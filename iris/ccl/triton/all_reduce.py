@@ -63,10 +63,11 @@ def all_reduce_preamble(
     Returns:
         AllReduceWorkspace instance ready for the next call to all_reduce.
     """
-    from ..config import Config
+    from ..config import default_config
 
     if config is None:
-        config = Config()
+        message_bytes = input_tensor.numel() * input_tensor.element_size()
+        config = default_config("all_reduce", message_bytes)
 
     variant = config.all_reduce_variant.lower()
     if variant not in [VARIANT_ATOMIC, VARIANT_RING, VARIANT_TWO_SHOT, VARIANT_ONE_SHOT, VARIANT_SPINLOCK]:

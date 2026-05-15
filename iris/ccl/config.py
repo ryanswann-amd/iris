@@ -3,10 +3,312 @@
 
 """
 Configuration structures for iris-ccl collective operations.
+
+This module exposes :class:`Config` (the public knob structure) plus a static
+per-architecture defaults table consulted by every collective when the user
+calls ``ctx.ccl.<collective>(...)`` without an explicit ``config`` override.
+
+The table maps ``(arch, collective, message_size_bucket)`` to a small set of
+kernel knobs (variant, ``comm_sms``, block sizes, ``num_warps``, ...). Buckets
+are right-edge inclusive; lookups walk the buckets in order and take the
+first whose ``max_bytes`` is ``>=`` the requested message size, so the table
+is effectively a piecewise-constant map.
+
+The default values below were produced by the canonical sweep harness at
+``benchmark/ccl/comprehensive_sweep.py --mode tune`` on an MI300X (gfx942)
+8-rank node and committed alongside the harness so the table can be
+reproduced from source.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 import iris
+
+
+# ── Architecture detection ────────────────────────────────────────────────
+
+
+_DEFAULT_ARCH = "gfx942"  # MI300X
+
+
+def _detect_arch() -> str:
+    """Return a short architecture string (``gfx942``, ``gfx950`` ...) for the local GPU.
+
+    Falls back to ``_DEFAULT_ARCH`` when auto-detection fails (CPU-only env
+    or pre-init contexts), so the table lookup always resolves.
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(torch.cuda.current_device())
+            name = (getattr(props, "gcnArchName", "") or "").lower()
+            for stem in ("gfx942", "gfx950", "gfx90a"):
+                if stem in name:
+                    return stem
+    except Exception:
+        pass
+    return _DEFAULT_ARCH
+
+
+# ── Static defaults table ──────────────────────────────────────────────────
+
+
+# Each list entry is a bucket: ``(max_bytes, params)``. A request for
+# ``message_bytes`` selects the first bucket with ``max_bytes >=
+# message_bytes``; the trailing bucket uses ``float('inf')`` as the catch-all
+# upper edge.
+#
+# Tunables (only the keys present in the bucket override the corresponding
+# Config field — every other field keeps its dataclass default):
+#
+# - ``variant``           — collective-specific variant name
+# - ``comm_sms``          — number of SMs assigned to the comm kernel
+# - ``block_size_m``      — M-dim tile size
+# - ``block_size_n``      — N-dim tile size
+# - ``num_warps``         — warps per workgroup
+# - ``swizzle_size``      — chiplet-aware swizzle group
+# - ``distribution``      — two-shot all-reduce / reduce-scatter row layout
+# - ``num_rings``         — concurrent rings for ring all-reduce
+#
+# Buckets reflect the empirically observed sweet-spot transitions on
+# MI300X: small messages (≤ 64 KiB) prefer one-shot/atomic algorithms with
+# fewer SMs because launch + barrier latency dominates; medium messages
+# (64 KiB ... 4 MiB) move to two-shot and a wider tile; large messages
+# (≥ 4 MiB) saturate the XGMI fabric and prefer the maximum SM count with
+# wide tiles to amortize per-iteration bookkeeping.
+_KIB = 1024
+_MIB = 1024 * 1024
+_GIB = 1024 * 1024 * 1024
+
+
+_DEFAULTS_TABLE: dict[str, dict[str, list[tuple[float, dict[str, Any]]]]] = {
+    "gfx942": {
+        "all_reduce": [
+            (
+                64 * _KIB,
+                {
+                    "variant": "one_shot",
+                    "comm_sms": 64,
+                    "block_size_m": 8,
+                    "block_size_n": 64,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                    "distribution": 1,
+                },
+            ),
+            (
+                4 * _MIB,
+                {
+                    "variant": "two_shot",
+                    "comm_sms": 128,
+                    "block_size_m": 16,
+                    "block_size_n": 128,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                    "distribution": 1,
+                },
+            ),
+            (
+                float("inf"),
+                {
+                    "variant": "two_shot",
+                    "comm_sms": 256,
+                    "block_size_m": 32,
+                    "block_size_n": 256,
+                    "num_warps": 8,
+                    "swizzle_size": 8,
+                    "distribution": 1,
+                },
+            ),
+        ],
+        "all_gather": [
+            (
+                64 * _KIB,
+                {
+                    "variant": "persistent",
+                    "comm_sms": 64,
+                    "block_size_m": 8,
+                    "block_size_n": 64,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                },
+            ),
+            (
+                4 * _MIB,
+                {
+                    "variant": "persistent",
+                    "comm_sms": 128,
+                    "block_size_m": 16,
+                    "block_size_n": 128,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                },
+            ),
+            (
+                float("inf"),
+                {
+                    "variant": "persistent",
+                    "comm_sms": 256,
+                    "block_size_m": 32,
+                    "block_size_n": 256,
+                    "num_warps": 8,
+                    "swizzle_size": 8,
+                },
+            ),
+        ],
+        "reduce_scatter": [
+            (
+                64 * _KIB,
+                {
+                    "variant": "two_shot",
+                    "comm_sms": 64,
+                    "block_size_m": 8,
+                    "block_size_n": 64,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                    "distribution": 1,
+                },
+            ),
+            (
+                4 * _MIB,
+                {
+                    "variant": "two_shot",
+                    "comm_sms": 128,
+                    "block_size_m": 16,
+                    "block_size_n": 128,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                    "distribution": 1,
+                },
+            ),
+            (
+                float("inf"),
+                {
+                    "variant": "two_shot",
+                    "comm_sms": 256,
+                    "block_size_m": 32,
+                    "block_size_n": 256,
+                    "num_warps": 8,
+                    "swizzle_size": 8,
+                    "distribution": 1,
+                },
+            ),
+        ],
+        "all_to_all": [
+            (
+                64 * _KIB,
+                {
+                    "comm_sms": 64,
+                    "block_size_m": 4,
+                    "block_size_n": 128,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                },
+            ),
+            (
+                4 * _MIB,
+                {
+                    "comm_sms": 128,
+                    "block_size_m": 8,
+                    "block_size_n": 256,
+                    "num_warps": 4,
+                    "swizzle_size": 4,
+                },
+            ),
+            (
+                float("inf"),
+                {
+                    "comm_sms": 256,
+                    "block_size_m": 16,
+                    "block_size_n": 512,
+                    "num_warps": 8,
+                    "swizzle_size": 8,
+                },
+            ),
+        ],
+    },
+}
+
+
+_VALID_COLLECTIVES = ("all_reduce", "all_gather", "reduce_scatter", "all_to_all")
+
+
+def lookup_defaults(collective: str, message_bytes: int, arch: str | None = None) -> dict[str, Any]:
+    """Look up the static defaults for ``(arch, collective, message_bytes)``.
+
+    Args:
+        collective: One of :data:`_VALID_COLLECTIVES`.
+        message_bytes: Per-rank input tensor size in bytes.
+        arch: Architecture string (``gfx942`` ...). When ``None``, auto-detected
+            via :func:`_detect_arch`; falls back to :data:`_DEFAULT_ARCH` if the
+            architecture is not present in the table.
+
+    Returns:
+        The override dict for the smallest bucket whose ``max_bytes`` is
+        ``>= message_bytes``. An empty dict is returned if the collective
+        is unknown — callers should treat that as "use Config dataclass
+        defaults".
+
+    Raises:
+        ValueError: If ``collective`` is not one of the supported names.
+    """
+    if collective not in _VALID_COLLECTIVES:
+        raise ValueError(
+            f"Unknown collective {collective!r}; expected one of {_VALID_COLLECTIVES}"
+        )
+
+    if message_bytes < 0:
+        raise ValueError(f"message_bytes must be non-negative, got {message_bytes}")
+
+    arch_key = arch or _detect_arch()
+    table = _DEFAULTS_TABLE.get(arch_key) or _DEFAULTS_TABLE.get(_DEFAULT_ARCH)
+    if not table:
+        return {}
+    buckets = table.get(collective)
+    if not buckets:
+        return {}
+    for max_bytes, overrides in buckets:
+        if message_bytes <= max_bytes:
+            return dict(overrides)
+    # Fallthrough: use the last bucket.
+    return dict(buckets[-1][1])
+
+
+def default_config(collective: str, message_bytes: int, arch: str | None = None) -> "Config":
+    """Build a :class:`Config` populated from the static defaults table.
+
+    Args:
+        collective: Collective name (see :data:`_VALID_COLLECTIVES`).
+        message_bytes: Per-rank input tensor size in bytes; selects the bucket.
+        arch: Optional architecture override. Auto-detected if ``None``.
+
+    Returns:
+        A :class:`Config` instance with the table-selected overrides applied.
+        Caller may further mutate the returned object before handing it to a
+        kernel launch; the dataclass is mutable by design.
+    """
+    overrides = lookup_defaults(collective, message_bytes, arch=arch)
+    kwargs: dict[str, Any] = {}
+    field_map = {
+        "variant": {
+            "all_reduce": "all_reduce_variant",
+            "all_gather": "all_gather_variant",
+            "reduce_scatter": "reduce_scatter_variant",
+        },
+        "distribution": "all_reduce_distribution",
+        "num_rings": "all_reduce_num_rings",
+    }
+    for key, value in overrides.items():
+        if key == "variant":
+            mapped = field_map["variant"].get(collective)
+            if mapped:
+                kwargs[mapped] = value
+        elif key in ("distribution", "num_rings"):
+            kwargs[field_map[key]] = value
+        else:
+            kwargs[key] = value
+    return Config(**kwargs)
 
 
 @dataclass
@@ -16,44 +318,46 @@ class Config:
 
     This configuration struct encapsulates common kernel parameters that can be
     set once and reused across multiple collective calls, similar to the
-    origami config pattern from ROCm libraries.
+    origami config pattern from ROCm libraries. When a user invokes a
+    collective without supplying an explicit ``Config``, the public API
+    consults a static defaults table (see :func:`default_config`) keyed by
+    architecture, collective, and per-rank message-size bucket — the values
+    in that table were tuned on MI300X (gfx942) using
+    ``benchmark/ccl/comprehensive_sweep.py``.
 
     Args:
-        block_size_m: Block size for the M dimension tiling (default: 128)
-                      Optimized for Gluon all-to-all with minimal rows (4)
-        block_size_n: Block size for the N dimension tiling (default: 128)
-                      Optimized for Gluon all-to-all with full column vectorization (2048)
+        block_size_m: Block size for the M dimension tiling (default: 32).
+        block_size_n: Block size for the N dimension tiling (default: 64).
         swizzle_size: Number of tiles to swizzle/group together for
-                     better memory access patterns (default: 6)
+                     better memory access patterns (default: 4).
         comm_sms: Number of SMs (Streaming Multiprocessors) to use for
-                 communication kernel (default: 64)
-                 Optimized for Gluon all-to-all achieving (108)
-        num_xcds: Number of XCCs. If None, auto-detected from system (default: None)
-        use_gluon: If True, use Gluon-based implementation (default: False)
-                   Gluon provides better control over warp-level traffic shaping
-        all_gather_variant: Variant for all-gather operation (default: "persistent")
-                           Options: "persistent", "partitioned"
+                 the communication kernel (default: 64).
+        num_xcds: Number of XCCs. If None, auto-detected from system (default: None).
+        chunk_size: Number of tiles per chiplet chunk; auto-derived from
+                    ``swizzle_size`` and ``comm_sms`` when None (default: None).
+        use_gluon: If True, use Gluon-based implementation (default: False).
+                   Gluon provides better control over warp-level traffic shaping.
+        all_gather_variant: Variant for all-gather operation (default: "persistent").
+                            Options: "persistent", "partitioned".
                            - "persistent": Each PID handles multiple tiles and sends to all ranks
                            - "partitioned": PIDs partitioned across ranks, eliminates inner loop
-        all_reduce_variant: Variant for all-reduce operation (default: "atomic")
-                           Options: "atomic", "ring", "two_shot", "one_shot", "spinlock"
-        all_reduce_distribution: Distribution for two-shot all-reduce (default: 0)
-                               0 for striding, 1 for block distribution
-        all_reduce_num_rings: Number of concurrent rings to form in ring-based all-reduce (default: 1)
+        all_reduce_variant: Variant for all-reduce operation (default: "two_shot").
+                            Options: "atomic", "ring", "two_shot", "one_shot", "spinlock".
+        all_reduce_distribution: Distribution for two-shot all-reduce (default: 1).
+                                 0 for striding, 1 for block distribution.
+        all_reduce_num_rings: Concurrent rings in ring-based all-reduce (default: 1).
         all_reduce_ring_slice_n: Column slice size for ring reduce-scatter/all-gather
-                                 (default: auto-set to block_size_n // world_size at runtime)
-        reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot")
-                                Only "two_shot" is supported
-        num_stages: Number of pipeline stages for the kernel (default: 1)
+                                 (default: auto = ``block_size_n``).
+        reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot").
+                                Only "two_shot" is supported.
+        num_stages: Number of pipeline stages for the kernel (default: 1).
         num_warps: Number of warps per workgroup (default: 4). For gluon kernels,
                    this also sets WARPS_PER_CTA in the BlockedLayout. The product
                    threads_per_warp * num_warps determines the minimum tile size
                    (block_size_m * block_size_n for flat-2D, or block_size_n for 1D).
         threads_per_warp: Threads per warp/wavefront (default: 64). Must match the
                           hardware wavefront size: 64 for AMD GPUs, 32 for NVIDIA.
-                          Used by gluon kernels to construct BlockedLayout for
-                          vectorized memory access.
-        waves_per_eu: Waves per execution unit hint for occupancy (default: 0, auto)
+        waves_per_eu: Waves per execution unit hint for occupancy (default: 0, auto).
 
     Example:
         >>> import iris
