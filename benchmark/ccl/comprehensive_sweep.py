@@ -538,6 +538,33 @@ def reference_output(
     raise ValueError(f"Unknown collective {collective!r}")
 
 
+_VERIFY_TOL = 1e-2  # fp16/bf16 — generous; constant-fill inputs do not overflow
+
+
+def _compare_to_reference(
+    actual: torch.Tensor,
+    collective: str,
+    m: int,
+    n: int,
+    world_size: int,
+    rank: int,
+    dtype: torch.dtype,
+    tol: float = _VERIFY_TOL,
+) -> tuple[bool, float]:
+    """Compare an iris output tensor to the analytical reference.
+
+    Pure-tensor helper extracted from :func:`_verify_iris_output` so the
+    correctness contract (tolerance check + ``max_abs_err`` reporting) can
+    be unit-tested without spinning up an iris runner. ``correct`` is True
+    iff every element is within ``tol``; ``max_abs_err`` is the worst per-
+    element absolute gap observed.
+    """
+    expected = reference_output(collective, m, n, world_size, rank, dtype, actual.device)
+    diff = (actual.float() - expected.float()).abs()
+    max_abs_err = float(diff.max().item())
+    return max_abs_err <= tol, max_abs_err
+
+
 def _verify_iris_output(
     pool: "_IrisPool",
     collective: str,
@@ -560,11 +587,7 @@ def _verify_iris_output(
     torch.cuda.synchronize()
     handles = _build_iris_handles(pool, collective, m, n, world_size, dtype)
     actual = handles.out.detach().clone()
-    expected = reference_output(collective, m, n, world_size, rank, dtype, actual.device)
-    diff = (actual.float() - expected.float()).abs()
-    max_abs_err = float(diff.max().item())
-    tol = 1e-2  # fp16/bf16 — generous; constant-fill inputs do not overflow
-    return max_abs_err <= tol, max_abs_err
+    return _compare_to_reference(actual, collective, m, n, world_size, rank, dtype)
 
 
 def _validation_grid(
@@ -998,6 +1021,25 @@ def _emit_plots(rows: list[_Row], out_dir: Path) -> None:
         plt.close(fig)
 
 
+def _correctness_exit_code(rows: list[_Row], logger: logging.Logger | None = None) -> int:
+    """Return ``1`` if any iris row failed verification, else ``0``.
+
+    Extracted from :func:`main` so the failure-detection contract can be
+    unit-tested without dist init. When ``logger`` is provided, a single
+    summary line listing the failing cells is emitted at error level.
+    """
+    iris_failures = [r for r in rows if r.impl == "iris" and r.correct is False]
+    if not iris_failures:
+        return 0
+    if logger is not None:
+        logger.error(
+            "iris correctness failed for %d cell(s): %s",
+            len(iris_failures),
+            ", ".join(f"{r.collective}/{r.dtype}/{r.total_bytes}B" for r in iris_failures),
+        )
+    return 1
+
+
 def _emit_summary(rows: list[_Row], path: Path) -> None:
     """Write a JSON summary of iris-vs-RCCL ratios per (collective, dtype, total_bytes)."""
     iris_map: dict[tuple[str, str, int], _Row] = {}
@@ -1122,15 +1164,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = _run_validation(args, ctx)
         # A failed iris correctness cell is a blocking failure — surface it
         # via the harness exit code so the sweep cannot pass silently.
-        iris_failures = [r for r in rows if r.impl == "iris" and r.correct is False]
-        if iris_failures:
-            exit_code = 1
-            if rank == 0:
-                logger.error(
-                    "iris correctness failed for %d cell(s): %s",
-                    len(iris_failures),
-                    ", ".join(f"{r.collective}/{r.dtype}/{r.total_bytes}B" for r in iris_failures),
-                )
+        exit_code = _correctness_exit_code(rows, logger=logger if rank == 0 else None)
         if rank == 0:
             csv_path = Path(args.output_csv) if args.output_csv else Path("output/sweep.csv")
             _write_csv(rows, csv_path)
