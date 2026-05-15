@@ -288,9 +288,7 @@ _KNOWN_BAD_CELLS: set[tuple[str, str, int]] = {
 }
 
 
-def _resolve(
-    collective: str, message_bytes: int, arch: str | None = None
-) -> tuple[dict[str, Any], bool]:
+def _resolve(collective: str, message_bytes: int, arch: str | None = None) -> tuple[dict[str, Any], bool]:
     """Single source of truth for ``(arch, collective, message_bytes)`` resolution.
 
     Walks the bucket list and consults :data:`_KNOWN_BAD_CELLS` so that
