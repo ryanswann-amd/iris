@@ -162,9 +162,9 @@ class Config:
             raise ValueError(f"all_reduce_ring_slice_n must be a power of two, got {self.all_reduce_ring_slice_n}")
 
         # Validate reduce_scatter_variant
-        if self.reduce_scatter_variant not in ("two_shot", "push", "two_shot_push"):
+        if self.reduce_scatter_variant not in ("two_shot", "push", "two_shot_push", "auto"):
             raise ValueError(
-                f"reduce_scatter_variant must be 'two_shot', 'push', or 'two_shot_push', got '{self.reduce_scatter_variant}'"
+                f"reduce_scatter_variant must be 'two_shot', 'push', 'two_shot_push', or 'auto', got '{self.reduce_scatter_variant}'"
             )
 
         # Validate barrier_mode. "device" uses an on-GPU, stream-ordered atomic

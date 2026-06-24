@@ -358,6 +358,12 @@ def persistent_reduce_scatter_push_reduce(
 # Cache for push-variant scratch buffers, keyed by (id(shmem), M, N, dtype, W).
 _RS_SCRATCH_CACHE: dict = {}
 
+# Byte threshold (full-buffer M*N*elem) at/above which the write-based
+# two_shot_push beats the read-based two_shot for reduce_scatter. Measured on
+# 8x MI300X (bf16, comm_sms=64, device barrier): read wins through 8 MiB
+# (1.26x at 8 MiB), push wins from 32 MiB up (1.03x). Crossover set at 16 MiB.
+_RS_AUTO_PUSH_BYTES = 16 << 20
+
 
 def _get_rs_scratch(shmem, M, N, dtype, world_size):
     key = (id(shmem), M, N, dtype, world_size)
@@ -430,9 +436,9 @@ def reduce_scatter(
 
     # Validate variant
     variant = getattr(config, "reduce_scatter_variant", "two_shot")
-    if variant not in ("two_shot", "push", "two_shot_push"):
+    if variant not in ("two_shot", "push", "two_shot_push", "auto"):
         raise ValueError(
-            f"reduce_scatter only supports variant='two_shot', 'push', or 'two_shot_push', got '{variant}'."
+            f"reduce_scatter only supports variant='two_shot', 'push', 'two_shot_push', or 'auto', got '{variant}'."
         )
 
     # Extract group information
@@ -440,6 +446,24 @@ def reduce_scatter(
     # rank_global: global rank in iris context - passed as iris_rank to kernel for RMA operations
     rank_in_group, rank_global, world_size, rank_start, rank_stride = extract_group_info(group, shmem)
     M, N = input_tensor.shape[:2]
+
+    # Size- and world-size-based variant selection (mirrors all_reduce 'auto').
+    # The write-based two_shot_push is a 2-kernel + 2-barrier path that wins on
+    # bandwidth at scale; the read-based two_shot is a single kernel + single
+    # barrier that wins in the latency regime. Critically, push only amortizes
+    # its fixed overhead when the read path's remote fan-in (world_size-1 remote
+    # reads per tile) is large enough to create LFIFO contention. Measured on
+    # 8x MI300X (bf16): at world_size<=2 (a single remote) push NEVER beats read,
+    # even at 128 MiB; at world_size>=4 the full-buffer crossover is ~16 MiB.
+    if variant == "auto":
+        nbytes = M * N * input_tensor.element_size()
+        push_ok = (
+            (M % world_size == 0) and ((M // world_size) % config.block_size_m == 0) and (N % config.block_size_n == 0)
+        )
+        if push_ok and world_size >= 4 and nbytes >= _RS_AUTO_PUSH_BYTES:
+            variant = "two_shot_push"
+        else:
+            variant = "two_shot"
 
     # Validate output shape matches input shape
     if output_tensor.shape[:2] != (M, N):
@@ -574,6 +598,29 @@ def reduce_scatter(
                 shmem.barrier()
         return
 
+    # Correctness guard for the m-grouping swizzle: with DISTRIBUTION=1 each rank
+    # claims a CONTIGUOUS tile_id range and writes the reduced tiles back to those
+    # same (pid_m, pid_n) positions in its own output. The group swizzle reorders
+    # tiles within blocks of (GROUP_SIZE_M * num_pid_n) tile_ids. If a group spans
+    # more row-tiles than a rank owns (GROUP_SIZE_M > num_pid_m // world_size) the
+    # swizzle crosses rank boundaries and a rank writes rows it does not own,
+    # leaving its real output rows unwritten (silent corruption, observed at
+    # M=512/768 on ws=8). Clamp the effective group to the largest divisor of the
+    # per-rank row-tile count that does not exceed swizzle_size; this preserves
+    # the L2-locality swizzle when it fits and degrades to row-major (1) otherwise.
+    num_pid_m = (M + config.block_size_m - 1) // config.block_size_m
+    eff_swizzle = config.swizzle_size
+    if num_pid_m % world_size == 0:
+        rows_per_rank = num_pid_m // world_size
+        eff_swizzle = 1
+        for d in range(min(config.swizzle_size, rows_per_rank), 0, -1):
+            if rows_per_rank % d == 0:
+                eff_swizzle = d
+                break
+    else:
+        # Per-rank row ownership is not integral; row-major is the only safe order.
+        eff_swizzle = 1
+
     persistent_reduce_scatter_two_shot[(config.comm_sms,)](
         input_tensor,
         output_tensor,
@@ -591,7 +638,7 @@ def reduce_scatter(
         rank_stride,
         config.block_size_m,
         config.block_size_n,
-        config.swizzle_size,
+        eff_swizzle,
         config.comm_sms,
         config.num_xcds,
         config.chunk_size,
