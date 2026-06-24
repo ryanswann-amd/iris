@@ -44,6 +44,12 @@ class Config:
                                  (default: auto-set to block_size_n // world_size at runtime)
         reduce_scatter_variant: Variant for reduce-scatter operation (default: "two_shot")
                                 Only "two_shot" is supported
+        barrier_mode: Trailing/synchronization barrier implementation (default: "device").
+                      Options: "device", "host"
+                      - "device": on-GPU, stream-ordered atomic barrier (no host
+                        round-trip, CUDA-graph capturable). Avoids the ~370us host
+                        barrier that dominates small-message latency.
+                      - "host": torch.cuda.synchronize() + torch.distributed.barrier().
         num_stages: Number of pipeline stages for the kernel (default: 1)
         num_warps: Number of warps per workgroup (default: 4). For gluon kernels,
                    this also sets WARPS_PER_CTA in the BlockedLayout. The product
@@ -58,7 +64,7 @@ class Config:
     Example:
         >>> import iris
         >>> from iris.ccl import Config
-        >>> ctx = iris.iris()
+        >>> shmem = iris.iris()
         >>> config = Config(
         ...     block_size_m=128,
         ...     block_size_n=32,
@@ -66,15 +72,15 @@ class Config:
         ...     comm_sms=64,
         ...     use_gluon=True
         ... )
-        >>> ctx.ccl.all_to_all(output_tensor, input_tensor, config=config)
+        >>> shmem.ccl.all_to_all(output_tensor, input_tensor, config=config)
 
         >>> # All-reduce with ring variant
         >>> config = Config(all_reduce_variant="ring")
-        >>> ctx.ccl.all_reduce(output_tensor, input_tensor, config=config)
+        >>> shmem.ccl.all_reduce(output_tensor, input_tensor, config=config)
 
         >>> # All-gather with partitioned variant
         >>> config = Config(all_gather_variant="partitioned")
-        >>> ctx.ccl.all_gather(output_tensor, input_tensor, config=config)
+        >>> shmem.ccl.all_gather(output_tensor, input_tensor, config=config)
     """
 
     block_size_m: int = 32
@@ -89,7 +95,13 @@ class Config:
     all_reduce_distribution: int = 1
     all_reduce_num_rings: int = 1
     all_reduce_ring_slice_n: int | None = None
+    all_reduce_num_warps: int = 8
+    all_reduce_num_stages: int = 1
+    all_reduce_waves_per_eu: int = 1
+    all_reduce_push_chunk_n: int = 0  # 0 = no N-chunking (two_shot_push). >0 keeps
+    # per-chunk scratch L2-resident so the reduce read-back avoids HBM at large N.
     reduce_scatter_variant: str = "two_shot"
+    barrier_mode: str = "device"
     num_stages: int = 1
     num_warps: int = 4
     threads_per_warp: int = 64
@@ -114,13 +126,22 @@ class Config:
             raise ValueError(f"comm_sms must be positive, got {self.comm_sms}")
         if self.num_xcds <= 0:
             raise ValueError(f"num_xcds must be positive, got {self.num_xcds}")
-        if self.all_gather_variant not in ["persistent", "partitioned"]:
+        if self.all_gather_variant not in ["persistent", "partitioned", "pull"]:
             raise ValueError(
-                f"all_gather_variant must be one of: 'persistent', 'partitioned', got {self.all_gather_variant}"
+                f"all_gather_variant must be one of: 'persistent', 'partitioned', 'pull', got {self.all_gather_variant}"
             )
-        if self.all_reduce_variant not in ["atomic", "ring", "two_shot", "one_shot", "spinlock"]:
+        if self.all_reduce_variant not in [
+            "atomic",
+            "ring",
+            "two_shot",
+            "one_shot",
+            "spinlock",
+            "push",
+            "two_shot_push",
+            "auto",
+        ]:
             raise ValueError(
-                f"all_reduce_variant must be one of: 'atomic', 'ring', 'two_shot', 'one_shot', 'spinlock', got {self.all_reduce_variant}"
+                f"all_reduce_variant must be one of: 'atomic', 'ring', 'two_shot', 'one_shot', 'spinlock', 'push', 'two_shot_push', 'auto', got {self.all_reduce_variant}"
             )
         if self.all_reduce_distribution not in [0, 1]:
             raise ValueError(
@@ -141,8 +162,18 @@ class Config:
             raise ValueError(f"all_reduce_ring_slice_n must be a power of two, got {self.all_reduce_ring_slice_n}")
 
         # Validate reduce_scatter_variant
-        if self.reduce_scatter_variant != "two_shot":
-            raise ValueError(f"reduce_scatter_variant must be 'two_shot', got '{self.reduce_scatter_variant}'")
+        if self.reduce_scatter_variant not in ("two_shot", "push", "two_shot_push"):
+            raise ValueError(
+                f"reduce_scatter_variant must be 'two_shot', 'push', or 'two_shot_push', got '{self.reduce_scatter_variant}'"
+            )
+
+        # Validate barrier_mode. "device" uses an on-GPU, stream-ordered atomic
+        # barrier (no host round-trip); "host" uses torch.cuda.synchronize() +
+        # torch.distributed.barrier(). "device" is the default because it matches
+        # stream-ordered async_op=False semantics and avoids the ~370us host
+        # barrier that dominates small-message all-reduce latency.
+        if self.barrier_mode not in ("device", "host"):
+            raise ValueError(f"barrier_mode must be 'device' or 'host', got '{self.barrier_mode}'")
 
         if self.threads_per_warp not in (32, 64):
             raise ValueError(f"threads_per_warp must be 32 (NVIDIA) or 64 (AMD), got {self.threads_per_warp}")
